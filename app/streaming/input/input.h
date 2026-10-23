@@ -134,6 +134,9 @@ public:
 
     void raiseAllKeys();
 
+    // Clears all held gamepad buttons on the host
+    void releaseAllGamepadButtons();
+
     void notifyMouseLeave();
 
     void notifyFocusLost();
@@ -168,6 +171,7 @@ private:
         KeyComboTogglePointerRegionLock,
         KeyComboQuitAndExit,
         KeyComboToggleKeyboardGrab,
+        KeyComboToggleQuickMenu,
         KeyComboMax
     };
 

@@ -162,6 +162,12 @@ void SdlInputHandler::performSpecialKeyCombo(KeyCombo combo)
         SDL_PushEvent(&quitExitEvent);
         break;
 
+    case KeyComboToggleQuickMenu:
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Detected quick menu toggle combo");
+        Session::get()->toggleQuickMenu();
+        break;
+
     case KeyComboToggleKeyboardGrab:
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                     "Detected keyboard grab toggle combo");

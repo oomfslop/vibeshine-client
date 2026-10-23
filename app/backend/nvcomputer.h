@@ -101,6 +101,19 @@ public:
     QString gpuModel;
     bool isSupportedServerVersion;
 
+    // Apollo extensions (ephemeral, refreshed from serverinfo)
+    // True if the host advertises Apollo-specific fields in serverinfo
+    bool hasApolloExtensions;
+    // Permission bitmask granted to this client (see apollopermissions.h).
+    // Only populated for paired clients over HTTPS; zero otherwise.
+    quint32 apolloPermissions;
+    // Names of the server commands this client may execute, in the order
+    // expected by LiSendExecServerCmd().
+    QStringList serverCommands;
+    // Virtual display driver status (Windows hosts only)
+    bool virtualDisplayCapable;
+    bool virtualDisplayDriverReady;
+
     // Persisted traits
     NvAddress localAddress;
     NvAddress remoteAddress;

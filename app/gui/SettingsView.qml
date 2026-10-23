@@ -503,13 +503,26 @@ Flickable {
                                     return
                                 }
 
-                                var fps = fpsField.text ? fpsField.text : fpsField.placeholderText
+                                var fpsText = fpsField.text ? fpsField.text : fpsField.placeholderText
+                                var fpsValue = parseFloat(fpsText)
+                                var fps = Math.round(fpsValue)
+
+                                // Fractional refresh rates (e.g. 59.94) are an Apollo extension.
+                                // The rounded value is used for everything else.
+                                if (Math.abs(fpsValue - fps) >= 0.001) {
+                                    StreamingPreferences.fractionalFps = fpsValue
+                                    fpsText = fpsValue.toString()
+                                }
+                                else {
+                                    StreamingPreferences.fractionalFps = 0
+                                    fpsText = fps.toString()
+                                }
 
                                 // Find and update the custom entry
                                 for (var i = 0; i < fpsListModel.count; i++) {
                                     if (fpsListModel.get(i).is_custom) {
-                                        fpsListModel.setProperty(i, "video_fps", fps)
-                                        fpsListModel.setProperty(i, "text", qsTr("Custom (%1 FPS)").arg(fps))
+                                        fpsListModel.setProperty(i, "video_fps", "" + fps)
+                                        fpsListModel.setProperty(i, "text", qsTr("Custom (%1 FPS)").arg(fpsText))
 
                                         // Now update the bitrate using the custom resolution
                                         fpsComboBox.currentIndex = i
@@ -528,13 +541,24 @@ Flickable {
                                     font.bold: true
                                 }
 
+                                Label {
+                                    text: qsTr("Fractional rates like 59.94 are supported by Apollo hosts only.")
+                                    font.pointSize: 9
+                                }
+
                                 RowLayout {
                                     TextField {
                                         id: fpsField
-                                        maximumLength: 4
-                                        inputMethodHints: Qt.ImhDigitsOnly
+                                        maximumLength: 8
+                                        inputMethodHints: Qt.ImhFormattedNumbersOnly
                                         placeholderText: fpsListModel.get(fpsComboBox.currentIndex).video_fps
-                                        validator: IntValidator{bottom:10; top:9999}
+                                        validator: DoubleValidator {
+                                            bottom: 10
+                                            top: 9999
+                                            decimals: 3
+                                            notation: DoubleValidator.StandardNotation
+                                            locale: "C"
+                                        }
                                         focus: true
 
                                         onTextChanged: {
@@ -605,21 +629,27 @@ Flickable {
                             }
 
                             var saved_fps = StreamingPreferences.fps
+                            var fractional_fps = StreamingPreferences.fractionalFps
                             var found = false
-                            for (var i = 0; i < model.count; i++) {
-                                var el_fps = parseInt(model.get(i).video_fps);
 
-                                // Look for a matching frame rate
-                                if (saved_fps === el_fps) {
-                                    currentIndex = i
-                                    found = true
-                                    break
+                            // A fractional refresh rate is always shown as a custom entry
+                            if (fractional_fps <= 0) {
+                                for (var i = 0; i < model.count; i++) {
+                                    var el_fps = parseInt(model.get(i).video_fps);
+
+                                    // Look for a matching frame rate
+                                    if (saved_fps === el_fps) {
+                                        currentIndex = i
+                                        found = true
+                                        break
+                                    }
                                 }
                             }
 
                             // If we didn't find one, add a custom frame rate for the current value
                             if (!found) {
-                                currentIndex = addRefreshRateOrdered(model, saved_fps, qsTr("Custom (%1 FPS)").arg(saved_fps), true)
+                                var label = qsTr("Custom (%1 FPS)").arg(fractional_fps > 0 ? fractional_fps : saved_fps)
+                                currentIndex = addRefreshRateOrdered(model, saved_fps, label, true)
                             }
                             else {
                                 addRefreshRateOrdered(model, "", qsTr("Custom"), true)
@@ -660,6 +690,8 @@ Flickable {
                                 customFpsDialog.open()
                             }
                             else {
+                                // Standard entries are always integer frame rates
+                                StreamingPreferences.fractionalFps = 0
                                 updateBitrateForSelection()
                             }
                         }
@@ -1004,6 +1036,92 @@ Flickable {
                     ToolTip.timeout: 5000
                     ToolTip.visible: hovered
                     ToolTip.text: qsTr("This will close the app or game you are streaming when you end your stream. You will lose any unsaved progress!")
+                }
+            }
+        }
+
+        GroupBox {
+            id: apolloSettingsGroupBox
+            width: (parent.width - (parent.leftPadding + parent.rightPadding))
+            padding: 12
+            title: "<font color=\"skyblue\">" + qsTr("Apollo Host Settings") + "</font>"
+            font.pointSize: 12
+
+            Column {
+                anchors.fill: parent
+                spacing: 5
+
+                Label {
+                    width: parent.width
+                    text: qsTr("These options require Apollo on the host PC. They are ignored by Sunshine and GeForce Experience.")
+                    font.pointSize: 9
+                    wrapMode: Text.Wrap
+                }
+
+                CheckBox {
+                    id: useVirtualDisplayCheck
+                    width: parent.width
+                    text: qsTr("Stream from a virtual display")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.useVirtualDisplay
+                    onCheckedChanged: {
+                        StreamingPreferences.useVirtualDisplay = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Asks the host to create a virtual display matching your stream resolution and refresh rate instead of capturing a physical monitor.")
+                }
+
+                CheckBox {
+                    id: clipboardSyncCheck
+                    width: parent.width
+                    text: qsTr("Sync clipboard with host")
+                    font.pointSize: 12
+                    checked: StreamingPreferences.clipboardSync
+                    onCheckedChanged: {
+                        StreamingPreferences.clipboardSync = checked
+                    }
+
+                    ToolTip.delay: 1000
+                    ToolTip.timeout: 5000
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Sends your clipboard text to the host when the stream starts or regains focus, and fetches the host's clipboard when the stream loses focus.") + "\n\n" +
+                                  qsTr("Requires the clipboard permissions to be granted to this client in Apollo. The clipboard can also be synced manually from the quick menu.")
+                }
+
+                Label {
+                    width: parent.width
+                    id: scaleFactorTitle
+                    text: qsTr("Host render scale: %1%").arg(scaleFactorSlider.value)
+                    font.pointSize: 12
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
+                    width: parent.width
+                    id: scaleFactorDesc
+                    text: qsTr("Renders the game on the host at a different resolution than the stream. Values below 100% improve performance on weak hosts; values above 100% supersample.")
+                    font.pointSize: 9
+                    wrapMode: Text.Wrap
+                }
+
+                Slider {
+                    id: scaleFactorSlider
+
+                    value: StreamingPreferences.resolutionScaleFactor
+
+                    stepSize: 5
+                    from: 50
+                    to: 200
+
+                    snapMode: Slider.SnapAlways
+                    width: Math.min(scaleFactorDesc.implicitWidth, parent.width)
+
+                    onValueChanged: {
+                        StreamingPreferences.resolutionScaleFactor = value
+                    }
                 }
             }
         }

@@ -98,6 +98,25 @@ private:
     QByteArray m_ErrorText;
 };
 
+// Extra launch parameters understood by Apollo hosts. All of these are
+// ignored by GFE and Sunshine, so it is safe to pass them unconditionally.
+class NvLaunchOptions
+{
+public:
+    // App UUID to launch (Apollo). Empty if the host didn't provide one.
+    QString appUuid;
+
+    // Fractional refresh rate in Hz (e.g. 59.94). Zero means the integer
+    // fps from the stream configuration is used.
+    double fractionalFps = 0;
+
+    // Ask the host to stream from a virtual display.
+    bool useVirtualDisplay = false;
+
+    // Host-side render scale factor in percent (100 = disabled).
+    int scaleFactor = 100;
+};
+
 class NvHTTP : public QObject
 {
     Q_OBJECT
@@ -128,6 +147,11 @@ public:
     QString
     getXmlString(QString xml,
                  QString tagName);
+
+    static
+    QStringList
+    getXmlStringList(QString xml,
+                     QString tagName);
 
     static
     QByteArray
@@ -170,7 +194,17 @@ public:
              bool localAudio,
              int gamepadMask,
              bool persistGameControllersOnDisconnect,
+             const NvLaunchOptions& launchOptions,
              QString& rtspSessionUrl);
+
+    // Apollo clipboard sync endpoints. These require an active stream from
+    // this client and the matching clipboard permission on the host.
+    // Both throw GfeHttpResponseException/QtNetworkReplyException on failure.
+    QString
+    getClipboardText();
+
+    void
+    setClipboardText(const QString& text);
 
     QVector<NvApp>
     getAppList();
@@ -193,7 +227,9 @@ private:
                    QString command,
                    QString arguments,
                    int timeoutMs,
-                   NvLogLevel logLevel);
+                   NvLogLevel logLevel,
+                   const QByteArray* postBody = nullptr,
+                   QString postContentType = QString());
 
     NvAddress m_Address;
     QNetworkAccessManager* m_Nam;

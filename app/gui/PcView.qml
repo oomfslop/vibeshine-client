@@ -46,8 +46,9 @@ CenteredGridView {
 
     function pairingComplete(error)
     {
-        // Close the PIN dialog
+        // Close the PIN dialogs
         pairDialog.close()
+        otpProgressDialog.close()
 
         // Display a failed dialog if we got an error
         if (error !== undefined) {
@@ -186,6 +187,15 @@ CenteredGridView {
                     visible: !model.online && model.wakeable
                 }
                 NavigableMenuItem {
+                    text: qsTr("Pair with one-time password")
+                    onTriggered: {
+                        otpPairDialog.pcIndex = index
+                        otpPairDialog.pcName = model.name
+                        otpPairDialog.open()
+                    }
+                    visible: model.online && !model.paired && model.apollo
+                }
+                NavigableMenuItem {
                     text: qsTr("Test Network")
                     onTriggered: {
                         computerModel.testConnectionForComputer(index)
@@ -233,14 +243,9 @@ CenteredGridView {
                     stackView.push(appView)
                 }
                 else {
-                    var pin = computerModel.generatePinString()
-
-                    // Kick off pairing in the background
-                    computerModel.pairComputer(index, pin)
-
-                    // Display the pairing dialog
-                    pairDialog.pin = pin
-                    pairDialog.open()
+                    // Standard PIN pairing works with every host. Apollo's one-time
+                    // password flow is available from the context menu.
+                    startPinPairing(index)
                 }
             } else if (!model.online) {
                 // Using open() here because it may be activated by keyboard
@@ -286,6 +291,106 @@ CenteredGridView {
         // Using Setup-Guide here instead of Troubleshooting because it's likely that users
         // will arrive here by forgetting to enable GameStream or not forwarding ports.
         helpUrl: "https://github.com/moonlight-stream/moonlight-docs/wiki/Setup-Guide"
+    }
+
+    function startPinPairing(index)
+    {
+        var pin = computerModel.generatePinString()
+
+        // Kick off pairing in the background
+        computerModel.pairComputer(index, pin)
+
+        // Display the pairing dialog
+        pairDialog.pin = pin
+        pairDialog.open()
+    }
+
+    NavigableDialog {
+        id: otpPairDialog
+        property int pcIndex : -1
+        property string pcName : ""
+
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        closePolicy: Popup.CloseOnEscape
+
+        function isInputValid() {
+            return /^[0-9]{4}$/.test(otpPinField.text)
+        }
+
+        onOpened: {
+            otpPinField.clear()
+            otpPassphraseField.clear()
+            otpPinField.forceActiveFocus()
+
+            // standardButton() was added in Qt 5.10, so we must check for it first
+            if (otpPairDialog.standardButton) {
+                otpPairDialog.standardButton(Dialog.Ok).enabled = isInputValid()
+            }
+        }
+
+        onAccepted: {
+            if (!isInputValid()) {
+                reject()
+                return
+            }
+
+            computerModel.pairComputerWithOtp(pcIndex, otpPinField.text, otpPassphraseField.text)
+            otpProgressDialog.open()
+        }
+
+        ColumnLayout {
+            Label {
+                text: qsTr("Pair with '%1' using a one-time password").arg(otpPairDialog.pcName)
+                font.bold: true
+            }
+
+            Label {
+                text: qsTr("In the Apollo web UI on the host PC, open the PIN page and generate a one-time PIN, then enter it below.") + "\n" +
+                      qsTr("If you also set a passphrase there, enter it here. Otherwise leave it empty.") + "\n\n" +
+                      qsTr("If your host has no one-time PIN option, cancel and use the normal pairing flow by clicking the PC instead.")
+                wrapMode: Text.Wrap
+                Layout.maximumWidth: 400
+            }
+
+            TextField {
+                id: otpPinField
+                Layout.fillWidth: true
+                placeholderText: qsTr("One-time PIN")
+                maximumLength: 4
+                inputMethodHints: Qt.ImhDigitsOnly
+
+                onTextChanged: {
+                    // standardButton() was added in Qt 5.10, so we must check for it first
+                    if (otpPairDialog.standardButton) {
+                        otpPairDialog.standardButton(Dialog.Ok).enabled = otpPairDialog.isInputValid()
+                    }
+                }
+
+                Keys.onReturnPressed: otpPassphraseField.forceActiveFocus()
+                Keys.onEnterPressed: otpPassphraseField.forceActiveFocus()
+            }
+
+            TextField {
+                id: otpPassphraseField
+                Layout.fillWidth: true
+                placeholderText: qsTr("Passphrase (optional)")
+                echoMode: TextInput.Password
+
+                Keys.onReturnPressed: otpPairDialog.accept()
+                Keys.onEnterPressed: otpPairDialog.accept()
+            }
+        }
+    }
+
+    NavigableMessageDialog {
+        id: otpProgressDialog
+        closePolicy: Popup.CloseOnEscape
+        text: qsTr("Pairing with the host PC. This dialog will close when pairing is completed.")
+        showSpinner: true
+        standardButtons: Dialog.Cancel
+        onRejected: {
+            // FIXME: We should interrupt pairing here
+        }
     }
 
     NavigableMessageDialog {

@@ -205,6 +205,7 @@ NvHTTP::startApp(QString verb,
                  bool localAudio,
                  int gamepadMask,
                  bool persistGameControllersOnDisconnect,
+                 const NvLaunchOptions& launchOptions,
                  QString& rtspSessionUrl)
 {
     int riKeyId;
@@ -212,17 +213,39 @@ NvHTTP::startApp(QString verb,
     memcpy(&riKeyId, streamConfig->remoteInputAesIv, sizeof(riKeyId));
     riKeyId = qFromBigEndian(riKeyId);
 
+    QString fps;
+    if (launchOptions.fractionalFps > 0 && !isGfe) {
+        // Apollo accepts a fractional refresh rate in the mode string (e.g. 1920x1080x59.94)
+        fps = QString::number(launchOptions.fractionalFps, 'f', 3);
+    }
+    else {
+        // Using an FPS value over 60 causes SOPS to default to 720p60,
+        // so force it to 0 to ensure the correct resolution is set. We
+        // used to use 60 here but that locked the frame rate to 60 FPS
+        // on GFE 3.20.3. We don't need this hack for Sunshine.
+        fps = QString::number((streamConfig->fps > 60 && isGfe) ? 0 : streamConfig->fps);
+    }
+
+    // Apollo-specific launch parameters (ignored by other hosts)
+    QString apolloParams;
+    if (!launchOptions.appUuid.isEmpty()) {
+        apolloParams += "&appuuid=" + launchOptions.appUuid;
+    }
+    if (launchOptions.useVirtualDisplay) {
+        apolloParams += "&virtualDisplay=1";
+    }
+    if (launchOptions.scaleFactor > 0 && launchOptions.scaleFactor != 100) {
+        apolloParams += "&scaleFactor=" + QString::number(launchOptions.scaleFactor);
+    }
+
     QString response =
             openConnectionToString(m_BaseUrlHttps,
                                    verb,
                                    "appid="+QString::number(appId)+
+                                   apolloParams+
                                    "&mode="+QString::number(streamConfig->width)+"x"+
                                    QString::number(streamConfig->height)+"x"+
-                                   // Using an FPS value over 60 causes SOPS to default to 720p60,
-                                   // so force it to 0 to ensure the correct resolution is set. We
-                                   // used to use 60 here but that locked the frame rate to 60 FPS
-                                   // on GFE 3.20.3. We don't need this hack for Sunshine.
-                                   QString::number((streamConfig->fps > 60 && isGfe) ? 0 : streamConfig->fps)+
+                                   fps+
                                    "&additionalStates=1&sops="+QString::number(sops ? 1 : 0)+
                                    "&rikey="+QByteArray(streamConfig->remoteInputAesKey, sizeof(streamConfig->remoteInputAesKey)).toHex()+
                                    "&rikeyid="+QString::number(riKeyId)+
@@ -336,6 +359,10 @@ NvHTTP::getAppList()
                 else if (XML_NAME_EQUALS(name, "ID")) {
                     apps.last().id = xmlReader.readElementText().toInt();
                 }
+                else if (XML_NAME_EQUALS(name, "UUID")) {
+                    // Apollo extension
+                    apps.last().uuid = xmlReader.readElementText();
+                }
                 else if (XML_NAME_EQUALS(name, "IsHdrSupported")) {
                     apps.last().hdrSupported = xmlReader.readElementText() == "1";
                 }
@@ -401,6 +428,49 @@ NvHTTP::getBoxArt(int appId)
     delete reply;
 
     return image;
+}
+
+QStringList
+NvHTTP::getXmlStringList(QString xml,
+                         QString tagName)
+{
+    QStringList values;
+    QXmlStreamReader xmlReader(xml);
+
+    while (!xmlReader.atEnd()) {
+        if (xmlReader.readNext() != QXmlStreamReader::StartElement) {
+            continue;
+        }
+
+        if (xmlReader.name() == tagName) {
+            values.append(xmlReader.readElementText());
+        }
+    }
+
+    return values;
+}
+
+QString
+NvHTTP::getClipboardText()
+{
+    return openConnectionToString(m_BaseUrlHttps,
+                                  "actions/clipboard",
+                                  "type=text",
+                                  REQUEST_TIMEOUT_MS);
+}
+
+void
+NvHTTP::setClipboardText(const QString& text)
+{
+    QByteArray body = text.toUtf8();
+    QNetworkReply* reply = openConnection(m_BaseUrlHttps,
+                                          "actions/clipboard",
+                                          "type=text",
+                                          REQUEST_TIMEOUT_MS,
+                                          NvLogLevel::NVLL_VERBOSE,
+                                          &body,
+                                          "text/plain; charset=utf-8");
+    delete reply;
 }
 
 QByteArray
@@ -483,7 +553,9 @@ NvHTTP::openConnection(QUrl baseUrl,
                        QString command,
                        QString arguments,
                        int timeoutMs,
-                       NvLogLevel logLevel)
+                       NvLogLevel logLevel,
+                       const QByteArray* postBody,
+                       QString postContentType)
 {
     // Port must be set
     Q_ASSERT(baseUrl.port(0) != 0);
@@ -518,7 +590,14 @@ NvHTTP::openConnection(QUrl baseUrl,
 #endif
 
     auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);
-    QNetworkReply* reply = m_Nam->get(request);
+    QNetworkReply* reply;
+    if (postBody != nullptr) {
+        request.setHeader(QNetworkRequest::ContentTypeHeader, postContentType);
+        reply = m_Nam->post(request, *postBody);
+    }
+    else {
+        reply = m_Nam->get(request);
+    }
     QEventLoop loop;
 
     // Connect the quit signals

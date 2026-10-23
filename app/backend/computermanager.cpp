@@ -579,10 +579,12 @@ class PendingPairingTask : public QObject, public QRunnable
     Q_OBJECT
 
 public:
-    PendingPairingTask(ComputerManager* computerManager, NvComputer* computer, QString pin)
+    PendingPairingTask(ComputerManager* computerManager, NvComputer* computer, QString pin,
+                       QString otpPassphrase = QString())
         : m_ComputerManager(computerManager),
           m_Computer(computer),
-          m_Pin(pin)
+          m_Pin(pin),
+          m_OtpPassphrase(otpPassphrase)
     {
         connect(this, &PendingPairingTask::pairingCompleted,
                 computerManager, &ComputerManager::pairingCompleted);
@@ -597,11 +599,16 @@ private:
         NvPairingManager pairingManager(m_Computer);
 
         try {
-           NvPairingManager::PairState result = pairingManager.pair(m_Computer->appVersion, m_Pin, m_Computer->serverCert);
+           NvPairingManager::PairState result = pairingManager.pair(m_Computer->appVersion, m_Pin, m_Computer->serverCert, m_OtpPassphrase);
            switch (result)
            {
            case NvPairingManager::PairState::PIN_WRONG:
-               emit pairingCompleted(m_Computer, tr("The PIN from the PC didn't match. Please try again."));
+               if (!m_OtpPassphrase.isNull()) {
+                   emit pairingCompleted(m_Computer, tr("The PIN or passphrase didn't match the one-time password on the host PC. Please try again."));
+               }
+               else {
+                   emit pairingCompleted(m_Computer, tr("The PIN from the PC didn't match. Please try again."));
+               }
                break;
            case NvPairingManager::PairState::FAILED:
                if (m_Computer->currentGameId != 0) {
@@ -622,7 +629,16 @@ private:
                break;
            }
         } catch (const GfeHttpResponseException& e) {
-            emit pairingCompleted(m_Computer, tr("GeForce Experience returned error: %1").arg(e.toQString()));
+            if (!m_OtpPassphrase.isNull() && e.getStatusCode() == 503) {
+                // Apollo returns 503 "OTP auth not available." when no OTP is pending
+                emit pairingCompleted(m_Computer, tr("No one-time password is active on the host PC. Generate a new one in the Apollo web UI and try again."));
+            }
+            else if (m_Computer->isNvidiaServerSoftware) {
+                emit pairingCompleted(m_Computer, tr("GeForce Experience returned error: %1").arg(e.toQString()));
+            }
+            else {
+                emit pairingCompleted(m_Computer, tr("Host returned error: %1").arg(e.toQString()));
+            }
         } catch (const QtNetworkReplyException& e) {
             emit pairingCompleted(m_Computer, e.toQString());
         }
@@ -631,6 +647,7 @@ private:
     ComputerManager* m_ComputerManager;
     NvComputer* m_Computer;
     QString m_Pin;
+    QString m_OtpPassphrase;
 };
 
 void ComputerManager::pairHost(NvComputer* computer, QString pin)
@@ -638,6 +655,17 @@ void ComputerManager::pairHost(NvComputer* computer, QString pin)
     // Punt to a worker thread to avoid stalling the
     // UI while waiting for pairing to complete
     PendingPairingTask* pairing = new PendingPairingTask(this, computer, pin);
+    QThreadPool::globalInstance()->start(pairing);
+}
+
+void ComputerManager::pairHostWithOtp(NvComputer* computer, QString pin, QString passphrase)
+{
+    // A null passphrase means "no OTP", so make sure an empty one stays non-null
+    if (passphrase.isNull()) {
+        passphrase = "";
+    }
+
+    PendingPairingTask* pairing = new PendingPairingTask(this, computer, pin, passphrase);
     QThreadPool::globalInstance()->start(pairing);
 }
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QSemaphore>
+#include <QAtomicInt>
+#include <QSharedPointer>
 #include <QQuickWindow>
 
 #include <Limelight.h>
@@ -10,6 +12,12 @@
 #include "video/decoder.h"
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
+#include "quickmenu.h"
+
+// SDL_USEREVENT codes shared with helper classes
+#define SDL_CODE_QUICKMENU_TIMER 106
+#define SDL_CODE_CLIPBOARD_TEXT_RECEIVED 107
+#define SDL_CODE_QUICKMENU_TOAST 108
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -96,6 +104,8 @@ class Session : public QObject
     friend class SdlInputHandler;
     friend class DeferredSessionCleanupTask;
     friend class AsyncConnectionStartThread;
+    friend class ClipboardSyncTask;
+    friend class QuickMenu;
 
 public:
     explicit Session(NvComputer* computer, NvApp& app, StreamingPreferences *preferences = nullptr);
@@ -124,6 +134,22 @@ public:
     void flushWindowEvents();
 
     void setShouldExit(bool quitHostApp = false);
+
+    // Ends the stream. If quitHostApp is true, the app on the host is quit
+    // too, regardless of the user's preference.
+    void requestDisconnect(bool quitHostApp);
+
+    // Shows or hides the in-stream quick menu overlay
+    void toggleQuickMenu();
+
+    enum class ClipboardDirection {
+        ToHost,
+        FromHost,
+    };
+
+    // Starts an asynchronous clipboard sync with an Apollo host. The result
+    // is reported via the quick menu toast if showResult is true.
+    void syncClipboard(ClipboardDirection direction, bool showResult);
 
 signals:
     void stageStarting(QString stage);
@@ -168,6 +194,10 @@ private:
     void toggleFullscreen();
 
     void notifyMouseEmulationMode(bool enabled);
+
+    bool isClipboardSyncAllowed(ClipboardDirection direction);
+
+    void onClipboardTextReceived(const QString& text);
 
     void updateOptimalWindowDisplayMode();
 
@@ -281,6 +311,10 @@ private:
     Uint32 m_DropAudioEndTime;
 
     Overlay::OverlayManager m_OverlayManager;
+    QuickMenu m_QuickMenu;
+    QString m_LastSyncedClipboardText;
+    // Shared with ClipboardSyncTask, which may outlive this Session
+    QSharedPointer<QAtomicInt> m_ClipboardSyncInProgress;
 
     static CONNECTION_LISTENER_CALLBACKS k_ConnCallbacks;
     static Session* s_ActiveSession;

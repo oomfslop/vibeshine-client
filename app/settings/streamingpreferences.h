@@ -158,6 +158,12 @@ public:
     Q_PROPERTY(CaptureSysKeysMode captureSysKeysMode MEMBER captureSysKeysMode NOTIFY captureSysKeysModeChanged)
     Q_PROPERTY(Language language MEMBER language NOTIFY languageChanged);
 
+    // Apollo host extensions
+    Q_PROPERTY(double fractionalFps MEMBER fractionalFps NOTIFY displayModeChanged)
+    Q_PROPERTY(bool useVirtualDisplay MEMBER useVirtualDisplay NOTIFY useVirtualDisplayChanged)
+    Q_PROPERTY(int resolutionScaleFactor MEMBER resolutionScaleFactor NOTIFY resolutionScaleFactorChanged)
+    Q_PROPERTY(bool clipboardSync MEMBER clipboardSync NOTIFY clipboardSyncChanged)
+
     Q_INVOKABLE bool retranslate();
 
     // Directly accessible members for preferences
@@ -201,6 +207,17 @@ public:
     CaptureSysKeysMode captureSysKeysMode;
     RendererSelection rendererSelection;
 
+    // Apollo host extensions
+    // Fractional refresh rate in Hz, or 0 to use the integer fps value. When
+    // non-zero, fps holds the rounded value for client-side decisions.
+    double fractionalFps;
+    // Ask the host to stream from a virtual display
+    bool useVirtualDisplay;
+    // Host-side render scale factor in percent (100 = off)
+    int resolutionScaleFactor;
+    // Sync the clipboard with the host on focus changes and stream start
+    bool clipboardSync;
+
 signals:
     void displayModeChanged();
     void bitrateChanged();
@@ -237,6 +254,9 @@ signals:
     void captureSysKeysModeChanged();
     void keepAwakeChanged();
     void languageChanged();
+    void useVirtualDisplayChanged();
+    void resolutionScaleFactorChanged();
+    void clipboardSyncChanged();
     void rendererSelectionChanged();
 
 private:

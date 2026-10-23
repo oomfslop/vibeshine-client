@@ -2,6 +2,8 @@
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
+#include "backend/apollopermissions.h"
+#include "backend/nvhttp.h"
 
 #include <Limelight.h>
 #include "SDL_compat.h"
@@ -28,6 +30,7 @@
 #define SDL_CODE_GAMECONTROLLER_SET_MOTION_EVENT_STATE 103
 #define SDL_CODE_GAMECONTROLLER_SET_CONTROLLER_LED 104
 #define SDL_CODE_GAMECONTROLLER_SET_ADAPTIVE_TRIGGERS 105
+// SDL_CODE_QUICKMENU_TIMER (106) and SDL_CODE_CLIPBOARD_TEXT_RECEIVED (107) are in session.h
 
 #include <openssl/rand.h>
 
@@ -584,7 +587,9 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_OpusDecoder(nullptr),
       m_AudioRenderer(nullptr),
       m_AudioSampleCount(0),
-      m_DropAudioEndTime(0)
+      m_DropAudioEndTime(0),
+      m_QuickMenu(this),
+      m_ClipboardSyncInProgress(new QAtomicInt(0))
 {
 }
 
@@ -1624,6 +1629,12 @@ bool Session::startConnectionAsync()
     QString rtspSessionUrl;
 
     try {
+        NvLaunchOptions launchOptions;
+        launchOptions.appUuid = m_App.uuid;
+        launchOptions.fractionalFps = m_Preferences->fractionalFps;
+        launchOptions.useVirtualDisplay = m_Preferences->useVirtualDisplay;
+        launchOptions.scaleFactor = m_Preferences->resolutionScaleFactor;
+
         NvHTTP http(m_Computer);
         http.startApp(m_Computer->currentGameId != 0 ? "resume" : "launch",
                       m_Computer->isNvidiaServerSoftware,
@@ -1632,6 +1643,7 @@ bool Session::startConnectionAsync()
                       m_Preferences->playAudioOnHost,
                       m_InputHandler->getAttachedGamepadMask(),
                       !m_Preferences->multiController,
+                      launchOptions,
                       rtspSessionUrl);
     } catch (const GfeHttpResponseException& e) {
         emit displayLaunchError(tr("Host returned error: %1").arg(e.toQString()));
@@ -1745,6 +1757,156 @@ void Session::flushWindowEvents()
     flushEvent.type = SDL_USEREVENT;
     flushEvent.user.code = SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER;
     SDL_PushEvent(&flushEvent);
+}
+
+void Session::requestDisconnect(bool quitHostApp)
+{
+    if (quitHostApp) {
+        m_Preferences->quitAppAfter = true;
+    }
+
+    // Push a quit event to the main loop
+    SDL_Event event;
+    event.type = SDL_QUIT;
+    event.quit.timestamp = SDL_GetTicks();
+    SDL_PushEvent(&event);
+}
+
+void Session::toggleQuickMenu()
+{
+    m_QuickMenu.toggle();
+}
+
+bool Session::isClipboardSyncAllowed(ClipboardDirection direction)
+{
+    if (!m_Computer->hasApolloExtensions) {
+        return false;
+    }
+
+    return ApolloPermissions::has(m_Computer->apolloPermissions,
+                                  direction == ClipboardDirection::ToHost ?
+                                      ApolloPermissions::ClipboardSet :
+                                      ApolloPermissions::ClipboardRead);
+}
+
+// Performs the clipboard HTTP request off the main thread, since a slow or
+// unreachable host must not stall rendering and input processing.
+class ClipboardSyncTask : public QRunnable
+{
+public:
+    ClipboardSyncTask(NvComputer* computer, QSharedPointer<QAtomicInt> inProgress,
+                      Session::ClipboardDirection direction, QString text, bool showResult)
+        : m_Computer(computer),
+          m_InProgress(inProgress),
+          m_Direction(direction),
+          m_Text(text),
+          m_ShowResult(showResult)
+    {
+    }
+
+    void run() override
+    {
+        QString resultMessage;
+
+        try {
+            // NB: NvComputer objects outlive the Session, so this is safe even if
+            // the stream ended while we were waiting for the host to respond.
+            NvHTTP http(m_Computer);
+
+            if (m_Direction == Session::ClipboardDirection::ToHost) {
+                http.setClipboardText(m_Text);
+                resultMessage = QCoreApplication::translate("QuickMenu", "Clipboard sent to host");
+            }
+            else {
+                QString text = http.getClipboardText();
+
+                // Hand the text to the main thread which owns the SDL clipboard
+                SDL_Event event = {};
+                event.type = SDL_USEREVENT;
+                event.user.code = SDL_CODE_CLIPBOARD_TEXT_RECEIVED;
+                event.user.data1 = new QString(text);
+                SDL_PushEvent(&event);
+
+                resultMessage = text.isEmpty() ?
+                            QCoreApplication::translate("QuickMenu", "Host clipboard is empty") :
+                            QCoreApplication::translate("QuickMenu", "Clipboard received from host");
+            }
+        } catch (const GfeHttpResponseException& e) {
+            resultMessage = QCoreApplication::translate("QuickMenu", "Clipboard sync failed: %1").arg(e.toQString());
+        } catch (const QtNetworkReplyException& e) {
+            resultMessage = QCoreApplication::translate("QuickMenu", "Clipboard sync failed: %1").arg(e.toQString());
+        }
+
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "%s", qPrintable(resultMessage));
+
+        if (m_ShowResult) {
+            // The quick menu is owned by the main thread, so post the toast there
+            SDL_Event event = {};
+            event.type = SDL_USEREVENT;
+            event.user.code = SDL_CODE_QUICKMENU_TOAST;
+            event.user.data1 = new QString(resultMessage);
+            SDL_PushEvent(&event);
+        }
+
+        m_InProgress->storeRelease(0);
+    }
+
+private:
+    NvComputer* m_Computer;
+    QSharedPointer<QAtomicInt> m_InProgress;
+    Session::ClipboardDirection m_Direction;
+    QString m_Text;
+    bool m_ShowResult;
+};
+
+void Session::syncClipboard(ClipboardDirection direction, bool showResult)
+{
+    if (!isClipboardSyncAllowed(direction)) {
+        if (showResult) {
+            m_QuickMenu.showToast(tr("Clipboard sync is not permitted for this client"));
+        }
+        return;
+    }
+
+    if (m_ClipboardSyncInProgress->loadAcquire()) {
+        return;
+    }
+
+    QString text;
+    if (direction == ClipboardDirection::ToHost) {
+        char* clipboardText = SDL_HasClipboardText() ? SDL_GetClipboardText() : nullptr;
+        if (clipboardText != nullptr) {
+            text = QString::fromUtf8(clipboardText);
+            SDL_free(clipboardText);
+        }
+
+        if (text.isEmpty()) {
+            if (showResult) {
+                m_QuickMenu.showToast(tr("Clipboard is empty"));
+            }
+            return;
+        }
+
+        // Don't bounce the same text back and forth during automatic sync
+        if (!showResult && text == m_LastSyncedClipboardText) {
+            return;
+        }
+
+        m_LastSyncedClipboardText = text;
+    }
+
+    m_ClipboardSyncInProgress->storeRelease(1);
+    QThreadPool::globalInstance()->start(new ClipboardSyncTask(m_Computer, m_ClipboardSyncInProgress, direction, text, showResult));
+}
+
+void Session::onClipboardTextReceived(const QString& text)
+{
+    if (text.isEmpty()) {
+        return;
+    }
+
+    m_LastSyncedClipboardText = text;
+    SDL_SetClipboardText(text.toUtf8().constData());
 }
 
 void Session::setShouldExit(bool quitHostApp)
@@ -1891,6 +2053,11 @@ void Session::exec()
     }
 
     m_InputHandler->setWindow(m_Window);
+
+    // Push our clipboard to the host at the start of the stream if enabled
+    if (m_Preferences->clipboardSync) {
+        syncClipboard(ClipboardDirection::ToHost, false);
+    }
 
     QSvgRenderer svgIconRenderer(QString(":/res/moonlight.svg"));
     QImage svgImage(ICON_SIZE, ICON_SIZE, QImage::Format_RGBA8888);
@@ -2050,6 +2217,23 @@ void Session::exec()
                 m_InputHandler->setAdaptiveTriggers((uint16_t)(uintptr_t)event.user.data1,
                                                     (DualSenseOutputReport *)event.user.data2);
                 break;
+            case SDL_CODE_QUICKMENU_TIMER:
+                m_QuickMenu.onTimerExpired();
+                break;
+            case SDL_CODE_CLIPBOARD_TEXT_RECEIVED:
+            {
+                QString* text = (QString*)event.user.data1;
+                onClipboardTextReceived(*text);
+                delete text;
+                break;
+            }
+            case SDL_CODE_QUICKMENU_TOAST:
+            {
+                QString* text = (QString*)event.user.data1;
+                m_QuickMenu.showToast(*text);
+                delete text;
+                break;
+            }
             default:
                 SDL_assert(false);
             }
@@ -2063,12 +2247,23 @@ void Session::exec()
                     m_AudioMuted = true;
                 }
                 m_InputHandler->notifyFocusLost();
+
+                // The user is probably about to use another window on this
+                // machine, so grab whatever they copied on the host.
+                if (m_Preferences->clipboardSync) {
+                    syncClipboard(ClipboardDirection::FromHost, false);
+                }
                 break;
             case SDL_WINDOWEVENT_FOCUS_GAINED:
                 if (m_Preferences->muteOnFocusLoss) {
                     m_AudioMuted = false;
                 }
                 m_InputHandler->notifyFocusGained();
+
+                // Push anything copied while we were in the background to the host
+                if (m_Preferences->clipboardSync) {
+                    syncClipboard(ClipboardDirection::ToHost, false);
+                }
                 break;
             case SDL_WINDOWEVENT_LEAVE:
                 m_InputHandler->notifyMouseLeave();
@@ -2262,11 +2457,17 @@ void Session::exec()
         case SDL_KEYUP:
         case SDL_KEYDOWN:
             presence.runCallbacks();
+            if (m_QuickMenu.handleKeyEvent(&event.key)) {
+                break;
+            }
             m_InputHandler->handleKeyEvent(&event.key);
             break;
         case SDL_MOUSEBUTTONDOWN:
         case SDL_MOUSEBUTTONUP:
             presence.runCallbacks();
+            if (m_QuickMenu.handleMouseButtonEvent(&event.button)) {
+                break;
+            }
             m_InputHandler->handleMouseButtonEvent(&event.button);
             break;
         case SDL_MOUSEMOTION:
@@ -2281,6 +2482,9 @@ void Session::exec()
         case SDL_CONTROLLERBUTTONDOWN:
         case SDL_CONTROLLERBUTTONUP:
             presence.runCallbacks();
+            if (m_QuickMenu.handleControllerButtonEvent(&event.cbutton)) {
+                break;
+            }
             m_InputHandler->handleControllerButtonEvent(&event.cbutton);
             break;
 #if SDL_VERSION_ATLEAST(2, 0, 14)

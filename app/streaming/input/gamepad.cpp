@@ -52,6 +52,19 @@ SdlInputHandler::findStateForGamepad(SDL_JoystickID id)
     return nullptr;
 }
 
+void SdlInputHandler::releaseAllGamepadButtons()
+{
+    for (int i = 0; i < MAX_GAMEPADS; i++) {
+        GamepadState* state = &m_GamepadState[i];
+        if (state->controller != nullptr && state->buttons != 0) {
+            state->buttons = 0;
+            if (state->mouseEmulationTimer == 0) {
+                sendGamepadState(state);
+            }
+        }
+    }
+}
+
 void SdlInputHandler::sendGamepadState(GamepadState* state)
 {
     SDL_assert(m_GamepadMask == 0x1 || m_MultiController);
@@ -399,6 +412,19 @@ void SdlInputHandler::handleControllerButtonEvent(SDL_ControllerButtonEvent* eve
         // Clear buttons down on this gamepad
         LiSendMultiControllerEvent(state->index, m_GamepadMask,
                                    0, 0, 0, 0, 0, 0, 0);
+        return;
+    }
+
+    // Handle Select+L1+R1+Y as a gamepad quick menu combo
+    if (state->buttons == (BACK_FLAG | LB_FLAG | RB_FLAG | Y_FLAG)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "Detected quick menu toggle gamepad combo");
+
+        // Clear buttons down on this gamepad before the menu takes over input
+        state->buttons = 0;
+        sendGamepadState(state);
+
+        Session::get()->toggleQuickMenu();
         return;
     }
 

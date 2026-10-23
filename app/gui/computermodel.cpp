@@ -1,4 +1,5 @@
 #include "computermodel.h"
+#include "backend/apollopermissions.h"
 
 #include <QThreadPool>
 
@@ -42,6 +43,8 @@ QVariant ComputerModel::data(const QModelIndex& index, int role) const
         return computer->state == NvComputer::CS_UNKNOWN;
     case ServerSupportedRole:
         return computer->isSupportedServerVersion;
+    case ApolloRole:
+        return computer->hasApolloExtensions;
     case DetailsRole: {
         QString state, pairState;
 
@@ -69,6 +72,19 @@ QVariant ComputerModel::data(const QModelIndex& index, int role) const
             break;
         }
 
+        QString apolloDetails;
+        if (computer->hasApolloExtensions) {
+            apolloDetails += '\n' + tr("Host Software: %1").arg("Apollo");
+            if (computer->pairState == NvComputer::PS_PAIRED && computer->state == NvComputer::CS_ONLINE) {
+                QStringList permissions = ApolloPermissions::describe(computer->apolloPermissions);
+                apolloDetails += '\n' + tr("Permissions: %1").arg(permissions.isEmpty() ? tr("None") : permissions.join(", "));
+                apolloDetails += '\n' + tr("Server Commands: %1").arg(computer->serverCommands.isEmpty() ? tr("None") : computer->serverCommands.join(", "));
+                if (computer->virtualDisplayCapable) {
+                    apolloDetails += '\n' + tr("Virtual Display Driver: %1").arg(computer->virtualDisplayDriverReady ? tr("Ready") : tr("Not Ready"));
+                }
+            }
+        }
+
         return tr("Name: %1").arg(computer->name) + '\n' +
                tr("Status: %1").arg(state) + '\n' +
                tr("Active Address: %1").arg(computer->activeAddress.toString()) + '\n' +
@@ -80,7 +96,8 @@ QVariant ComputerModel::data(const QModelIndex& index, int role) const
                tr("MAC Address: %1").arg(computer->macAddress.isEmpty() ? tr("Unknown") : QString(computer->macAddress.toHex(':'))) + '\n' +
                tr("Pair State: %1").arg(pairState) + '\n' +
                tr("Running Game ID: %1").arg(computer->state == NvComputer::CS_ONLINE ? QString::number(computer->currentGameId) : tr("Unknown")) + '\n' +
-               tr("HTTPS Port: %1").arg(computer->state == NvComputer::CS_ONLINE ? QString::number(computer->activeHttpsPort) : tr("Unknown"));
+               tr("HTTPS Port: %1").arg(computer->state == NvComputer::CS_ONLINE ? QString::number(computer->activeHttpsPort) : tr("Unknown")) +
+               apolloDetails;
     }
     default:
         return QVariant();
@@ -110,6 +127,7 @@ QHash<int, QByteArray> ComputerModel::roleNames() const
     names[StatusUnknownRole] = "statusUnknown";
     names[ServerSupportedRole] = "serverSupported";
     names[DetailsRole] = "details";
+    names[ApolloRole] = "apollo";
 
     return names;
 }
@@ -218,6 +236,13 @@ void ComputerModel::pairComputer(int computerIndex, QString pin)
     Q_ASSERT(computerIndex < m_Computers.count());
 
     m_ComputerManager->pairHost(m_Computers[computerIndex], pin);
+}
+
+void ComputerModel::pairComputerWithOtp(int computerIndex, QString pin, QString passphrase)
+{
+    Q_ASSERT(computerIndex < m_Computers.count());
+
+    m_ComputerManager->pairHostWithOtp(m_Computers[computerIndex], pin, passphrase);
 }
 
 void ComputerModel::handlePairingCompleted(NvComputer*, QString error)

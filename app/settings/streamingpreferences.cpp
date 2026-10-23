@@ -51,6 +51,10 @@
 #define SER_CAPTURESYSKEYS "capturesyskeys"
 #define SER_KEEPAWAKE "keepawake"
 #define SER_LANGUAGE "language"
+#define SER_FRACTIONALFPS "fractionalfps"
+#define SER_VIRTUALDISPLAY "virtualdisplay"
+#define SER_SCALEFACTOR "scalefactor"
+#define SER_CLIPBOARDSYNC "clipboardsync"
 #define SER_RENDERER "renderer"
 
 #define CURRENT_DEFAULT_VER 2
@@ -151,6 +155,10 @@ void StreamingPreferences::reload()
     reverseScrollDirection = settings.value(SER_REVERSESCROLL, false).toBool();
     swapFaceButtons = settings.value(SER_SWAPFACEBUTTONS, false).toBool();
     keepAwake = settings.value(SER_KEEPAWAKE, true).toBool();
+    fractionalFps = settings.value(SER_FRACTIONALFPS, 0.0).toDouble();
+    useVirtualDisplay = settings.value(SER_VIRTUALDISPLAY, false).toBool();
+    resolutionScaleFactor = settings.value(SER_SCALEFACTOR, 100).toInt();
+    clipboardSync = settings.value(SER_CLIPBOARDSYNC, false).toBool();
     enableHdr = settings.value(SER_HDR, false).toBool();
     captureSysKeysMode = static_cast<CaptureSysKeysMode>(settings.value(SER_CAPTURESYSKEYS,
                                                          static_cast<int>(CaptureSysKeysMode::CSK_OFF)).toInt());
@@ -362,6 +370,10 @@ void StreamingPreferences::save()
     settings.setValue(SER_SWAPFACEBUTTONS, swapFaceButtons);
     settings.setValue(SER_CAPTURESYSKEYS, captureSysKeysMode);
     settings.setValue(SER_KEEPAWAKE, keepAwake);
+    settings.setValue(SER_FRACTIONALFPS, fractionalFps);
+    settings.setValue(SER_VIRTUALDISPLAY, useVirtualDisplay);
+    settings.setValue(SER_SCALEFACTOR, resolutionScaleFactor);
+    settings.setValue(SER_CLIPBOARDSYNC, clipboardSync);
 }
 
 int StreamingPreferences::getDefaultBitrate(int width, int height, int fps, bool yuv444)

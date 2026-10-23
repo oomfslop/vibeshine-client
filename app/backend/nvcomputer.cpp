@@ -61,6 +61,10 @@ NvComputer::NvComputer(QSettings& settings)
     this->pendingQuit = false;
     this->gpuModel = nullptr;
     this->isSupportedServerVersion = true;
+    this->hasApolloExtensions = false;
+    this->apolloPermissions = 0;
+    this->virtualDisplayCapable = false;
+    this->virtualDisplayDriverReady = false;
     this->externalPort = this->remoteAddress.port();
     this->activeHttpsPort = 0;
 }
@@ -145,6 +149,16 @@ NvComputer::NvComputer(NvHTTP& http, QString serverInfo)
             this->macAddress.append((char) macOctet.toInt(nullptr, 16));
         }
     }
+
+    // Apollo advertises the client's permission mask in serverinfo. Sunshine and GFE
+    // don't send this element, so its presence identifies an Apollo host even before
+    // pairing (unpaired HTTP requests get "0").
+    QString permissions = NvHTTP::getXmlString(serverInfo, "Permission");
+    this->hasApolloExtensions = !permissions.isNull();
+    this->apolloPermissions = permissions.toUInt();
+    this->serverCommands = NvHTTP::getXmlStringList(serverInfo, "ServerCommand");
+    this->virtualDisplayCapable = NvHTTP::getXmlString(serverInfo, "VirtualDisplayCapable") == "true";
+    this->virtualDisplayDriverReady = NvHTTP::getXmlString(serverInfo, "VirtualDisplayDriverReady") == "true";
 
     QString codecSupport = NvHTTP::getXmlString(serverInfo, "ServerCodecModeSupport");
     if (!codecSupport.isEmpty()) {
@@ -569,6 +583,11 @@ bool NvComputer::update(const NvComputer& that)
     ASSIGN_IF_CHANGED(isNvidiaServerSoftware);
     ASSIGN_IF_CHANGED(maxLumaPixelsHEVC);
     ASSIGN_IF_CHANGED(gpuModel);
+    ASSIGN_IF_CHANGED(hasApolloExtensions);
+    ASSIGN_IF_CHANGED(apolloPermissions);
+    ASSIGN_IF_CHANGED(serverCommands);
+    ASSIGN_IF_CHANGED(virtualDisplayCapable);
+    ASSIGN_IF_CHANGED(virtualDisplayDriverReady);
     ASSIGN_IF_CHANGED_AND_NONNULL(serverCert);
     ASSIGN_IF_CHANGED_AND_NONEMPTY(displayModes);
 

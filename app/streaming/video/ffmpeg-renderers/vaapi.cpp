@@ -766,6 +766,11 @@ void VAAPIRenderer::notifyOverlayUpdated(Overlay::OverlayType type)
             overlayRect.x = 0;
             overlayRect.y = 0;
         }
+        else if (type == Overlay::OverlayQuickMenu) {
+            // Centered at render time, since the window size is not known here
+            overlayRect.x = 0;
+            overlayRect.y = 0;
+        }
 
         overlayRect.w = newSurface->w;
         overlayRect.h = newSurface->h;
@@ -850,6 +855,12 @@ VAAPIRenderer::renderFrame(AVFrame* frame)
             }
 
             SDL_Rect overlayRect = m_OverlayRect[type];
+
+            if (type == Overlay::OverlayQuickMenu) {
+                // Centered
+                overlayRect.x = (windowWidth - overlayRect.w) / 2;
+                overlayRect.y = (windowHeight - overlayRect.h) / 2;
+            }
 
             // Negative values are relative to the other side of the window
             if (overlayRect.x < 0) {
