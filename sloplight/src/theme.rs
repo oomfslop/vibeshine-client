@@ -403,6 +403,46 @@ pub const TILE_MIN_W: f32 = 104.;
 pub const GRID_GAP_X: f32 = 12.;
 pub const GRID_GAP_Y: f32 = 16.;
 pub const GRID_PAD: f32 = 16.;
+/// Tiles at least this wide get larger captions, radii and icons.
+pub const LARGE_TILE_W: f32 = 144.;
+
+/// Window-size-dependent spacing. `s` is 0 at a 960pt-wide window (content
+/// 776) and 1 at 1512 (content 1328); every value equals the compact constant
+/// at s = 0, so small windows are unchanged.
+#[derive(Clone, Copy, Debug)]
+pub struct Layout {
+    pub s: f32,
+    /// Left/right/bottom padding of the grid and the header insets.
+    pub pad: f32,
+    pub pad_top: f32,
+    pub gap_x: f32,
+    pub gap_y: f32,
+    /// Target tile width before fitting to columns.
+    pub tile_target: f32,
+    /// How far the settings column moves toward the center of the pane.
+    pub settings_offset: f32,
+}
+
+pub fn layout(content_w: f32, body_h: f32) -> Layout {
+    let s = ((content_w - 776.) / 552.).clamp(0., 1.);
+    let target = (104. + 60. * (content_w - 776.) / 552.).clamp(104., 184.);
+    let tile_target = target.min((0.3 * body_h).max(104.));
+    Layout {
+        s,
+        pad: (16. + 8. * s).round(),
+        pad_top: (4. + 4. * s).round(),
+        gap_x: (12. + 4. * s).round(),
+        gap_y: (16. + 8. * s).round(),
+        tile_target,
+        settings_offset: (s * ((content_w - 680.) / 2.).max(0.)).round(),
+    }
+}
+
+/// Top padding of the centered state panels: today's rule up to 584pt of body
+/// height, then it sinks toward 30% of the height so the panel doesn't hug the top.
+pub fn panel_top_pad(body_h: f32) -> f32 {
+    if body_h <= 584. { (0.2 * body_h).min(96.) } else { (96. + 0.5 * (body_h - 584.)).min(0.3 * body_h) }
+}
 
 pub fn active_theme(cx: &App) -> &Theme {
     cx.global::<Theme>()

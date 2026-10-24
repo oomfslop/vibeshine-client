@@ -199,7 +199,7 @@ pub fn render(root: &mut Root, theme: &Theme, host: &Host, content_w: f32, conte
         .when(host.state != HostState::Unknown || pairing.is_some(), |d| d.child(status_dot(color, ring)))
         .child(div().font_weight(FontWeight::SEMIBOLD).text_size(px(15.)).line_height(px(20.)).text_color(theme.text).child(title));
 
-    let top_pad = (content_h * 0.2).min(96.);
+    let top_pad = crate::theme::panel_top_pad(content_h);
     let mut panel = div().flex().flex_col().items_center().gap(px(6.)).w(px(PANEL_W.min(content_w - 32.))).child(title_row).children(explanation);
     if !actions.is_empty() {
         panel = panel.child(div().flex().items_center().justify_center().gap(px(8.)).mt(px(10.)).children(actions));

@@ -142,6 +142,9 @@ pub struct Root {
     pub grid_selected: Option<usize>,
     pub filter: Entity<TextInput>,
     pub details_more: bool,
+    /// Content pane size from the last render, for popups anchored to the header.
+    pub last_content_w: f32,
+    pub last_body_h: f32,
     pub pairings: Vec<InlinePairing>,
     pub waking: std::collections::HashMap<String, Instant>,
     pub view: ViewMode,
@@ -198,6 +201,8 @@ impl Root {
             manager,
             identity,
             details_more: false,
+            last_content_w: 776.,
+            last_body_h: 584.,
             pairings: Vec::new(),
             waking: std::collections::HashMap::new(),
             settings,
@@ -1480,8 +1485,9 @@ impl Root {
     }
 
     /// Anchor for popups opened from the host title button (under its left edge).
-    pub fn host_title_anchor() -> gpui::Point<gpui::Pixels> {
-        gpui::point(gpui::px(crate::theme::SIDEBAR_W + crate::theme::GRID_PAD - 6.), gpui::px(crate::theme::HEADER_H))
+    pub fn host_title_anchor(&self) -> gpui::Point<gpui::Pixels> {
+        let pad = crate::theme::layout(self.last_content_w, self.last_body_h).pad;
+        gpui::point(gpui::px(crate::theme::SIDEBAR_W + pad - 6.), gpui::px(crate::theme::HEADER_H))
     }
 
     /// Opens the ⌘I info popover for the selected host.
@@ -1491,7 +1497,7 @@ impl Root {
         }
         let Some(uuid) = self.selected_host.clone() else { return };
         self.details_more = false;
-        self.popup = Some(Popup { kind: PopupKind::HostInfo(uuid), position: Self::host_title_anchor(), highlighted: None });
+        self.popup = Some(Popup { kind: PopupKind::HostInfo(uuid), position: self.host_title_anchor(), highlighted: None });
         cx.notify();
     }
 

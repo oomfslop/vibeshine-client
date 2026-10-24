@@ -838,7 +838,8 @@ pub fn render_sections(root: &mut Root, theme: &Theme, cx: &mut Context<Root>) -
 }
 
 /// Settings rows for the current section (or all matching sections while filtering).
-pub fn render_content(root: &mut Root, theme: &Theme, _window: &mut Window, cx: &mut Context<Root>) -> impl IntoElement {
+pub fn render_content(root: &mut Root, theme: &Theme, content_w: f32, window: &mut Window, cx: &mut Context<Root>) -> impl IntoElement {
+    let col_offset = crate::theme::layout(content_w, Root::body_height(window)).settings_offset;
     let filter = root.settings_view.filter_text.trim().to_lowercase();
     let filtering = !filter.is_empty();
     let current = root.settings_view.section;
@@ -882,7 +883,7 @@ pub fn render_content(root: &mut Root, theme: &Theme, _window: &mut Window, cx: 
     if row_index == 0 {
         content = content.child(div().pt(px(24.)).child(text_sm(theme, format!("No settings match \"{}\"", root.settings_view.filter_text))));
     }
-    div().id("settings-content").flex_1().min_h(px(0.)).overflow_y_scroll().child(content)
+    div().id("settings-content").flex_1().min_h(px(0.)).overflow_y_scroll().child(div().pl(px(col_offset)).child(content))
 }
 
 #[allow(dead_code)]

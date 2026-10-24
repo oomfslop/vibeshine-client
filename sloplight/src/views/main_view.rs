@@ -6,7 +6,7 @@ use gpui::{AnyElement, ClickEvent, Context, ElementId, FontWeight, InteractiveEl
 use crate::app::{Popup, PopupKind, Region, Root, ViewMode};
 use crate::assets::icon;
 use crate::backend::{App as NvApp, Host, HostState, PairState};
-use crate::theme::{GRID_GAP_X, GRID_GAP_Y, GRID_PAD, HEADER_H, ROW_H, SIDEBAR_W, TILE_MIN_W, Theme, type_scale};
+use crate::theme::{HEADER_H, LARGE_TILE_W, Layout, ROW_H, SIDEBAR_W, Theme, layout, panel_top_pad, type_scale};
 use crate::ui::*;
 
 /// Status dot color and whether it is drawn as a ring (unknown state).
@@ -79,6 +79,8 @@ impl Root {
         let theme = cx.global::<Theme>().clone();
         let content_w = width - SIDEBAR_W;
         let settings = self.view == ViewMode::Settings;
+        self.last_content_w = content_w;
+        self.last_body_h = Self::body_height(window);
 
         div()
             .flex()
@@ -95,9 +97,9 @@ impl Root {
                     .min_w(px(0.))
                     .h_full()
                     .bg(theme.bg)
-                    .child(self.render_content_header(&theme, settings, content_w, cx))
+                    .child(self.render_content_header(&theme, settings, content_w, Self::body_height(window), cx))
                     .child(if settings {
-                        crate::views::settings::render_content(self, &theme, window, cx).into_any_element()
+                        crate::views::settings::render_content(self, &theme, content_w, window, cx).into_any_element()
                     } else {
                         self.render_main_body(&theme, content_w, window, cx)
                     })
@@ -229,8 +231,10 @@ impl Root {
         list
     }
 
-    fn render_content_header(&mut self, theme: &Theme, settings: bool, content_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_content_header(&mut self, theme: &Theme, settings: bool, content_w: f32, body_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let filter_w = if content_w < 576. { 140. } else { 180. };
+        let l: Layout = layout(content_w, body_h);
+        let inset = if settings { 16. + l.settings_offset } else { l.pad };
         let (filter, filter_text) = if settings {
             (self.settings_view.filter.clone(), self.settings_view.filter_text.clone())
         } else {
@@ -265,7 +269,7 @@ impl Root {
                 .child(div().font_weight(FontWeight::MEDIUM).text_color(theme.text).whitespace_nowrap().overflow_hidden().text_ellipsis().max_w(px(260.)).child(host.name.clone()))
                 .child(icon_el(icon::CHEVRON_DOWN, 12., theme.text_muted))
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.popup = Some(Popup { kind: PopupKind::HostMenu(uuid.clone()), position: Root::host_title_anchor(), highlighted: None });
+                    this.popup = Some(Popup { kind: PopupKind::HostMenu(uuid.clone()), position: this.host_title_anchor(), highlighted: None });
                     cx.notify();
                 }))
                 .into_any_element()
@@ -277,7 +281,7 @@ impl Root {
             .justify_between()
             .h(px(HEADER_H))
             .flex_none()
-            .px(px(GRID_PAD))
+            .px(px(inset))
             .window_control_area(gpui::WindowControlArea::Drag)
             .child(left)
             .when(show_filter, |d| {
@@ -293,17 +297,18 @@ impl Root {
 
     fn render_main_body(&mut self, theme: &Theme, content_w: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(host) = self.selected().cloned() else {
-            return self.render_empty_state(theme, cx).into_any_element();
+            let body_h = Self::body_height(window);
+            return self.render_empty_state(theme, body_h, cx).into_any_element();
         };
         if self.host_browsable() {
             self.render_grid(theme, &host, content_w, window, cx)
         } else {
-            let content_h = f32::from(window.viewport_size().height) - crate::theme::HEADER_H;
+            let content_h = Self::body_height(window);
             crate::views::host_state::render(self, theme, &host, content_w, content_h, window, cx)
         }
     }
 
-    fn render_empty_state(&mut self, theme: &Theme, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_empty_state(&mut self, theme: &Theme, body_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let mdns = self.settings.enable_mdns;
         let icon_el_: AnyElement = if mdns { spinner(24., theme.text_muted).into_any_element() } else { icon_el(icon::RADAR, 24., theme.text_muted).into_any_element() };
         let mut actions: Vec<AnyElement> = vec![button("add", "Add host").primary().kbd("⌘N").on_click(cx.listener(|this, _, w, cx| this.open_add_host(w, cx))).into_any_element()];
@@ -333,6 +338,7 @@ impl Root {
             }
         state_view(
             theme,
+            body_h,
             Some(icon_el_),
             if mdns { "Looking for hosts on your network…" } else { "Automatic discovery is off" },
             Some(body),
@@ -341,18 +347,26 @@ impl Root {
     }
 
     /// Fluid tile geometry: columns and tile width for the content width.
-    pub fn grid_geometry(content_w: f32) -> (usize, f32, f32) {
-        let avail = (content_w - 2. * GRID_PAD).max(TILE_MIN_W);
-        let cols = (((avail + GRID_GAP_X) / (TILE_MIN_W + GRID_GAP_X)).floor() as usize).max(1);
-        let tile_w = ((avail - GRID_GAP_X * (cols as f32 - 1.)) / cols as f32).floor();
+    pub fn grid_geometry(content_w: f32, body_h: f32) -> (usize, f32, f32) {
+        let l = layout(content_w, body_h);
+        let avail = (content_w - 2. * l.pad).max(l.tile_target);
+        let cols = (((avail + l.gap_x) / (l.tile_target + l.gap_x)).floor() as usize).max(1);
+        let tile_w = ((avail - l.gap_x * (cols as f32 - 1.)) / cols as f32).floor();
         let tile_h = (tile_w * 4. / 3.).round();
         (cols, tile_w, tile_h)
     }
 
-    fn render_grid(&mut self, theme: &Theme, host: &Host, content_w: f32, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    /// Height of the content pane below the header.
+    pub fn body_height(window: &Window) -> f32 {
+        f32::from(window.viewport_size().height) - HEADER_H
+    }
+
+    fn render_grid(&mut self, theme: &Theme, host: &Host, content_w: f32, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let apps = self.visible_apps();
         let hidden_count = host.apps.iter().filter(|a| a.hidden).count();
-        let (cols, tile_w, tile_h) = Self::grid_geometry(content_w);
+        let body_h = Self::body_height(window);
+        let l = layout(content_w, body_h);
+        let (cols, tile_w, tile_h) = Self::grid_geometry(content_w, body_h);
         self.grid_columns = cols;
 
         let show_hidden_btn = |cx: &mut Context<Self>| button("show-hidden", "Show hidden apps").primary().kbd("⇧⌘H").on_click(cx.listener(|this, _, w, cx| this.action_toggle_hidden(&crate::app::ToggleHiddenApps, w, cx))).into_any_element();
@@ -364,13 +378,13 @@ impl Root {
                 } else {
                     (Some("Esc clears the filter.".into()), vec![])
                 };
-                return state_view(theme, None, format!("No apps match \"{}\"", self.filter_text), body, actions).into_any_element();
+                return state_view(theme, body_h, None, format!("No apps match \"{}\"", self.filter_text), body, actions).into_any_element();
             }
             if hidden_count > 0 {
                 let body = if hidden_count == 1 { "1 app is hidden on this host.".to_string() } else { format!("{hidden_count} apps are hidden on this host.") };
-                return state_view(theme, Some(icon_el(icon::EYE_OFF, 24., theme.text_muted).into_any_element()), format!("All apps on {} are hidden", host.name), Some(body), vec![show_hidden_btn(cx)]).into_any_element();
+                return state_view(theme, body_h, Some(icon_el(icon::EYE_OFF, 24., theme.text_muted).into_any_element()), format!("All apps on {} are hidden", host.name), Some(body), vec![show_hidden_btn(cx)]).into_any_element();
             }
-            return state_view(theme, Some(icon_el(icon::LAYOUT_GRID, 24., theme.text_muted).into_any_element()), format!("No apps on {}", host.name), None, vec![]).into_any_element();
+            return state_view(theme, body_h, Some(icon_el(icon::LAYOUT_GRID, 24., theme.text_muted).into_any_element()), format!("No apps on {}", host.name), None, vec![]).into_any_element();
         }
 
         let focused = self.region == Region::Grid;
@@ -383,8 +397,8 @@ impl Root {
             tiles.push(self.render_tile(theme, &uuid, app, i, tile_w, tile_h, selected && focused, host.current_game_id == app.id, launching == Some(app.id), cx));
         }
         let hidden_tiles: Vec<AnyElement> = tiles.split_off(split);
-        let wrap = |tiles: Vec<AnyElement>| div().flex().flex_wrap().gap_x(px(GRID_GAP_X)).gap_y(px(GRID_GAP_Y)).children(tiles);
-        let mut column = div().flex().flex_col().px(px(GRID_PAD)).pt(px(4.)).pb(px(GRID_PAD));
+        let wrap = move |tiles: Vec<AnyElement>| div().flex().flex_wrap().gap_x(px(l.gap_x)).gap_y(px(l.gap_y)).children(tiles);
+        let mut column = div().flex().flex_col().px(px(l.pad)).pt(px(l.pad_top)).pb(px(l.pad));
         if !tiles.is_empty() {
             column = column.child(wrap(tiles));
         }
@@ -455,13 +469,15 @@ impl Root {
         let name = app.name.clone();
         let hidden = app.hidden;
 
-        let mut art = div().relative().w(px(tile_w)).h(px(tile_h)).rounded(px(6.)).overflow_hidden().bg(theme.surface).border_1().border_color(theme.text.alpha(0.06)).when(hidden, |d| d.opacity(0.5));
+        let large = tile_w >= LARGE_TILE_W;
+        let (radius, ring_radius, icon_size, spinner_size, caption_gap) = if large { (8., 11., 32., 20., 8.) } else { (6., 9., 24., 16., 6.) };
+        let mut art = div().relative().w(px(tile_w)).h(px(tile_h)).rounded(px(radius)).overflow_hidden().bg(theme.surface).border_1().border_color(theme.text.alpha(0.06)).when(hidden, |d| d.opacity(0.5));
         art = match art_path {
-            Some(path) => art.child(img(path).size_full().rounded(px(6.)).object_fit(gpui::ObjectFit::Cover).when(launching, |i| i.opacity(0.5))),
-            None => art.child(div().size_full().flex().items_center().justify_center().child(icon_el(icon::GAMEPAD, 24., theme.text_muted))),
+            Some(path) => art.child(img(path).size_full().rounded(px(radius)).object_fit(gpui::ObjectFit::Cover).when(launching, |i| i.opacity(0.5))),
+            None => art.child(div().size_full().flex().items_center().justify_center().child(icon_el(icon::GAMEPAD, icon_size, theme.text_muted))),
         };
         if launching {
-            art = art.child(div().absolute().inset_0().flex().items_center().justify_center().child(spinner(16., theme.text)));
+            art = art.child(div().absolute().inset_0().flex().items_center().justify_center().child(spinner(spinner_size, theme.text)));
         }
         let ring = if running {
             Some(theme.accent)
@@ -477,7 +493,7 @@ impl Root {
             .group("tile")
             .flex()
             .flex_col()
-            .gap(px(6.))
+            .gap(px(caption_gap))
             .w(px(tile_w))
             .cursor_pointer()
             .child(
@@ -488,8 +504,8 @@ impl Root {
                     .w(px(tile_w))
                     .h(px(tile_h))
                     .child(art)
-                    .child(div().absolute().inset_0().rounded(px(6.)).invisible().group_hover("tile", move |s| s.visible().bg(hover_overlay)))
-                    .when_some(ring, |d, c| d.child(div().absolute().top(px(-4.)).left(px(-4.)).right(px(-4.)).bottom(px(-4.)).rounded(px(9.)).border_2().border_color(c))),
+                    .child(div().absolute().inset_0().rounded(px(radius)).invisible().group_hover("tile", move |s| s.visible().bg(hover_overlay)))
+                    .when_some(ring, |d, c| d.child(div().absolute().top(px(-4.)).left(px(-4.)).right(px(-4.)).bottom(px(-4.)).rounded(px(ring_radius)).border_2().border_color(c))),
             )
             .child(
                 div()
@@ -503,8 +519,8 @@ impl Root {
                         div()
                             .flex_1()
                             .min_w(px(0.))
-                            .text_size(type_scale::SM)
-                            .line_height(type_scale::LH_SM)
+                            .text_size(if large { type_scale::BASE } else { type_scale::SM })
+                            .line_height(if large { type_scale::LH_BASE } else { type_scale::LH_SM })
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
@@ -545,14 +561,14 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 /// Centered state view: icon, title, body, actions.
-pub fn state_view(theme: &Theme, icon: Option<AnyElement>, title: impl Into<SharedString>, body: Option<String>, actions: Vec<AnyElement>) -> gpui::Div {
+pub fn state_view(theme: &Theme, body_h: f32, icon: Option<AnyElement>, title: impl Into<SharedString>, body: Option<String>, actions: Vec<AnyElement>) -> gpui::Div {
     div()
         .flex()
         .flex_col()
         .items_center()
-        .justify_center()
         .size_full()
-        .pb(px(60.))
+        .pt(px(panel_top_pad(body_h)))
+        .pb(px(24.))
         .child(
             div()
                 .flex()
