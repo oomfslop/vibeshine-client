@@ -22,9 +22,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Both are Apple Silicon runners; macos-14 produces the build that is
-        # tested on macOS 14, macos-15 the one tested on macOS 15.
-        os: [macos-14, macos-15]
+        # All Apple Silicon runners: one build per macOS generation it was made
+        # and tested on. macos-14 is deprecated on GitHub's side and may go away.
+        os: [macos-14, macos-15, macos-26]
     runs-on: ${{ matrix.os }}
     env:
       # gpui needs macOS 12+, the helper declares 13.0 in its Info.plist.
