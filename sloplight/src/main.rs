@@ -116,11 +116,94 @@ fn init_logging() {
     log::info!("sloplight {} starting; log file: {}", env!("CARGO_PKG_VERSION"), path.display());
 }
 
+/// `sloplight --stream <host> <app> [seconds]`: stream headlessly from the
+/// command line (windowed) for end-to-end tests, printing helper events.
+fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
+    use futures::StreamExt;
+    let config_dir = config_dir();
+    let settings = {
+        let mut s = settings::Settings::load(&config_dir);
+        s.window_mode = settings::WindowMode::Windowed;
+        s
+    };
+    let identity = match backend::Identity::load_or_create(&config_dir) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("identity: {e}");
+            return 2;
+        }
+    };
+    let hosts: Vec<backend::Host> = std::fs::read_to_string(config_dir.join("hosts.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let q = host_q.to_lowercase();
+    let Some(host) = hosts.iter().find(|h| h.name.to_lowercase().contains(&q) || h.uuid.to_lowercase().starts_with(&q) || h.unique_addresses().iter().any(|a| a.host == host_q)) else {
+        eprintln!("No host matching {host_q:?}; known: {:?}", hosts.iter().map(|h| &h.name).collect::<Vec<_>>());
+        return 2;
+    };
+    // Hosts loaded from disk carry no live state; one serverinfo poll fills in
+    // the HTTPS port, active address and pairing state.
+    let mut host = host.clone();
+    let mut reached = false;
+    for addr in host.unique_addresses() {
+        let mut http = backend::http::NvHttp::new(addr.clone(), 0, host.server_cert(), !host.is_nvidia_server_software, identity.clone());
+        match http.get_server_info(true) {
+            Ok(info) => {
+                let fresh = backend::Host::from_server_info(&http, &info);
+                host.update(&fresh);
+                reached = true;
+                break;
+            }
+            Err(e) => log::error!("serverinfo via {addr}: {e}"),
+        }
+    }
+    if !reached {
+        return 1;
+    }
+    let host = &host;
+    let aq = app_q.to_lowercase();
+    let Some(app) = host.apps.iter().find(|a| a.name.to_lowercase().contains(&aq)) else {
+        eprintln!("No app matching {app_q:?} on {}; known: {:?}", host.name, host.apps.iter().map(|a| &a.name).collect::<Vec<_>>());
+        return 2;
+    };
+    let Some(helper) = stream::find_helper(&settings) else {
+        eprintln!("Streaming helper not found");
+        return 2;
+    };
+    if seconds > 0 {
+        // SAFETY: set before the helper is spawned, single-threaded at this point.
+        unsafe { std::env::set_var("SLOPLIGHT_MAX_STREAM_MS", (seconds * 1000).to_string()) };
+    }
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    let process = match stream::start(&helper, &identity, host, app, &settings, None, tx) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("start: {e}");
+            return 1;
+        }
+    };
+    log::info!("Streaming {} from {} for {}s (helper {})", app.name, host.name, seconds, helper.display());
+    let mut code = 0;
+    futures::executor::block_on(async {
+        while let Some(ev) = rx.next().await {
+            log::info!("[stream-cli] {:?}", ev.event);
+            if let stream::HelperEvent::Exited { code: c, .. } = ev.event {
+                code = c.unwrap_or(1);
+                break;
+            }
+        }
+    });
+    drop(process);
+    code
+}
+
 fn main() {
     init_logging();
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 3 && args[1] == "--probe" {
         std::process::exit(probe(&args[2]));
+    }
+    if args.len() >= 4 && args[1] == "--stream" {
+        let secs = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(30);
+        std::process::exit(stream_cli(&args[2], &args[3], secs));
     }
 
     let config_dir = config_dir();

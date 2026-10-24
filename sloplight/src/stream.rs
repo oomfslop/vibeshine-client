@@ -23,6 +23,9 @@ struct HelperConfig<'a> {
     settings: &'a Settings,
     /// Screen origin of the launcher window so the stream opens on the same display
     display_origin: Option<(i32, i32)>,
+    /// End the stream after this long (test runs; `SLOPLIGHT_MAX_STREAM_MS`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_duration_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -83,6 +86,12 @@ pub struct StreamEvent {
     pub event: HelperEvent,
 }
 
+#[cfg(unix)]
+unsafe extern "C" {
+    #[link_name = "kill"]
+    fn libc_kill(pid: i32, sig: i32) -> i32;
+}
+
 pub struct StreamProcess {
     child: Arc<Mutex<Option<Child>>>,
     pub host_uuid: String,
@@ -90,8 +99,18 @@ pub struct StreamProcess {
 }
 
 impl StreamProcess {
+    /// Asks the helper to end the stream cleanly (it handles SIGTERM by
+    /// closing the session like the window's close button would).
     pub fn terminate(&self) {
         if let Some(child) = self.child.lock().unwrap().as_mut() {
+            #[cfg(unix)]
+            {
+                let pid = child.id() as i32;
+                // SAFETY: plain libc call with our own child's pid.
+                if unsafe { libc_kill(pid, 15) } == 0 {
+                    return;
+                }
+            }
             let _ = child.kill();
         }
     }
@@ -176,6 +195,7 @@ pub fn start(
         app: HelperApp { id: app.id, name: &app.name, uuid: &app.uuid, hdr_supported: app.hdr_supported },
         settings,
         display_origin,
+        max_duration_ms: std::env::var("SLOPLIGHT_MAX_STREAM_MS").ok().and_then(|v| v.parse().ok()),
     };
     let json = serde_json::to_vec(&config).map_err(|e| e.to_string())?;
 

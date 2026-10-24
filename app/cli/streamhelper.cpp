@@ -13,6 +13,26 @@
 #include <QTextStream>
 
 #include <cstdio>
+#include <csignal>
+
+#include <SDL.h>
+
+// Ends the stream the way closing the window does, so stats get logged and
+// the host sees a normal disconnect. Used for SIGTERM/SIGINT and the
+// optional "max_duration_ms" config key (end-to-end test runs).
+static void requestStreamQuit()
+{
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = SDL_QUIT;
+    event.quit.timestamp = SDL_GetTicks();
+    SDL_PushEvent(&event);
+}
+
+static void onTerminateSignal(int)
+{
+    requestStreamQuit();
+}
 
 namespace CliStreamHelper
 {
@@ -193,6 +213,9 @@ void Launcher::execute()
     emitEvent({{"event", "warnings"}, {"warnings", warnings}});
 
     // Run the session (returns once exec() has been scheduled)
+    std::signal(SIGTERM, onTerminateSignal);
+    std::signal(SIGINT, onTerminateSignal);
+
     QTimer::singleShot(0, this, [this]() {
         m_Session->start();
     });
@@ -211,6 +234,10 @@ void Launcher::onStageFailed(QString stage, int errorCode, QString failingPorts)
 void Launcher::onConnectionStarted()
 {
     emitEvent({{"event", "connection_started"}});
+    int maxMs = m_Config.value("max_duration_ms").toInt(0);
+    if (maxMs > 0) {
+        QTimer::singleShot(maxMs, this, []() { requestStreamQuit(); });
+    }
 }
 
 void Launcher::onDisplayLaunchError(QString text)
