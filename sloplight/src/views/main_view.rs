@@ -476,7 +476,8 @@ impl Root {
         let ring_radius = radius + 4.;
         let mut art = div().relative().w(px(tile_w)).h(px(tile_h)).rounded(px(radius)).overflow_hidden().bg(theme.surface).border_1().border_color(theme.text.alpha(0.06)).when(hidden, |d| d.opacity(0.5));
         art = match art_path {
-            Some(path) => art.child(img(path).size_full().rounded(px(radius)).object_fit(gpui::ObjectFit::Cover).when(launching, |i| i.opacity(0.5))),
+            // The image sits inside the card's 1pt border, so its radius is 1pt smaller.
+            Some(path) => art.child(img(path).size_full().rounded(px(radius - 1.)).object_fit(gpui::ObjectFit::Cover).when(launching, |i| i.opacity(0.5))),
             None => art.child(div().size_full().flex().items_center().justify_center().child(icon_el(icon::GAMEPAD, icon_size, theme.text_muted))),
         };
         if launching {
