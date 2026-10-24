@@ -151,6 +151,30 @@ IdentityManager::IdentityManager()
     }
 }
 
+bool IdentityManager::setOverride(const QByteArray& certPem, const QByteArray& keyPem, const QString& uniqueId)
+{
+    Q_ASSERT(s_Im == nullptr);
+    if (certPem.isEmpty() || keyPem.isEmpty() || uniqueId.isEmpty()) {
+        return false;
+    }
+
+    IdentityManager* im = new IdentityManager(certPem, keyPem, uniqueId);
+    if (im->getSslCertificate().isNull() || im->getSslKey().isNull()) {
+        delete im;
+        return false;
+    }
+
+    s_Im = im;
+    return true;
+}
+
+IdentityManager::IdentityManager(const QByteArray& certPem, const QByteArray& keyPem, const QString& uniqueId)
+    : m_CachedPrivateKey(keyPem),
+      m_CachedPemCert(certPem),
+      m_CachedUniqueId(uniqueId)
+{
+}
+
 QSslCertificate
 IdentityManager::getSslCertificate()
 {

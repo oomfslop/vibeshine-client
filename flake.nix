@@ -27,6 +27,21 @@
           qmakeFlags = old.qmakeFlags
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ "CONFIG+=disable-libplacebo" ];
         });
+        # The GPUI launcher. Built with cargoLock so no vendor hash is needed.
+        sloplight = pkgs.rustPlatform.buildRustPackage {
+          pname = "sloplight";
+          version = "0.1.0";
+          src = ./sloplight;
+          cargoLock.lockFile = ./sloplight/Cargo.lock;
+          nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.cmake ];
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.apple-sdk_15 ]
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.fontconfig pkgs.freetype pkgs.libxkbcommon pkgs.wayland pkgs.xorg.libX11 pkgs.xorg.libxcb pkgs.vulkan-loader ];
+          # Point the launcher at the streaming helper from this flake
+          postInstall = ''
+            wrapProgram $out/bin/sloplight --set-default SLOPLIGHT_HELPER ${moonlight-qt}/bin/moonlight
+          '';
+          doCheck = false;
+        };
         default = moonlight-qt;
       });
 
@@ -34,6 +49,10 @@
         default = {
           type = "app";
           program = "${self.packages.${pkgs.system}.default}/bin/moonlight";
+        };
+        sloplight = {
+          type = "app";
+          program = "${self.packages.${pkgs.system}.sloplight}/bin/sloplight";
         };
       });
 
@@ -43,7 +62,7 @@
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           inputsFrom = [ self.packages.${pkgs.system}.default ];
-          packages = [ pkgs.qt6.qttools ]; # qmllint, lupdate, etc.
+          packages = [ pkgs.qt6.qttools pkgs.cargo pkgs.rustc pkgs.rust-analyzer ];
           shellHook = ''
             export QT_PLUGIN_PATH=${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}:${pkgs.qt6.qtsvg}/${pkgs.qt6.qtbase.qtPluginPrefix}:${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtPluginPrefix}
             export QML2_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}

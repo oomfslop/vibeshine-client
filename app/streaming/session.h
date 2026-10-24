@@ -133,6 +133,20 @@ public:
 
     void flushWindowEvents();
 
+    QStringList launchWarnings() const
+    {
+        return m_LaunchWarnings;
+    }
+
+    // Display to open the stream on when no Qt window is available
+    // (helper mode), given as the display's top-left corner in global
+    // screen coordinates.
+    void setPreferredDisplayOrigin(int x, int y)
+    {
+        m_PreferredDisplayOrigin = QPoint(x, y);
+        m_HasPreferredDisplayOrigin = true;
+    }
+
     void setShouldExit(bool quitHostApp = false);
 
     // Ends the stream. If quitHostApp is true, the app on the host is quit
@@ -288,6 +302,8 @@ private:
     bool m_AudioMuted;
     Uint32 m_FullScreenFlag;
     QQuickWindow* m_QtWindow;
+    QPoint m_PreferredDisplayOrigin;
+    bool m_HasPreferredDisplayOrigin;
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;

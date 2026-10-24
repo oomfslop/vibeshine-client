@@ -138,10 +138,10 @@ void QuickMenu::rebuildItems()
 
     if (m_Page == Page::Main) {
         m_Items.append({ QCoreApplication::translate("QuickMenu", "Resume"), Action::Resume, 0 });
-        m_Items.append({ QCoreApplication::translate("QuickMenu", "Toggle performance stats"), Action::ToggleStats, 0 });
+        m_Items.append({ QCoreApplication::translate("QuickMenu", "Performance stats"), Action::ToggleStats, 0 });
         if (WMUtils::isRunningDesktopEnvironment()) {
-            m_Items.append({ QCoreApplication::translate("QuickMenu", "Toggle fullscreen"), Action::ToggleFullscreen, 0 });
-            m_Items.append({ QCoreApplication::translate("QuickMenu", "Toggle mouse capture"), Action::ToggleMouseCapture, 0 });
+            m_Items.append({ QCoreApplication::translate("QuickMenu", "Fullscreen"), Action::ToggleFullscreen, 0 });
+            m_Items.append({ QCoreApplication::translate("QuickMenu", "Mouse capture"), Action::ToggleMouseCapture, 0 });
         }
         if (apollo && ApolloPermissions::has(permissions, ApolloPermissions::ClipboardSet)) {
             m_Items.append({ QCoreApplication::translate("QuickMenu", "Send clipboard to host"), Action::SendClipboard, 0 });
@@ -153,7 +153,7 @@ void QuickMenu::rebuildItems()
             m_Items.append({ QCoreApplication::translate("QuickMenu", "Server commands..."), Action::OpenServerCommands, 0 });
         }
         m_Items.append({ QCoreApplication::translate("QuickMenu", "Disconnect"), Action::Disconnect, 0 });
-        m_Items.append({ QCoreApplication::translate("QuickMenu", "Quit app on host and disconnect"), Action::QuitAppAndDisconnect, 0 });
+        m_Items.append({ QCoreApplication::translate("QuickMenu", "Quit app and disconnect"), Action::QuitAppAndDisconnect, 0 });
     }
     else {
         for (int i = 0; i < computer->serverCommands.count(); i++) {
@@ -176,14 +176,14 @@ void QuickMenu::render()
 
     if (m_Open) {
         text += (m_Page == Page::Main ?
-                     QCoreApplication::translate("QuickMenu", "Quick Menu") :
-                     QCoreApplication::translate("QuickMenu", "Server Commands")) + "\n\n";
+                     QCoreApplication::translate("QuickMenu", "Quick menu  (Ctrl+Alt+Shift+\\)") :
+                     QCoreApplication::translate("QuickMenu", "Server commands")) + "\n\n";
 
         for (int i = 0; i < m_Items.count(); i++) {
             text += (i == m_SelectedIndex ? "> " : "  ") + m_Items[i].label + '\n';
         }
 
-        text += '\n' + QCoreApplication::translate("QuickMenu", "Up/Down: Select   Enter/A: Confirm   Esc/B: Back");
+        text += '\n' + QCoreApplication::translate("QuickMenu", "Up/Down select   Enter/A confirm   Esc/B back");
     }
 
     if (!m_Toast.isEmpty()) {
@@ -285,7 +285,7 @@ void QuickMenu::performAction(const Item& item)
             showToast(QCoreApplication::translate("QuickMenu", "Running \"%1\" on host").arg(item.label));
         }
         else {
-            showToast(QCoreApplication::translate("QuickMenu", "Failed to send server command"));
+            showToast(QCoreApplication::translate("QuickMenu", "Couldn't send server command"));
         }
         break;
 

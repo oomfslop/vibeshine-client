@@ -24,8 +24,15 @@ public:
     IdentityManager*
     get();
 
+    // Uses the given credentials instead of the ones in QSettings. Must be
+    // called before the first get(). Returns false if they are unreadable.
+    static
+    bool
+    setOverride(const QByteArray& certPem, const QByteArray& keyPem, const QString& uniqueId);
+
 private:
     IdentityManager();
+    IdentityManager(const QByteArray& certPem, const QByteArray& keyPem, const QString& uniqueId);
 
     QSslCertificate
     getSslCertificate();

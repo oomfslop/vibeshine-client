@@ -182,6 +182,7 @@ SOURCES += \
     cli/listapps.cpp \
     cli/quitstream.cpp \
     cli/startstream.cpp \
+    cli/streamhelper.cpp \
     settings/compatfetcher.cpp \
     settings/mappingfetcher.cpp \
     settings/streamingpreferences.cpp \
@@ -227,6 +228,7 @@ HEADERS += \
     cli/listapps.h \
     cli/quitstream.h \
     cli/startstream.h \
+    cli/streamhelper.h \
     settings/streamingpreferences.h \
     streaming/input/input.h \
     streaming/session.h \

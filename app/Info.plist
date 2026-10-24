@@ -18,6 +18,12 @@
 	<string>com.moonlight-stream.Moonlight</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<!-- Full-screen Spaces on notched Macs: false (or unset) places the window below
+	     the camera housing at native pixel density; true gives the window the whole
+	     panel but macOS then scales the output to fit below the housing, so content
+	     never appears beside the camera either way. -->
+	<key>NSPrefersDisplaySafeAreaCompatibilityMode</key>
+	<false/>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleSignature</key>

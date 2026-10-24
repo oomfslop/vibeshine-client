@@ -1,4 +1,5 @@
 #include <QGuiApplication>
+#include <QTimer>
 #include <QStyleHints>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -42,6 +43,7 @@
 #include "cli/listapps.h"
 #include "cli/quitstream.h"
 #include "cli/startstream.h"
+#include "cli/streamhelper.h"
 #include "cli/pair.h"
 #include "cli/commandlineparser.h"
 #include "path.h"
@@ -960,6 +962,16 @@ int main(int argc, char *argv[])
                                                        return StreamingPreferences::get(qmlEngine);
                                                    });
 
+    // In helper mode the launcher supplies the identity, so load its config
+    // before the identity manager is created.
+    CliStreamHelper::Launcher* streamHelper = nullptr;
+    if (commandLineParserResult == GlobalCommandLineParser::StreamHelperRequested) {
+        streamHelper = new CliStreamHelper::Launcher(&app);
+        if (!streamHelper->loadConfigFromStdin()) {
+            return 1;
+        }
+    }
+
     // Create the identity manager on the main thread
     IdentityManager::get();
 
@@ -1019,6 +1031,13 @@ int main(int argc, char *argv[])
             pairParser.parse(app.arguments());
             auto launcher = new CliPair::Launcher(pairParser.getHost(), pairParser.getPredefinedPin(), &app);
             engine.rootContext()->setContextProperty("launcher", launcher);
+            break;
+        }
+    case GlobalCommandLineParser::StreamHelperRequested:
+        {
+            // Run the session once the event loop is up; all progress goes to stdout as JSON
+            QTimer::singleShot(0, streamHelper, &CliStreamHelper::Launcher::execute);
+            hasGUI = false;
             break;
         }
     case GlobalCommandLineParser::ListRequested:

@@ -162,6 +162,15 @@ public:
         dst.h = drawableHeight;
         StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
 
+        {
+            int winW = 0, winH = 0;
+            SDL_GetWindowSize(m_Window, &winW, &winH);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Metal video region: frame %dx%d, drawable %dx%d, window %dx%d, video rect (%d,%d) %dx%d",
+                        frame->width, frame->height, drawableWidth, drawableHeight, winW, winH,
+                        dst.x, dst.y, dst.w, dst.h);
+        }
+
         // Convert screen space to normalized device coordinates
         SDL_FRect renderRect;
         StreamUtils::screenSpaceToNormalizedDeviceCoords(&dst, &renderRect, drawableWidth, drawableHeight);

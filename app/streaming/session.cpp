@@ -577,6 +577,7 @@ Session::Session(NvComputer* computer, NvApp& app, StreamingPreferences *prefere
       m_DecoderLock(SDL_CreateMutex()),
       m_AudioMuted(false),
       m_QtWindow(nullptr),
+      m_HasPreferredDisplayOrigin(false),
       m_UnexpectedTermination(true), // Failure prior to streaming is unexpected
       m_InputHandler(nullptr),
       m_MouseEmulationRefCount(0),
@@ -607,31 +608,13 @@ bool Session::initialize(QQuickWindow* qtWindow)
 
 #ifdef Q_OS_DARWIN
     if (qEnvironmentVariableIntValue("I_WANT_BUGGY_FULLSCREEN") == 0) {
-        // If we have a notch and the user specified one of the two native display modes
-        // (notched or notchless), override the fullscreen mode to ensure it works as expected.
-        // - SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES=0 will place the video underneath the notch
-        // - SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES=1 will place the video below the notch
-        bool shouldUseFullScreenSpaces = m_Preferences->windowMode != StreamingPreferences::WM_FULLSCREEN;
-        SDL_DisplayMode desktopMode;
-        SDL_Rect safeArea;
-        for (int displayIndex = 0; StreamUtils::getNativeDesktopMode(displayIndex, &desktopMode, &safeArea); displayIndex++) {
-            // Check if this display has a notch (safeArea != desktopMode)
-            if (desktopMode.h != safeArea.h || desktopMode.w != safeArea.w) {
-                // Check if we're trying to stream at the full native resolution (including notch)
-                if (m_Preferences->width == desktopMode.w && m_Preferences->height == desktopMode.h) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                                "Overriding default fullscreen mode for native fullscreen resolution");
-                    shouldUseFullScreenSpaces = false;
-                    break;
-                }
-                else if (m_Preferences->width == safeArea.w && m_Preferences->height == safeArea.h) {
-                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                                "Overriding default fullscreen mode for native safe area resolution");
-                    shouldUseFullScreenSpaces = true;
-                    break;
-                }
-            }
-        }
+        // Sloplight: "Fullscreen" uses the macOS full-screen API (its own
+        // Space). macOS keeps such windows below the camera housing; streaming
+        // at the "below notch" size fills it without bars. "Borderless" is a
+        // screen-covering overlay on the current Space, notch included, with no
+        // Space transition. Upstream's native/safe-area resolution overrides are
+        // intentionally gone: you get the mode you pick.
+        bool shouldUseFullScreenSpaces = m_Preferences->windowMode == StreamingPreferences::WM_FULLSCREEN;
 
         // Using modesetting on modern versions of macOS is extremely unreliable
         // and leads to hangs, deadlocks, and other nasty stuff. The only time
@@ -1332,11 +1315,10 @@ void Session::getWindowDimensions(int& x, int& y,
     // Create our window on the same display that Qt's UI
     // was being displayed on.
     else {
-        Q_ASSERT(m_QtWindow != nullptr);
-        if (m_QtWindow != nullptr) {
-            QScreen* screen = m_QtWindow->screen();
-            if (screen != nullptr) {
-                QRect displayRect = screen->geometry();
+        if (m_QtWindow != nullptr || m_HasPreferredDisplayOrigin) {
+            QScreen* screen = m_QtWindow != nullptr ? m_QtWindow->screen() : nullptr;
+            if (screen != nullptr || m_HasPreferredDisplayOrigin) {
+                QRect displayRect = screen != nullptr ? screen->geometry() : QRect(m_PreferredDisplayOrigin, QSize(1, 1));
 
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                             "Qt UI screen is at (%d,%d)",
@@ -2086,6 +2068,9 @@ void Session::exec()
 
     // Enter full screen if requested
     if (m_IsFullScreen) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Window mode: %s (SDL flag 0x%x, macOS Spaces %s)",
+                    m_Preferences->windowMode == StreamingPreferences::WM_FULLSCREEN ? "fullscreen" : "borderless",
+                    m_FullScreenFlag, SDL_GetHint(SDL_HINT_VIDEO_MAC_FULLSCREEN_SPACES));
         SDL_SetWindowFullscreen(m_Window, m_FullScreenFlag);
     }
 
