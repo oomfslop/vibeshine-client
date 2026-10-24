@@ -572,9 +572,9 @@ fn build_rows(root: &mut Root, theme: &Theme, section: &str, cx: &mut Context<Ro
             });
             let window_help = if is_macos {
                 if s.exclusive_fullscreen {
-                    "Fullscreen switches the display mode. Borderless: overlay, notch covered."
+                    "Fullscreen switches the display mode (exclusive). Borderless is an overlay that covers the whole panel, notch included."
                 } else {
-                    "Fullscreen: Space below the notch. Borderless: covers it."
+                    "Fullscreen is a macOS Space placed below the notch; pick the \"Below notch\" resolution to fill it without bars. Borderless is an overlay that covers the whole panel, notch included."
                 }
             } else {
                 "Borderless works better with Spaces, Alt+Tab and overlays."
@@ -770,7 +770,7 @@ fn render_row(theme: &Theme, row: Row, index: usize, last: bool, cx: &mut Contex
                                     )
                                 }),
                         )
-                        .when(!help.is_empty(), |d| d.child(text_sm(theme, help).w_full().whitespace_nowrap().overflow_hidden().text_ellipsis().when(disabled, |t| t.text_color(theme.text_disabled)))),
+                        .when(!help.is_empty(), |d| d.child(text_sm(theme, help).w_full().when(disabled, |t| t.text_color(theme.text_disabled)))),
                 )
                 .child(div().flex().items_center().gap(px(8.)).flex_none().children(row.extra).child(row.control)),
         )
