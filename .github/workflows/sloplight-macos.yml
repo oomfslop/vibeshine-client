@@ -1,0 +1,75 @@
+name: Sloplight (macOS)
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: macOS arm64 on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both are Apple Silicon runners; macos-14 produces the build that is
+        # tested on macOS 14, macos-15 the one tested on macOS 15.
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      # gpui needs macOS 12+, the helper declares 13.0 in its Info.plist.
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          # The flake is fetched as `.?submodules=1`, which wants a full git history.
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Build the streaming helper (moonlight stream-helper) with Nix
+        run: |
+          nix build '.?submodules=1' --print-build-logs
+          test -x result/Applications/Moonlight.app/Contents/MacOS/Moonlight
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sloplight
+
+      - name: Build and bundle Sloplight.app
+        working-directory: sloplight
+        run: ./scripts/bundle-macos.sh
+
+      - name: Package
+        run: |
+          ditto -c -k --keepParent sloplight/target/Sloplight.app "Sloplight-${{ matrix.os }}-arm64.zip"
+          shasum -a 256 "Sloplight-${{ matrix.os }}-arm64.zip" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo 'The app is ad-hoc signed and not notarized: after unzipping, run `xattr -dr com.apple.quarantine Sloplight.app` or right-click → Open the first time.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sloplight-${{ matrix.os }}-arm64
+          path: Sloplight-${{ matrix.os }}-arm64.zip
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Sloplight-${{ matrix.os }}-arm64.zip
