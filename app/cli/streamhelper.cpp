@@ -10,6 +10,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QTimer>
+#include <QDateTime>
 #include <QTextStream>
 
 #include <cstdio>
@@ -237,6 +238,20 @@ void Launcher::onConnectionStarted()
     int maxMs = m_Config.value("max_duration_ms").toInt(0);
     if (maxMs > 0) {
         QTimer::singleShot(maxMs, this, []() { requestStreamQuit(); });
+    }
+    // End-to-end input test: send a relative mouse move every N ms and report
+    // the wall-clock send time so a host-side probe can measure input latency.
+    int inputMs = m_Config.value("test_input_period_ms").toInt(0);
+    if (inputMs > 0) {
+        auto* timer = new QTimer(this);
+        auto* dir = new int(1);
+        connect(timer, &QTimer::timeout, this, [this, dir]() {
+            *dir = -*dir;
+            qint64 t = QDateTime::currentMSecsSinceEpoch();
+            LiSendMouseMoveEvent((short)(40 * *dir), 0);
+            emitEvent({{"event", "test_input"}, {"t_ms", (double)t}});
+        });
+        timer->start(inputMs);
     }
 }
 

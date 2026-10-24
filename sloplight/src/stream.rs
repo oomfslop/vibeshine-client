@@ -26,6 +26,9 @@ struct HelperConfig<'a> {
     /// End the stream after this long (test runs; `SLOPLIGHT_MAX_STREAM_MS`).
     #[serde(skip_serializing_if = "Option::is_none")]
     max_duration_ms: Option<u64>,
+    /// Send a test mouse move this often (test runs; `SLOPLIGHT_TEST_INPUT_MS`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    test_input_period_ms: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -77,6 +80,8 @@ pub enum HelperEvent {
     SessionFinished { port_test_result: i32 },
     /// Synthesized by the Rust side when the process exits
     Exited { code: Option<i32>, stderr_tail: String },
+    /// A synthetic test mouse move was sent at this wall-clock time (ms).
+    TestInput { t_ms: f64 },
 }
 
 #[derive(Debug, Clone)]
@@ -196,6 +201,7 @@ pub fn start(
         settings,
         display_origin,
         max_duration_ms: std::env::var("SLOPLIGHT_MAX_STREAM_MS").ok().and_then(|v| v.parse().ok()),
+        test_input_period_ms: std::env::var("SLOPLIGHT_TEST_INPUT_MS").ok().and_then(|v| v.parse().ok()),
     };
     let json = serde_json::to_vec(&config).map_err(|e| e.to_string())?;
 

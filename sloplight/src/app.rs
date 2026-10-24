@@ -696,6 +696,7 @@ impl Root {
                     stream.error_lines.push("This network is blocking Moonlight. Streaming over the Internet may not work here.".into());
                 }
             }
+            HelperEvent::TestInput { .. } => {}
             HelperEvent::Exited { code, stderr_tail } => {
                 let stream = self.stream.take().unwrap();
                 if !stream.finished && stream.error_lines.is_empty() && code != Some(0) {
