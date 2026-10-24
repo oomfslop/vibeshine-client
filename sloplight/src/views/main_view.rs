@@ -470,7 +470,10 @@ impl Root {
         let hidden = app.hidden;
 
         let large = tile_w >= LARGE_TILE_W;
-        let (radius, ring_radius, icon_size, spinner_size, caption_gap) = if large { (8., 11., 32., 20., 8.) } else { (6., 9., 24., 16., 6.) };
+        // The ring sits 4pt outside the art (2pt gap + 2pt stroke), so its outer
+        // radius is the art radius + 4 to keep the corners concentric.
+        let (radius, icon_size, spinner_size, caption_gap) = if large { (8., 32., 20., 8.) } else { (6., 24., 16., 6.) };
+        let ring_radius = radius + 4.;
         let mut art = div().relative().w(px(tile_w)).h(px(tile_h)).rounded(px(radius)).overflow_hidden().bg(theme.surface).border_1().border_color(theme.text.alpha(0.06)).when(hidden, |d| d.opacity(0.5));
         art = match art_path {
             Some(path) => art.child(img(path).size_full().rounded(px(radius)).object_fit(gpui::ObjectFit::Cover).when(launching, |i| i.opacity(0.5))),
