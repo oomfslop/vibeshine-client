@@ -1,11 +1,16 @@
 name: Sloplight (macOS)
 
+# Builds take 15-25 minutes per runner (the helper is compiled from source
+# with Nix), so this only runs for releases or when started by hand.
 on:
   push:
-    branches: [master]
     tags: ["v*"]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to build (branch, tag or commit); defaults to the selected branch"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -27,6 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           submodules: recursive
           # The flake is fetched as `.?submodules=1`, which wants a full git history.
           fetch-depth: 0
