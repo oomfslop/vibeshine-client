@@ -234,7 +234,10 @@ impl Root {
     fn render_content_header(&mut self, theme: &Theme, settings: bool, content_w: f32, body_h: f32, cx: &mut Context<Self>) -> impl IntoElement {
         let filter_w = if content_w < 576. { 140. } else { 180. };
         let l: Layout = layout(content_w, body_h);
-        let inset = if settings { 16. + l.settings_offset } else { l.pad };
+        // The filter keeps the same right inset in both views so it doesn't jump
+        // when settings open; only the "Settings" title follows the centered column.
+        let left_inset = if settings { 16. + l.settings_offset } else { l.pad };
+        let right_inset = l.pad;
         let (filter, filter_text) = if settings {
             (self.settings_view.filter.clone(), self.settings_view.filter_text.clone())
         } else {
@@ -281,7 +284,8 @@ impl Root {
             .justify_between()
             .h(px(HEADER_H))
             .flex_none()
-            .px(px(inset))
+            .pl(px(left_inset))
+            .pr(px(right_inset))
             .window_control_area(gpui::WindowControlArea::Drag)
             .child(left)
             .when(show_filter, |d| {
