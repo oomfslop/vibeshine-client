@@ -587,6 +587,7 @@ fn build_rows(root: &mut Root, theme: &Theme, section: &str, cx: &mut Context<Ro
         }
         "apollo" => {
             rows.push(toggle_row(root, cx, theme, "tg-vd", "Stream from a virtual display", "The host creates a display matching your stream instead of capturing a monitor.", |s| s.use_virtual_display, |s, v| s.use_virtual_display = v, None));
+            rows.push(toggle_row(root, cx, theme, "tg-vrr", "Capture on present", "Vibeshine/Vibepollo run the virtual display at 1000 Hz and grab each frame right after the game presents it, instead of on the display's refresh grid.", |s| s.vrr_capture, |s, v| s.vrr_capture = v, None));
             rows.push(Row {
                 label: "Host render scale",
                 help: "Below 100% is faster, above supersamples. 50–200.".into(),

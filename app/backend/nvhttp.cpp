@@ -237,6 +237,9 @@ NvHTTP::startApp(QString verb,
     if (launchOptions.scaleFactor > 0 && launchOptions.scaleFactor != 100) {
         apolloParams += "&scaleFactor=" + QString::number(launchOptions.scaleFactor);
     }
+    if (launchOptions.clientVrrRequested) {
+        apolloParams += "&clientVrrRequested=1";
+    }
 
     QString response =
             openConnectionToString(m_BaseUrlHttps,

@@ -161,6 +161,7 @@ public:
     // Apollo host extensions
     Q_PROPERTY(double fractionalFps MEMBER fractionalFps NOTIFY displayModeChanged)
     Q_PROPERTY(bool useVirtualDisplay MEMBER useVirtualDisplay NOTIFY useVirtualDisplayChanged)
+    Q_PROPERTY(bool vrrCapture MEMBER vrrCapture NOTIFY vrrCaptureChanged)
     Q_PROPERTY(int resolutionScaleFactor MEMBER resolutionScaleFactor NOTIFY resolutionScaleFactorChanged)
     Q_PROPERTY(bool clipboardSync MEMBER clipboardSync NOTIFY clipboardSyncChanged)
 
@@ -213,6 +214,7 @@ public:
     double fractionalFps;
     // Ask the host to stream from a virtual display
     bool useVirtualDisplay;
+    bool vrrCapture;
     // Host-side render scale factor in percent (100 = off)
     int resolutionScaleFactor;
     // Sync the clipboard with the host on focus changes and stream start
@@ -255,6 +257,7 @@ signals:
     void keepAwakeChanged();
     void languageChanged();
     void useVirtualDisplayChanged();
+    void vrrCaptureChanged();
     void resolutionScaleFactorChanged();
     void clipboardSyncChanged();
     void rendererSelectionChanged();

@@ -133,7 +133,20 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
             return 2;
         }
     };
-    let hosts: Vec<backend::Host> = std::fs::read_to_string(config_dir.join("hosts.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    let hosts: Vec<backend::Host> = match std::fs::read_to_string(config_dir.join("hosts.json")) {
+        Ok(t) => match serde_json::from_str(&t) {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("hosts.json: {e}");
+                Vec::new()
+            }
+        },
+        Err(e) => {
+            log::error!("hosts.json: {e}");
+            Vec::new()
+        }
+    };
+    log::info!("[stream-cli] {} hosts loaded: {:?}", hosts.len(), hosts.iter().map(|h| format!("{} ({} apps)", h.name, h.apps.len())).collect::<Vec<_>>());
     let q = host_q.to_lowercase();
     let Some(host) = hosts.iter().find(|h| h.name.to_lowercase().contains(&q) || h.uuid.to_lowercase().starts_with(&q) || h.unique_addresses().iter().any(|a| a.host == host_q)) else {
         eprintln!("No host matching {host_q:?}; known: {:?}", hosts.iter().map(|h| &h.name).collect::<Vec<_>>());
@@ -158,6 +171,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
     if !reached {
         return 1;
     }
+    log::info!("[stream-cli] after serverinfo: {} apps, https {}, paired {:?}", host.apps.len(), host.active_https_port, host.pair_state);
     let host = &host;
     let aq = app_q.to_lowercase();
     let Some(app) = host.apps.iter().find(|a| a.name.to_lowercase().contains(&aq)) else {

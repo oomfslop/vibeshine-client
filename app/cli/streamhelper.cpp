@@ -113,6 +113,7 @@ void Launcher::applySettings(const QJsonObject& s)
     p->showPerformanceOverlay = jsonBool(s, "show_performance_overlay", p->showPerformanceOverlay);
     p->windowMode = static_cast<StreamingPreferences::WindowMode>(jsonInt(s, "window_mode", p->windowMode));
     p->useVirtualDisplay = jsonBool(s, "use_virtual_display", p->useVirtualDisplay);
+    p->vrrCapture = jsonBool(s, "vrr_capture", p->vrrCapture);
     p->resolutionScaleFactor = jsonInt(s, "resolution_scale_factor", p->resolutionScaleFactor);
     p->clipboardSync = jsonBool(s, "clipboard_sync", p->clipboardSync);
     p->audioConfig = static_cast<StreamingPreferences::AudioConfig>(jsonInt(s, "audio_config", p->audioConfig));

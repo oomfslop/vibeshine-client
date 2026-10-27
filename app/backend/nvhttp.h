@@ -115,6 +115,11 @@ public:
 
     // Host-side render scale factor in percent (100 = disabled).
     int scaleFactor = 100;
+
+    // Ask a Vibeshine/Vibepollo host for its VRR low-latency policy: the
+    // virtual display runs at 1000 Hz and frames are captured right after
+    // the game presents them, instead of on the display's refresh grid.
+    bool clientVrrRequested = false;
 };
 
 class NvHTTP : public QObject

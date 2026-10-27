@@ -53,6 +53,7 @@
 #define SER_LANGUAGE "language"
 #define SER_FRACTIONALFPS "fractionalfps"
 #define SER_VIRTUALDISPLAY "virtualdisplay"
+#define SER_VRRCAPTURE "vrrcapture"
 #define SER_SCALEFACTOR "scalefactor"
 #define SER_CLIPBOARDSYNC "clipboardsync"
 #define SER_RENDERER "renderer"
@@ -157,6 +158,7 @@ void StreamingPreferences::reload()
     keepAwake = settings.value(SER_KEEPAWAKE, true).toBool();
     fractionalFps = settings.value(SER_FRACTIONALFPS, 0.0).toDouble();
     useVirtualDisplay = settings.value(SER_VIRTUALDISPLAY, false).toBool();
+    vrrCapture = settings.value(SER_VRRCAPTURE, false).toBool();
     resolutionScaleFactor = settings.value(SER_SCALEFACTOR, 100).toInt();
     clipboardSync = settings.value(SER_CLIPBOARDSYNC, false).toBool();
     enableHdr = settings.value(SER_HDR, false).toBool();
@@ -372,6 +374,7 @@ void StreamingPreferences::save()
     settings.setValue(SER_KEEPAWAKE, keepAwake);
     settings.setValue(SER_FRACTIONALFPS, fractionalFps);
     settings.setValue(SER_VIRTUALDISPLAY, useVirtualDisplay);
+    settings.setValue(SER_VRRCAPTURE, vrrCapture);
     settings.setValue(SER_SCALEFACTOR, resolutionScaleFactor);
     settings.setValue(SER_CLIPBOARDSYNC, clipboardSync);
 }

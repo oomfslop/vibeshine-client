@@ -95,6 +95,8 @@ pub struct Settings {
     pub window_mode: WindowMode,
     // Apollo
     pub use_virtual_display: bool,
+    /// Vibeshine/Vibepollo: capture right after each present (1000 Hz virtual display).
+    pub vrr_capture: bool,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
     // Audio
@@ -162,6 +164,7 @@ impl Default for Settings {
             show_performance_overlay: false,
             window_mode: recommended_window_mode(),
             use_virtual_display: false,
+            vrr_capture: false,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             audio_config: AudioConfig::Stereo,
