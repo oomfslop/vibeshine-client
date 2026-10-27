@@ -20,6 +20,7 @@ typedef struct _VIDEO_STATS {
     uint32_t totalHostProcessingLatency;       // low-res from RTP
     uint32_t framesWithHostProcessingLatency;  // low-res from RTP
     uint64_t totalReassemblyTimeUs;            // high-res (1us)
+    uint64_t totalSubmitTimeUs;                // high-res (1us): time inside avcodec_send_packet()
     uint64_t totalDecodeTimeUs;                // high-res (1us)
     uint64_t totalPacerTimeUs;                 // high-res (1us)
     uint64_t totalRenderTimeUs;                // high-res (1us)

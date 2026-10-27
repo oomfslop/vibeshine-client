@@ -123,7 +123,13 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
     let config_dir = config_dir();
     let settings = {
         let mut s = settings::Settings::load(&config_dir);
-        s.window_mode = settings::WindowMode::Windowed;
+        // Windowed by default; SLOPLIGHT_STREAM_WINDOW_MODE=fullscreen|borderless
+        // keeps the configured presentation for full-screen latency tests.
+        s.window_mode = match std::env::var("SLOPLIGHT_STREAM_WINDOW_MODE").as_deref() {
+            Ok("fullscreen") => settings::WindowMode::Fullscreen,
+            Ok("borderless") => settings::WindowMode::Borderless,
+            _ => settings::WindowMode::Windowed,
+        };
         s
     };
     let identity = match backend::Identity::load_or_create(&config_dir) {

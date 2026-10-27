@@ -763,6 +763,7 @@ void FFmpegVideoDecoder::addVideoStats(VIDEO_STATS& src, VIDEO_STATS& dst)
     dst.networkDroppedFrames += src.networkDroppedFrames;
     dst.pacerDroppedFrames += src.pacerDroppedFrames;
     dst.totalReassemblyTimeUs += src.totalReassemblyTimeUs;
+    dst.totalSubmitTimeUs += src.totalSubmitTimeUs;
     dst.totalDecodeTimeUs += src.totalDecodeTimeUs;
     dst.totalPacerTimeUs += src.totalPacerTimeUs;
     dst.totalRenderTimeUs += src.totalRenderTimeUs;
@@ -959,6 +960,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
                        "Frames dropped due to network jitter: %.2f%%\n"
                        "Average network latency: %s\n"
                        "Average reassembly time: %.2f ms\n"
+                       "Average packet submit time: %.2f ms\n"
                        "Average decoding time: %.2f ms\n"
                        "Average frame queue delay: %.2f ms\n"
                        "Average rendering time (including monitor V-sync latency): %.2f ms\n",
@@ -966,6 +968,7 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
                        (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
                        rttString,
                        (double)(stats.totalReassemblyTimeUs / 1000.0) / stats.receivedFrames,
+                       (double)(stats.totalSubmitTimeUs / 1000.0) / stats.receivedFrames,
                        (double)(stats.totalDecodeTimeUs / 1000.0) / stats.decodedFrames,
                        (double)(stats.totalPacerTimeUs / 1000.0) / stats.renderedFrames,
                        (double)(stats.totalRenderTimeUs / 1000.0) / stats.renderedFrames);
@@ -2201,7 +2204,9 @@ int FFmpegVideoDecoder::submitDecodeUnit(PDECODE_UNIT du)
 
     m_ActiveWndVideoStats.totalReassemblyTimeUs += (du->enqueueTimeUs - du->receiveTimeUs);
 
+    uint64_t submitStartUs = LiGetMicroseconds();
     err = avcodec_send_packet(m_VideoDecoderCtx, m_Pkt);
+    m_ActiveWndVideoStats.totalSubmitTimeUs += LiGetMicroseconds() - submitStartUs;
     if (err < 0) {
         char errorstring[512];
         av_strerror(err, errorstring, sizeof(errorstring));
