@@ -1397,6 +1397,12 @@ void Session::getWindowDimensions(int& x, int& y,
     }
 
     x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex);
+    if (m_HasTestWindow) {
+        x = m_TestWindow.x();
+        y = m_TestWindow.y();
+        width = m_TestWindow.width();
+        height = m_TestWindow.height();
+    }
 }
 
 void Session::updateOptimalWindowDisplayMode()
@@ -1974,6 +1980,9 @@ void Session::exec()
 
     // We always want a resizable window with High DPI enabled
     Uint32 defaultWindowFlags = SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE;
+    if (m_HasTestWindow) {
+        defaultWindowFlags |= SDL_WINDOW_ALWAYS_ON_TOP;
+    }
 
     // If we're starting in windowed mode and the Moonlight GUI is maximized or
     // minimized, match that with the streaming window.

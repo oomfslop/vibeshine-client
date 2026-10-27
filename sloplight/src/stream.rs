@@ -29,6 +29,9 @@ struct HelperConfig<'a> {
     /// Send a test mouse move this often (test runs; `SLOPLIGHT_TEST_INPUT_MS`).
     #[serde(skip_serializing_if = "Option::is_none")]
     test_input_period_ms: Option<u64>,
+    /// Fixed always-on-top window `[x, y, w, h]` (test runs; `SLOPLIGHT_TEST_WINDOW=x,y,w,h`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    test_window: Option<[i32; 4]>,
 }
 
 #[derive(Serialize)]
@@ -202,6 +205,10 @@ pub fn start(
         display_origin,
         max_duration_ms: std::env::var("SLOPLIGHT_MAX_STREAM_MS").ok().and_then(|v| v.parse().ok()),
         test_input_period_ms: std::env::var("SLOPLIGHT_TEST_INPUT_MS").ok().and_then(|v| v.parse().ok()),
+        test_window: std::env::var("SLOPLIGHT_TEST_WINDOW").ok().and_then(|v| {
+            let n: Vec<i32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+            (n.len() == 4).then(|| [n[0], n[1], n[2], n[3]])
+        }),
     };
     let json = serde_json::to_vec(&config).map_err(|e| e.to_string())?;
 

@@ -192,6 +192,10 @@ void Launcher::execute()
     if (origin.size() == 2) {
         m_Session->setPreferredDisplayOrigin(origin.at(0).toInt(), origin.at(1).toInt());
     }
+    QJsonArray tw = m_Config.value("test_window").toArray();
+    if (tw.size() == 4) {
+        m_Session->setTestWindow(tw.at(0).toInt(), tw.at(1).toInt(), tw.at(2).toInt(), tw.at(3).toInt());
+    }
 
     connect(m_Session, &Session::stageStarting, this, &Launcher::onStageStarting);
     connect(m_Session, &Session::stageFailed, this, &Launcher::onStageFailed);

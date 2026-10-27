@@ -114,6 +114,15 @@ public:
     Q_INVOKABLE bool initialize(QQuickWindow* qtWindow);
     Q_INVOKABLE void start();
     Q_INVOKABLE void interrupt();
+
+    // Test harness: fixed window geometry and always-on-top so an
+    // automated windowed stream stays visible (and un-throttled) while the
+    // user works in other apps.
+    void setTestWindow(int x, int y, int w, int h)
+    {
+        m_TestWindow = QRect(x, y, w, h);
+        m_HasTestWindow = true;
+    }
     Q_PROPERTY(QStringList launchWarnings MEMBER m_LaunchWarnings NOTIFY launchWarningsChanged);
 
     static
@@ -304,6 +313,9 @@ private:
     QQuickWindow* m_QtWindow;
     QPoint m_PreferredDisplayOrigin;
     bool m_HasPreferredDisplayOrigin;
+
+    QRect m_TestWindow;
+    bool m_HasTestWindow = false;
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;

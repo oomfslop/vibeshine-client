@@ -119,6 +119,7 @@ private:
     VIDEO_STATS m_GlobalVideoStats;
     std::set<IFFmpegRenderer::RendererType> m_FailedRenderers;
 
+    bool m_LoggedReorderDepth = false;
     int m_FramesIn;
     int m_FramesOut;
 

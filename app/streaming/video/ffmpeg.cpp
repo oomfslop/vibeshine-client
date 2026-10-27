@@ -958,12 +958,14 @@ void FFmpegVideoDecoder::stringifyVideoStats(VIDEO_STATS& stats, char* output, i
                        "Frames dropped by your network connection: %.2f%%\n"
                        "Frames dropped due to network jitter: %.2f%%\n"
                        "Average network latency: %s\n"
+                       "Average reassembly time: %.2f ms\n"
                        "Average decoding time: %.2f ms\n"
                        "Average frame queue delay: %.2f ms\n"
                        "Average rendering time (including monitor V-sync latency): %.2f ms\n",
                        (float)stats.networkDroppedFrames / stats.totalFrames * 100,
                        (float)stats.pacerDroppedFrames / stats.decodedFrames * 100,
                        rttString,
+                       (double)(stats.totalReassemblyTimeUs / 1000.0) / stats.receivedFrames,
                        (double)(stats.totalDecodeTimeUs / 1000.0) / stats.decodedFrames,
                        (double)(stats.totalPacerTimeUs / 1000.0) / stats.renderedFrames,
                        (double)(stats.totalRenderTimeUs / 1000.0) / stats.renderedFrames);
@@ -1850,6 +1852,15 @@ int FFmpegVideoDecoder::decoderThreadProcThunk(void *context)
 
 void FFmpegVideoDecoder::decoderThreadProc()
 {
+    // Keep the decode thread on performance cores: the synchronous
+    // VideoToolbox decode and the queue wake latency are both sensitive to
+    // scheduling, and a default-QoS thread may be placed on efficiency cores.
+    if (SDL_SetThreadPriority(SDL_THREAD_PRIORITY_TIME_CRITICAL) < 0) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "Unable to set decoder thread priority: %s",
+                    SDL_GetError());
+    }
+
     while (!SDL_AtomicGet(&m_DecoderThreadShouldQuit)) {
         if (m_FramesIn == m_FramesOut) {
             VIDEO_FRAME_HANDLE handle;
@@ -2022,6 +2033,13 @@ void FFmpegVideoDecoder::decoderThreadProc()
 
                     // Capture a frame timestamp to measuring pacing delay
                     frame->pkt_dts = LiGetMicroseconds();
+
+                    if (!m_LoggedReorderDepth) {
+                        m_LoggedReorderDepth = true;
+                        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                                    "Decoder reorder depth (has_b_frames): %d",
+                                    m_VideoDecoderCtx->has_b_frames);
+                    }
 
                     if (!m_FrameInfoQueue.isEmpty()) {
                         // Data buffers in the DU are not valid here!

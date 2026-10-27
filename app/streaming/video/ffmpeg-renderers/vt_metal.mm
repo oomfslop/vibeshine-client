@@ -510,11 +510,16 @@ public:
             for (size_t i = 0; i < planes; i++) {
                 [renderEncoder setFragmentTexture:CVMetalTextureGetTexture(cvMetalTextures[i]) atIndex:i];
             }
+            // Keep the decoded pixel buffer alive until the GPU has read it, since
+            // we no longer block on command buffer completion below.
+            CVPixelBufferRef pixBuf = reinterpret_cast<CVPixelBufferRef>(frame->data[3]);
+            CVPixelBufferRetain(pixBuf);
             [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
                 // Free textures after completion of rendering per CVMetalTextureCache requirements
                 for (size_t i = 0; i < planes; i++) {
                     CFRelease(cvMetalTextures[i]);
                 }
+                CVPixelBufferRelease(pixBuf);
             }];
         }
         else {
@@ -582,8 +587,9 @@ public:
         [commandBuffer presentDrawable:drawable];
         [commandBuffer commit];
 
-        // Wait for the command buffer to complete and free our CVMetalTextureCache references
-        [commandBuffer waitUntilCompleted];
+        // Don't wait for the GPU here: the completion handler above releases the
+        // texture cache references and the pixel buffer, so blocking would only
+        // delay the next frame by the GPU time of this one.
     }}
 
     // Caller frees frame after we return
@@ -754,6 +760,10 @@ public:
 
             // Allow tearing if V-Sync is off (also requires direct display path)
             m_MetalLayer.displaySyncEnabled = params->enableVsync;
+
+            // Two drawables are enough since at most one frame is in flight; a
+            // deeper queue could only add latency after a GPU hiccup.
+            m_MetalLayer.maximumDrawableCount = 2;
         }
 
         return true;
