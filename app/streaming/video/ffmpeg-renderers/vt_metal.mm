@@ -761,9 +761,20 @@ public:
             // Allow tearing if V-Sync is off (also requires direct display path)
             m_MetalLayer.displaySyncEnabled = params->enableVsync;
 
-            // Two drawables are enough since at most one frame is in flight; a
-            // deeper queue could only add latency after a GPU hiccup.
-            m_MetalLayer.maximumDrawableCount = 2;
+            {
+                // Three drawables (the default): with two, full-screen compositing
+                // holds a drawable long enough to block nextDrawable, and the
+                // render thread then drops ~3 of every 120 frames (measured);
+                // the queued latency is the same because V-Sync is off and the
+                // GPU is never waited on. MOONLIGHT_METAL_DRAWABLES=2|3 overrides.
+                NSUInteger drawables = 3;
+                if (const char* env = getenv("MOONLIGHT_METAL_DRAWABLES")) {
+                    int v = atoi(env);
+                    if (v >= 2 && v <= 3) drawables = v;
+                }
+                m_MetalLayer.maximumDrawableCount = drawables;
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Metal layer drawables: %d", (int)drawables);
+            }
         }
 
         return true;
