@@ -50,6 +50,10 @@ pub struct AppWindowConfig {
     pub dpi: i32,
     /// Host hit-test map: where the caption (drag) and the caption buttons are
     pub hit: Vec<crate::backend::http::HitRegion>,
+    /// Canvas position of the window's top-left (host layout rule)
+    pub anchor: [i32; 2],
+    /// Corner radius (host px) the OS gives the window and its popups
+    pub radius: i32,
 }
 
 /// Encoder frame for an app window. The helper copies the window into the

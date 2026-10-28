@@ -310,6 +310,15 @@ impl NvHttp {
         Ok(r.regions)
     }
 
+    /// One window's layout: rect, canvas anchor, popups. With `etag` (the
+    /// previous reply's) and `wait_ms`, the host holds the reply until
+    /// something changes, so popups show up within milliseconds.
+    pub fn get_window_layout(&self, hwnd: &str, canvas: (i32, i32), etag: &str, wait_ms: u32) -> Result<WindowLayout, HttpError> {
+        let q = format!("hwnd={hwnd}&cw={}&ch={}&etag={etag}&wait={wait_ms}", canvas.0, canvas.1);
+        let body = self.get_string(true, "actions/window-layout", &q, REQUEST_TIMEOUT.max(Duration::from_millis(u64::from(wait_ms) + 3000)))?;
+        serde_json::from_str(&body).map_err(|e| HttpError::Network(format!("window layout: {e}")))
+    }
+
     /// Act on a host window: activate, move (x,y), resize (w,h), minimize, restore, maximize, close.
     pub fn window_action(&self, hwnd: &str, op: &str, x: i32, y: i32, w: i32, h: i32) -> Result<(), HttpError> {
         self.request(true, "actions/window", &format!("hwnd={hwnd}&op={op}&x={x}&y={y}&w={w}&h={h}"), REQUEST_TIMEOUT, Some(("text/plain", b"")))?;
@@ -656,6 +665,26 @@ struct HostWindowList {
 }
 
 /// One region of a host window's non-client hit-test map.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct WindowLayout {
+    pub rect: [i32; 4],
+    pub anchor: [i32; 2],
+    #[serde(default)]
+    pub popups: Vec<[i32; 4]>,
+    #[serde(default)]
+    pub radius: i32,
+    #[serde(default)]
+    pub caption: i32,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub focused: bool,
+    #[serde(default)]
+    pub etag: String,
+}
+
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq)]
 pub struct HitRegion {
     pub kind: String,

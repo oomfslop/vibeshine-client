@@ -36,12 +36,25 @@ void configureWindow(SDL_Window* window, const QString& title)
     ns.movableByWindowBackground = NO;
     ns.hasShadow = YES;
     ns.title = title.toNSString();
-    // Rounded corners like native windows; the video is drawn by a Metal
-    // layer, so clip the content view.
+    // The picture is a shaped region (the host window plus whatever popups
+    // stick out of it) drawn with rounded corners by the renderer; the rest
+    // of the window is see-through.
+    ns.opaque = NO;
+    ns.backgroundColor = [NSColor clearColor];
     ns.contentView.wantsLayer = YES;
-    ns.contentView.layer.cornerRadius = 10.0;
-    ns.contentView.layer.masksToBounds = YES;
+    ns.contentView.layer.masksToBounds = NO;
     [ns invalidateShadow];
+}
+
+void invalidateShadow(SDL_Window* window)
+{
+    NSWindow* ns = nsWindowFor(window);
+    if (!ns) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [ns invalidateShadow];
+    });
 }
 
 void setTitle(SDL_Window* window, const QString& title)

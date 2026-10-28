@@ -9,14 +9,40 @@ void beginDrag(SDL_Window*) {}
 double backingScale(SDL_Window*) { return 1.0; }
 void toggleZoom(SDL_Window*) {}
 void performTitleAction(SDL_Window*) {}
+void invalidateShadow(SDL_Window*) {}
 }
 #endif
 
+#include <QMutex>
+#include <QMutexLocker>
 #include <atomic>
+
 namespace {
-std::atomic<int> g_cropW {0}, g_cropH {0};
+QMutex g_layoutLock;
+AppWindow::Layout g_layout;
+std::atomic<bool> g_active {false};
 }
+
 namespace AppWindow {
-void setCrop(int w, int h) { g_cropW.store(w); g_cropH.store(h); }
-void crop(int& w, int& h) { w = g_cropW.load(); h = g_cropH.load(); }
+
+void setLayout(const Layout& layout)
+{
+    QMutexLocker lock(&g_layoutLock);
+    static unsigned s_version = 0;
+    g_layout = layout;
+    g_layout.version = ++s_version;
+    g_active.store(true);
+}
+
+Layout layout()
+{
+    QMutexLocker lock(&g_layoutLock);
+    return g_layout;
+}
+
+bool active()
+{
+    return g_active.load();
+}
+
 }

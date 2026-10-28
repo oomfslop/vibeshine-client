@@ -250,9 +250,17 @@ void Launcher::execute()
         info.iconPng = QByteArray::fromBase64(aw.value("icon_png_base64").toString().toLatin1());
         const QJsonArray rect = aw.value("rect").toArray();
         if (rect.size() == 4) {
+            info.x = rect.at(0).toInt();
+            info.y = rect.at(1).toInt();
             info.widthPx = rect.at(2).toInt();
             info.heightPx = rect.at(3).toInt();
         }
+        const QJsonArray anchor = aw.value("anchor").toArray();
+        if (anchor.size() == 2) {
+            info.anchorX = anchor.at(0).toInt();
+            info.anchorY = anchor.at(1).toInt();
+        }
+        info.radius = aw.value("radius").toInt(0);
         info.captionPx = aw.value("caption").toInt(0);
         info.dpi = aw.value("dpi").toInt(96);
         info.hits = Session::parseHitRegions(aw.value("hit").toArray());

@@ -16,7 +16,7 @@ use gpui::Context;
 use crate::app::Root;
 use crate::ui::ToastKind;
 use crate::backend::Host;
-use crate::backend::http::{HostWindow, NvHttp};
+use crate::backend::http::{HostWindow, NvHttp, WindowLayout, HttpError};
 use crate::settings;
 use crate::stream::{self, AppWindowConfig, HelperEvent, StreamCommander, StreamEvent, StreamProcess};
 
@@ -161,14 +161,6 @@ impl Root {
         };
         let icon_png = self.windows.icons.get(&w.icon).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
         let hit = host.http(self.identity.clone()).and_then(|h| h.get_window_hittest(&w.hwnd).ok()).unwrap_or_default();
-        let cfg = AppWindowConfig {
-            title: w.title.clone(),
-            icon_png_base64: stream::base64_encode(&icon_png),
-            rect: w.rect,
-            caption: w.caption,
-            dpi: w.dpi,
-            hit,
-        };
         let mut settings = self.settings.clone();
         // Fixed canvas: the smaller of the host monitor and the Mac screen (in
         // host pixels), so maximize and free resizing never need a relaunch.
@@ -185,6 +177,17 @@ impl Root {
         let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], max);
         settings.width = cw;
         settings.height = ch;
+        let layout = host.http(self.identity.clone()).and_then(|h| h.get_window_layout(&w.hwnd, (cw, ch), "0", 0).ok());
+        let cfg = AppWindowConfig {
+            title: w.title.clone(),
+            icon_png_base64: stream::base64_encode(&icon_png),
+            rect: layout.as_ref().map(|l| l.rect).unwrap_or(w.rect),
+            caption: w.caption,
+            dpi: w.dpi,
+            hit,
+            anchor: layout.as_ref().map(|l| l.anchor).unwrap_or([0, 0]),
+            radius: layout.as_ref().map(|l| l.radius).unwrap_or(0),
+        };
         if settings.fps > 60 {
             // App windows are desktop content; 60 fps keeps several of them cheap to decode.
             settings.fps = 60;
@@ -197,7 +200,7 @@ impl Root {
             Ok(process) => {
                 let poller_stop = Arc::new(AtomicBool::new(false));
                 if let Some(http) = host.http(self.identity.clone()) {
-                    spawn_geometry_poller(http, w.hwnd.clone(), process.clone_commander(), poller_stop.clone());
+                    spawn_geometry_poller(http, w.hwnd.clone(), (cw, ch), process.clone_commander(), poller_stop.clone());
                 }
                 self.window_streams.push(WindowStream {
                     host_uuid: host.uuid.clone(),
@@ -271,45 +274,50 @@ impl Root {
     }
 }
 
-/// Polls the host's window list and forwards geometry/title/state changes of
-/// one window to its helper; closes the helper when the window disappears.
-fn spawn_geometry_poller(http: NvHttp, hwnd: String, commander: StreamCommander, stop: Arc<AtomicBool>) {
+/// Follows one streamed window on the host (rect, canvas anchor, popups,
+/// title, state) with long-polls and forwards every change to its helper;
+/// closes the helper when the window disappears.
+pub fn spawn_geometry_poller(http: NvHttp, hwnd: String, canvas: (i32, i32), commander: StreamCommander, stop: Arc<AtomicBool>) {
     std::thread::Builder::new()
         .name(format!("window poller {hwnd}"))
         .spawn(move || {
-            let mut last: Option<HostWindow> = None;
+            let mut etag = String::from("0");
+            let mut last: Option<WindowLayout> = None;
             let mut misses = 0;
             while !stop.load(Ordering::Relaxed) {
-                match http.get_host_windows() {
-                    Ok(list) => match list.into_iter().find(|w| w.hwnd.eq_ignore_ascii_case(&hwnd)) {
-                        Some(w) => {
-                            misses = 0;
-                            if last.as_ref() != Some(&w) {
-                                let size_changed = last.as_ref().map(|l| l.rect[2] != w.rect[2] || l.rect[3] != w.rect[3]).unwrap_or(false);
-                                let mut cmd = serde_json::json!({
-                                    "cmd": "geometry", "rect": w.rect, "caption": w.caption, "title": w.title, "state": w.state
-                                });
-                                if size_changed && w.state != "minimized" {
-                                    // The caption buttons move with the width: refresh the hit map.
-                                    if let Ok(hit) = http.get_window_hittest(&w.hwnd) {
-                                        cmd["hit"] = serde_json::to_value(hit).unwrap_or_default();
-                                    }
-                                }
-                                commander.send_command(&cmd);
-                                last = Some(w);
+                match http.get_window_layout(&hwnd, canvas, &etag, 1000) {
+                    Ok(l) => {
+                        misses = 0;
+                        if l.etag == etag && last.is_some() {
+                            continue;
+                        }
+                        etag = l.etag.clone();
+                        let size_changed = last.as_ref().map(|p| p.rect[2] != l.rect[2] || p.rect[3] != l.rect[3]).unwrap_or(false);
+                        let mut cmd = serde_json::json!({
+                            "cmd": "geometry", "rect": l.rect, "anchor": l.anchor, "popups": l.popups, "radius": l.radius,
+                            "caption": l.caption, "title": l.title, "state": l.state
+                        });
+                        if size_changed && l.state != "minimized" {
+                            // The caption buttons move with the width: refresh the hit map.
+                            if let Ok(hit) = http.get_window_hittest(&hwnd) {
+                                cmd["hit"] = serde_json::to_value(hit).unwrap_or_default();
                             }
                         }
-                        None => {
-                            misses += 1;
-                            if misses >= 2 {
-                                commander.send_command(&serde_json::json!({"cmd": "close"}));
-                                break;
-                            }
+                        commander.send_command(&cmd);
+                        last = Some(l);
+                    }
+                    Err(e) => {
+                        let gone = matches!(&e, HttpError::Network(m) if m.contains("404"));
+                        misses += 1;
+                        if gone || misses >= 3 {
+                            log::info!("window poller {hwnd}: window gone ({e}); closing");
+                            commander.send_command(&serde_json::json!({"cmd": "close"}));
+                            break;
                         }
-                    },
-                    Err(e) => log::debug!("window poller {hwnd}: {e}"),
+                        log::debug!("window poller {hwnd}: {e}");
+                        std::thread::sleep(Duration::from_millis(300));
+                    }
                 }
-                std::thread::sleep(Duration::from_millis(300));
             }
         })
         .ok();

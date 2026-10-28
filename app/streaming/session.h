@@ -135,8 +135,12 @@ public:
     struct AppWindowInfo {
         QString title;
         QByteArray iconPng;
+        int x = 0, y = 0;         // host window position (host screen pixels)
         int widthPx = 0;
         int heightPx = 0;
+        int anchorX = 0, anchorY = 0;  // canvas pixel of the window's top-left
+        int radius = 0;           // corner radius the host OS applies
+        QVector<QRect> popups;    // host screen pixels, bottom-most first
         int captionPx = 0;
         int dpi = 96;
         QVector<HitRegion> hits;
@@ -357,6 +361,12 @@ private:
     // Last window size (points) that came from the host, so its SIZE_CHANGED
     // echo isn't reported back as a user resize.
     int m_AppWindowHostW = 0, m_AppWindowHostH = 0;
+    // Region of the host screen the Mac window currently covers: the host
+    // window plus whatever popups stick out of it (host pixels).
+    QRect m_AppWindowExt;
+    QPoint m_AppWindowInset;  // host window top-left relative to the Mac window's (host pixels)
+    void applyAppWindowLayout(bool placeWindow);
+    QPoint appWindowHostPoint(int x, int y) const;
     // Last size we asked the host for (points) and when the user last resized,
     // so host geometry echoes don't fight a live resize.
     int m_AppWindowRequestedW = 0, m_AppWindowRequestedH = 0;

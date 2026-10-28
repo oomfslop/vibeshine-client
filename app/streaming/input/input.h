@@ -1,5 +1,8 @@
 #pragma once
 
+#include <QRect>
+#include <QVector>
+
 #include "settings/streamingpreferences.h"
 #include "backend/computermanager.h"
 
@@ -92,11 +95,17 @@ public:
 
     // App-window streams: absolute mouse positions are sent 1:1 in host
     // pixels on the padded canvas (no letterbox math).
-    void setAppWindowMapping(double pxPerPoint, int canvasW, int canvasH)
+    // App window: a point (x, y) in the window maps to canvas pixel
+    // (originX + x * pxPerPoint, originY + y * pxPerPoint); only the given
+    // rects (in points) show the picture, the rest of the window is see-through.
+    void setAppWindowMapping(double pxPerPoint, int canvasW, int canvasH, int originX, int originY, const QVector<QRect>& shape)
     {
         m_AppWindowPxPerPoint = pxPerPoint;
         m_AppWindowCanvasW = canvasW;
         m_AppWindowCanvasH = canvasH;
+        m_AppWindowOriginX = originX;
+        m_AppWindowOriginY = originY;
+        m_AppWindowShape = shape;
     }
 
     void handleKeyEvent(SDL_KeyboardEvent* event);
@@ -256,6 +265,9 @@ private:
     double m_AppWindowPxPerPoint = 0.0;
     int m_AppWindowCanvasW = 0;
     int m_AppWindowCanvasH = 0;
+    int m_AppWindowOriginX = 0;
+    int m_AppWindowOriginY = 0;
+    QVector<QRect> m_AppWindowShape;
     bool m_AbsoluteMouseMode;
     bool m_AbsoluteTouchMode;
     bool m_DisabledTouchFeedback;

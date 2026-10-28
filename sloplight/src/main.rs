@@ -223,19 +223,23 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         };
         let hit = http.get_window_hittest(&w.hwnd).unwrap_or_default();
         log::info!("[stream-cli] hit regions: {:?}", hit);
-        let cfg = stream::AppWindowConfig {
-            title: w.title.clone(),
-            icon_png_base64: stream::base64_encode(&icon),
-            rect: w.rect,
-            caption: w.caption,
-            dpi: w.dpi,
-            hit,
-        };
         // Fixed canvas (the helper crops to the window): host monitor capped at 2560x1600
         let host_px = (w.monitor_rect[2] > 0).then_some((w.monitor_rect[2].min(2560), w.monitor_rect[3].min(1600)));
         let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], host_px.or(Some((2560, 1600))));
         settings.width = cw;
         settings.height = ch;
+        let layout = http.get_window_layout(&w.hwnd, (cw, ch), "0", 0).ok();
+        log::info!("[stream-cli] layout: {:?}", layout);
+        let cfg = stream::AppWindowConfig {
+            title: w.title.clone(),
+            icon_png_base64: stream::base64_encode(&icon),
+            rect: layout.as_ref().map(|l| l.rect).unwrap_or(w.rect),
+            caption: w.caption,
+            dpi: w.dpi,
+            hit,
+            anchor: layout.as_ref().map(|l| l.anchor).unwrap_or([0, 0]),
+            radius: layout.as_ref().map(|l| l.radius).unwrap_or(0),
+        };
         settings.fps = settings.fps.min(60);
         settings.fractional_fps = 0.0;
         settings.window_mode = settings::WindowMode::Windowed;
@@ -262,29 +266,8 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         };
         let hwnd = hwnd.clone();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop2 = stop.clone();
-        let proc_cmd = process.clone_commander();
-        let handle = std::thread::spawn(move || {
-            let mut last: Option<backend::http::HostWindow> = None;
-            while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
-                if let Ok(list) = http2.get_host_windows() {
-                    match list.into_iter().find(|w| w.hwnd.eq_ignore_ascii_case(&hwnd)) {
-                        Some(w) => {
-                            if last.as_ref() != Some(&w) {
-                                proc_cmd.send_command(&serde_json::json!({"cmd": "geometry", "rect": w.rect, "caption": w.caption, "title": w.title, "state": w.state}));
-                                last = Some(w);
-                            }
-                        }
-                        None => {
-                            log::info!("[stream-cli] host window gone; closing");
-                            proc_cmd.send_command(&serde_json::json!({"cmd": "close"}));
-                            break;
-                        }
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            }
-        });
+        appwindows::spawn_geometry_poller(http2, hwnd, (settings.width, settings.height), process.clone_commander(), stop.clone());
+        let handle = std::thread::spawn(|| {});
         (stop, handle)
     });
     futures::executor::block_on(async {

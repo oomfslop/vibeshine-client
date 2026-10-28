@@ -10,10 +10,12 @@
 #include <SDL.h>
 #include <QByteArray>
 #include <QString>
+#include <QVector>
 
 namespace AppWindow {
 
-// Make the window borderless but resizable/miniaturizable and give it a title.
+// Make the window borderless but resizable/miniaturizable, transparent (the
+// picture is a shaped region of it) and give it a title.
 void configureWindow(SDL_Window* window, const QString& title);
 
 // Set the window's title (shown in Mission Control / Exposé).
@@ -36,9 +38,26 @@ void toggleZoom(SDL_Window* window);
 // Do nothing). Used for the Windows maximize button and caption double-clicks.
 void performTitleAction(SDL_Window* window);
 
-// Crop (in stream pixels) the renderer should show, top-left anchored:
-// app-window streams are padded canvases larger than the window. 0 = none.
-void setCrop(int w, int h);
-void crop(int& w, int& h);
+// Recompute the window's shadow from its (transparent) content. Safe from any
+// thread; cheap enough to call whenever the shape changes.
+void invalidateShadow(SDL_Window* window);
+
+// What the renderer shows. The stream is a canvas larger than the host
+// window; the Mac window covers the union of the host window and its popups
+// (menus, drop-downs, tooltips, dialogs) and draws each of them as its own
+// rounded rectangle, transparent elsewhere. Units are host pixels.
+struct LayoutItem {
+    int x = 0, y = 0, w = 0, h = 0;  // relative to the Mac window's top-left
+    int radius = 0;                  // corner radius (0 = square)
+};
+struct Layout {
+    int originX = 0, originY = 0;  // canvas pixel under the Mac window's top-left
+    int w = 0, h = 0;              // Mac window size in host pixels
+    QVector<LayoutItem> items;     // bottom-most first; empty = not an app window
+    unsigned version = 0;          // bumped on every change
+};
+void setLayout(const Layout& layout);
+Layout layout();
+bool active();  // an app-window layout has been set
 
 }
