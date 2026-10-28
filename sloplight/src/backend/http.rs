@@ -674,6 +674,8 @@ pub struct WindowLayout {
     #[serde(default)]
     pub radius: i32,
     #[serde(default)]
+    pub dpi: i32,
+    #[serde(default)]
     pub caption: i32,
     #[serde(default)]
     pub state: String,

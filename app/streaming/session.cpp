@@ -1830,6 +1830,17 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         if (cmd.contains("radius")) {
             m_AppWindow.radius = cmd.value("radius").toInt();
         }
+        const int dpi = cmd.value("dpi").toInt(0);
+        if (dpi >= 48 && dpi != m_AppWindow.dpi) {
+            // The window landed on a differently scaled display: points per
+            // host pixel change, and with them the window size and the mouse
+            // mapping. Ignoring this would make the cursor drift.
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "App window DPI %d -> %d", m_AppWindow.dpi, dpi);
+            m_AppWindow.dpi = dpi;
+            SDL_SetWindowMaximumSize(m_Window,
+                                     qMax(64, (int)qFloor(m_StreamConfig.width * appWindowScale())),
+                                     qMax(48, (int)qFloor(m_StreamConfig.height / 2 * appWindowScale())));
+        }
         applyAppWindowLayout(true);
         if (cmd.contains("caption")) {
             m_AppWindow.captionPx = cmd.value("caption").toInt();

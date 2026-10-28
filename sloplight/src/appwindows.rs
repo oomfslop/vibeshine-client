@@ -292,7 +292,7 @@ pub fn spawn_geometry_poller(http: NvHttp, hwnd: String, canvas: (i32, i32), com
                         let size_changed = last.as_ref().map(|p| p.rect[2] != l.rect[2] || p.rect[3] != l.rect[3]).unwrap_or(false);
                         let mut cmd = serde_json::json!({
                             "cmd": "geometry", "rect": l.rect, "anchor": l.anchor, "popups": l.popups, "radius": l.radius,
-                            "caption": l.caption, "title": l.title, "state": l.state
+                            "dpi": l.dpi, "caption": l.caption, "title": l.title, "state": l.state
                         });
                         if size_changed && l.state != "minimized" {
                             // The caption buttons move with the width: refresh the hit map.
