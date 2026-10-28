@@ -370,6 +370,7 @@ struct ChildState {
 std::mutex g_childMutex;                      // guards g_childLayers
 QVector<AppWindow::ChildLayer> g_childLayers; // retained CAMetalLayer* per child
 NSMutableDictionary<NSNumber*, NSValue*>* g_childWindows = nil;  // hwnd -> ChildState*
+NSMutableArray<NSNumber*>* g_childOrder = nil;  // hwnds bottom-most first, as the host stacks them
 
 void replaceChildLayer(const ChildState& st)
 {
@@ -486,6 +487,11 @@ void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, do
             closeChild((ChildState*)g_childWindows[key].pointerValue);
             [g_childWindows removeObjectForKey:key];
         }
+        // Remember the host's stacking order (the layout lists popups bottom-most first)
+        g_childOrder = [NSMutableArray new];
+        for (const ChildInfo& c : wanted) {
+            [g_childOrder addObject:@(c.hwnd)];
+        }
         // Create or update the rest
         for (const ChildInfo& c : wanted) {
             NSNumber* key = @(c.hwnd);
@@ -535,9 +541,11 @@ void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, do
                 replaceChildLayer(*st);
                 if (c.dialog) {
                     // A sibling kept above the main window: it must not move
-                    // with it (that is the user's call), only stay on top.
+                    // with it (that is the user's call), only stay on top. New
+                    // dialogs go in front of everything of ours (a dialog opened
+                    // from another dialog belongs above it).
                     st->window.level = ns.level;
-                    [st->window orderWindow:NSWindowAbove relativeTo:ns.windowNumber];
+                    [st->window orderFront:nil];
                 }
                 else {
                     [ns addChildWindow:st->window ordered:NSWindowAbove];
@@ -598,10 +606,18 @@ void raiseChildren(SDL_Window* mainWindow)
         if (!g_childWindows) {
             return;
         }
-        for (NSNumber* key in g_childWindows) {
-            auto* st = (ChildState*)g_childWindows[key].pointerValue;
+        // Bottom-most first, each above the previous: the host's stacking order
+        NSArray<NSNumber*>* order = g_childOrder ?: g_childWindows.allKeys;
+        NSInteger above = ns.windowNumber;
+        for (NSNumber* key in order) {
+            NSValue* v = g_childWindows[key];
+            if (!v) {
+                continue;
+            }
+            auto* st = (ChildState*)v.pointerValue;
             if (st->info.dialog && st->window) {
-                [st->window orderWindow:NSWindowAbove relativeTo:ns.windowNumber];
+                [st->window orderWindow:NSWindowAbove relativeTo:above];
+                above = st->window.windowNumber;
             }
         }
     });
