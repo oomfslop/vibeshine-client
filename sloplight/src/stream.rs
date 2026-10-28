@@ -52,16 +52,20 @@ pub struct AppWindowConfig {
     pub hit: Vec<crate::backend::http::HitRegion>,
 }
 
-/// Encoder frame for an app window: the window size rounded up with a margin
-/// so moderate growth needs no relaunch (the client crops), capped at `max`.
+/// Encoder frame for an app window. The helper copies the window into the
+/// top-left of this fixed canvas and the client crops, so the canvas is the
+/// largest size the window can take without a relaunch: the smaller of the
+/// host monitor and the Mac screen (in host pixels), rounded to 64, and never
+/// smaller than the window itself.
 pub fn app_window_canvas(w: i32, h: i32, max: Option<(i32, i32)>) -> (i32, i32) {
-    let round = |v: i32| ((v.max(64) + 192 + 255) / 256) * 256;
-    let (mut cw, mut ch) = (round(w), round(h));
-    if let Some((mw, mh)) = max {
-        cw = cw.min((mw.max(64) + 1) & !1);
-        ch = ch.min((mh.max(64) + 1) & !1);
-    }
-    (cw.max((w + 1) & !1), ch.max((h + 1) & !1))
+    let round64 = |v: i32| ((v.max(64) + 63) / 64) * 64;
+    let (mut cw, mut ch) = match max {
+        Some((mw, mh)) if mw > 0 && mh > 0 => (round64(mw), round64(mh)),
+        _ => (round64(w + 512), round64(h + 512)),
+    };
+    cw = cw.max((w + 1) & !1).min(4096);
+    ch = ch.max((h + 1) & !1).min(4096);
+    (cw, ch)
 }
 
 #[derive(Serialize)]

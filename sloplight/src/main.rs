@@ -231,8 +231,9 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
             dpi: w.dpi,
             hit,
         };
-        // Padded canvas (the helper crops to the window)
-        let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], None);
+        // Fixed canvas (the helper crops to the window): host monitor capped at 2560x1600
+        let host_px = (w.monitor_rect[2] > 0).then_some((w.monitor_rect[2].min(2560), w.monitor_rect[3].min(1600)));
+        let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], host_px.or(Some((2560, 1600))));
         settings.width = cw;
         settings.height = ch;
         settings.fps = settings.fps.min(60);

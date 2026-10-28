@@ -357,6 +357,10 @@ private:
     // Last window size (points) that came from the host, so its SIZE_CHANGED
     // echo isn't reported back as a user resize.
     int m_AppWindowHostW = 0, m_AppWindowHostH = 0;
+    // Last size we asked the host for (points) and when the user last resized,
+    // so host geometry echoes don't fight a live resize.
+    int m_AppWindowRequestedW = 0, m_AppWindowRequestedH = 0;
+    qint64 m_AppWindowUserResizeMs = 0;
     void handleAppWindowCommand(const QJsonObject& cmd);
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;

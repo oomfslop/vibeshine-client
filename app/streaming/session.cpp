@@ -1,6 +1,7 @@
 #include "session.h"
 #include "appwindow.h"
 #include <QJsonArray>
+#include <QDateTime>
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
@@ -1802,7 +1803,12 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
             const int w = (int)qRound(rect.at(2).toInt() * s), h = (int)qRound(rect.at(3).toInt() * s);
             int cw, ch;
             SDL_GetWindowSize(m_Window, &cw, &ch);
-            if (w > 0 && h > 0 && (w != cw || h != ch)) {
+            // Host sizes that merely echo our own request (within rounding), or
+            // that arrive while the user is still dragging an edge, are ignored;
+            // a host that clamped our request still wins once the drag settles.
+            const bool echo = qAbs(w - m_AppWindowRequestedW) <= 2 && qAbs(h - m_AppWindowRequestedH) <= 2;
+            const bool liveResize = QDateTime::currentMSecsSinceEpoch() - m_AppWindowUserResizeMs < 800;
+            if (w > 0 && h > 0 && (w != cw || h != ch) && !echo && !liveResize) {
                 m_AppWindow.widthPx = rect.at(2).toInt();
                 m_AppWindow.heightPx = rect.at(3).toInt();
                 m_AppWindowHostW = w;
@@ -2134,6 +2140,11 @@ void Session::exec()
         // 1 point = 1/appWindowScale() host pixels; the stream is the padded canvas
         m_InputHandler->setAppWindowMapping(1.0 / appWindowScale(), m_StreamConfig.width, m_StreamConfig.height);
         AppWindow::setCrop(m_AppWindow.widthPx, m_AppWindow.heightPx);
+        // The window can't outgrow the canvas it is cut from.
+        SDL_SetWindowMaximumSize(m_Window,
+                                 qMax(64, (int)qFloor(m_StreamConfig.width * appWindowScale())),
+                                 qMax(48, (int)qFloor(m_StreamConfig.height * appWindowScale())));
+        SDL_SetWindowMinimumSize(m_Window, 120, 60);
     }
 
     // Push our clipboard to the host at the start of the stream if enabled
@@ -2344,6 +2355,9 @@ void Session::exec()
                     // host asked for (initial size, geometry commands) echo
                     // here first and must not bounce.
                     if (qAbs(event.window.data1 - m_AppWindowHostW) > 2 || qAbs(event.window.data2 - m_AppWindowHostH) > 2) {
+                        m_AppWindowRequestedW = event.window.data1;
+                        m_AppWindowRequestedH = event.window.data2;
+                        m_AppWindowUserResizeMs = QDateTime::currentMSecsSinceEpoch();
                         emit appWindowEvent({{"kind", "resize"},
                                              {"w", (int)qRound(event.window.data1 / s)},
                                              {"h", (int)qRound(event.window.data2 / s)}});

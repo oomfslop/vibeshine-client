@@ -67,9 +67,25 @@ void setAppIcon(const QByteArray& png)
 void beginDrag(SDL_Window* window)
 {
     NSWindow* ns = nsWindowFor(window);
-    NSEvent* event = [NSApp currentEvent];
-    if (ns && event) {
-        [ns performWindowDragWithEvent:event];
+    if (!ns) {
+        return;
+    }
+    // SDL may have dequeued later events by the time it hands us the press, so
+    // NSApp.currentEvent can be stale and the drag would start from the wrong
+    // anchor (the window jumps). Synthesize the press at the mouse's current
+    // position instead.
+    NSPoint where = [ns mouseLocationOutsideOfEventStream];
+    NSEvent* down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown
+                                       location:where
+                                  modifierFlags:0
+                                      timestamp:[[NSProcessInfo processInfo] systemUptime]
+                                   windowNumber:ns.windowNumber
+                                        context:nil
+                                    eventNumber:0
+                                     clickCount:1
+                                       pressure:1.0];
+    if (down) {
+        [ns performWindowDragWithEvent:down];
     }
 }
 

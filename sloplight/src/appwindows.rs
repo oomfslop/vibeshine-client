@@ -170,8 +170,19 @@ impl Root {
             hit,
         };
         let mut settings = self.settings.clone();
-        // Padded canvas: the window plus room to grow; the helper crops to the window.
-        let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], None);
+        // Fixed canvas: the smaller of the host monitor and the Mac screen (in
+        // host pixels), so maximize and free resizing never need a relaunch.
+        let mac_px = cx.primary_display().map(|d| {
+            let b = d.bounds();
+            let k = w.dpi.max(48) as f32 / 96.0;
+            ((f32::from(b.size.width) * k) as i32, (f32::from(b.size.height) * k) as i32)
+        });
+        let host_px = (w.monitor_rect[2] > 0 && w.monitor_rect[3] > 0).then_some((w.monitor_rect[2], w.monitor_rect[3]));
+        let max = match (mac_px, host_px) {
+            (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.min(b.1))),
+            (a, b) => a.or(b),
+        };
+        let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], max);
         settings.width = cw;
         settings.height = ch;
         if settings.fps > 60 {

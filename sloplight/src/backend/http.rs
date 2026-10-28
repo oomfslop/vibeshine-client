@@ -640,6 +640,8 @@ pub struct HostWindow {
     pub icon: String,
     #[serde(default)]
     pub monitor: String,
+    #[serde(default)]
+    pub monitor_rect: [i32; 4],
     #[serde(default = "default_dpi")]
     pub dpi: i32,
 }
