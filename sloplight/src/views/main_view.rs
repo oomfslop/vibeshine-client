@@ -257,7 +257,25 @@ impl Root {
             let hover_bg = theme.element_hover;
             let open_bg = theme.selection_unfocused;
             let uuid = host.uuid.clone();
+            // App-window streaming: a "Windows" picker next to the host name
+            // (opens the host popover, whose Windows section lists them).
+            let windows_button = if host.is_paired() && host.is_online() && Self::host_supports_windows(&host) {
+                let n = self.window_streams.iter().filter(|w| w.host_uuid == host.uuid).count();
+                let label = if n > 0 { format!("Windows · {n} streaming") } else { "Windows".to_string() };
+                Some(
+                    button("host-windows", label)
+                        .ghost()
+                        .icon(icon::APP_WINDOW)
+                        .on_click(cx.listener(|this, _, _, cx| this.open_host_info(cx))),
+                )
+            } else {
+                None
+            };
             div()
+                .flex()
+                .items_center()
+                .gap(px(10.))
+                .child(div()
                 .id("host-title")
                 .flex()
                 .items_center()
@@ -274,7 +292,8 @@ impl Root {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.popup = Some(Popup { kind: PopupKind::HostMenu(uuid.clone()), position: this.host_title_anchor(), highlighted: None });
                     cx.notify();
-                }))
+                })))
+                .children(windows_button)
                 .into_any_element()
         };
         let show_filter = settings || self.host_browsable();
