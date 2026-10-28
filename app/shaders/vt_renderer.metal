@@ -98,6 +98,23 @@ static half desk_coverage(float2 texCoords, float2 local, float4 rect)
     return cov;
 }
 
+// Popups (rect.w = band width): a Windows 11 menu's window is larger than
+// the menu, its edges holding the soft shadow drawn over whatever is under
+// it on the host. Near-black pixels in that band are what the host has
+// beneath (the desk's black, a dark window), not the menu: transparent.
+static half desk_key(half3 rgb, float2 local, float4 rect)
+{
+    if (rect.w <= 0.0) {
+        return 1.0h;
+    }
+    float edge = min(min(local.x, local.y), min(rect.x - local.x, rect.y - local.y));
+    if (edge >= rect.w) {
+        return 1.0h;
+    }
+    half bright = max(rgb.r, max(rgb.g, rgb.b));
+    return smoothstep(0.035h, 0.085h, bright);
+}
+
 fragment half4 ps_draw_biplanar_desk(VertexAW v [[ stage_in ]],
                                      constant CscParams &cscParams [[ buffer(0) ]],
                                      texture2d<half> luminancePlane [[ texture(0) ]],
@@ -109,8 +126,9 @@ fragment half4 ps_draw_biplanar_desk(VertexAW v [[ stage_in ]],
                       chrominancePlane.sample(s, v.texCoords + chromaOffset).rg);
     yuv *= cscParams.bitnessScaleFactor;
     yuv -= cscParams.offsets;
-    half cov = desk_coverage(v.texCoords, v.local, v.rect);
-    return half4((yuv * cscParams.matrix) * cov, cov);
+    half3 rgb = yuv * cscParams.matrix;
+    half cov = desk_coverage(v.texCoords, v.local, v.rect) * desk_key(rgb, v.local, v.rect);
+    return half4(rgb * cov, cov);
 }
 
 fragment half4 ps_draw_triplanar_desk(VertexAW v [[ stage_in ]],
@@ -126,6 +144,7 @@ fragment half4 ps_draw_triplanar_desk(VertexAW v [[ stage_in ]],
                       chrominancePlaneV.sample(s, v.texCoords + chromaOffset).r);
     yuv *= cscParams.bitnessScaleFactor;
     yuv -= cscParams.offsets;
-    half cov = desk_coverage(v.texCoords, v.local, v.rect);
-    return half4((yuv * cscParams.matrix) * cov, cov);
+    half3 rgb = yuv * cscParams.matrix;
+    half cov = desk_coverage(v.texCoords, v.local, v.rect) * desk_key(rgb, v.local, v.rect);
+    return half4(rgb * cov, cov);
 }

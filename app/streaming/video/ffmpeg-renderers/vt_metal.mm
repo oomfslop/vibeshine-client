@@ -615,7 +615,8 @@ public:
             const int ox = child.anchorRight ? vw - dw : 0, oy = child.anchorBottom ? vh - dh : 0;
             const float xl = -1.0f + 2.0f * ox / vw, xr = -1.0f + 2.0f * (ox + dw) / vw;
             const float yt = 1.0f - 2.0f * oy / vh, yb = 1.0f - 2.0f * (oy + dh) / vh;
-            const simd_float4 rect = { (float)dw, (float)dh, (float)child.radius, 0.0f };
+            // Popups: key out the shadow band at their edges (see desk_key)
+            const simd_float4 rect = { (float)dw, (float)dh, (float)child.radius, child.popup ? 28.0f : 0.0f };
             const float u0 = (float)gx / frame->width;
             const float v0 = (float)gy / frame->height;
             const float u1 = (float)(gx + dw) / frame->width;

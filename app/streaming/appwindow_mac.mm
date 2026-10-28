@@ -1135,10 +1135,18 @@ void syncDesk(const QVector<DeskWindow>& windows)
                 st->window.releasedWhenClosed = NO;
                 st->window.opaque = NO;
                 st->window.backgroundColor = [NSColor clearColor];
-                // Popups carry their own (Windows) shadow and a transparent
-                // margin showing what is beneath; a macOS shadow would outline
-                // the whole margin as a box.
-                st->window.hasShadow = isDeskPane(w);
+                // Popups: their shadow band is keyed out (transparent), so the
+                // macOS shadow follows the menu itself; it is recomputed once
+                // the first pictures are in.
+                st->window.hasShadow = YES;
+                if (!isDeskPane(w)) {
+                    AWChildWindow* popupWindow = st->window;
+                    for (double t : {0.15, 0.5}) {
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(t * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            [popupWindow invalidateShadow];
+                        });
+                    }
+                }
                 st->window.title = w.title.toNSString();
                 st->window.movableByWindowBackground = NO;
                 st->window.level = NSNormalWindowLevel;
