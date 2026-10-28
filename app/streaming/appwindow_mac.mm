@@ -1452,18 +1452,11 @@ static void beginDragNow(quint64 hwnd, bool force)
         st->dragging = true;
         st->frozen = true;
         setChildLayerFrozen(hwnd, true);
-        // Out of the way on the host, so the windows it covered there show
-        // their own content on the Mac while it is dragged around. Not for
-        // dialogs or windows with dialogs: Windows keeps owned windows above
-        // their owner and would bury the whole family.
-        bool family = st->info.owner != 0;
-        for (NSNumber* key in g_desk) {
-            DeskState* other = (DeskState*)g_desk[key].pointerValue;
-            family = family || (other->info.owner == hwnd && isDeskPane(other->info));
-        }
-        if (!family) {
-            pushDeskEvent(hwnd, "lower", 0, 0, 0, 0);
-        }
+        // Out of the way on the host while it is dragged (its picture is
+        // frozen here): parked past the desk's right edge, it shows inside
+        // no other window, dialogs over their parent included. The drop
+        // moves it back.
+        pushDeskEvent(hwnd, "park", 0, 0, 0, 0);
         if (force) {
             return;  // test drags move the window themselves
         }

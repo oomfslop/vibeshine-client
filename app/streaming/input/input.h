@@ -155,6 +155,11 @@ public:
 
     bool isSystemKeyCaptureActive();
 
+    // Window mode: Cmd belongs to the Mac (Cmd-Tab, Cmd-Space, ...). Neither
+    // it (it would be the Windows key) nor keys pressed with it go to the host.
+    void setSwallowCommandKey(bool swallow) { m_SwallowCommandKey = swallow; }
+    bool m_SwallowCommandKey = false;
+
     void setCaptureActive(bool active);
 
     bool isMouseInVideoRegion(int mouseX, int mouseY, int windowWidth = -1, int windowHeight = -1);

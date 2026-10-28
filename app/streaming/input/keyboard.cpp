@@ -201,6 +201,12 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
         return;
     }
 
+    if (m_SwallowCommandKey &&
+            (event->keysym.scancode == SDL_SCANCODE_LGUI || event->keysym.scancode == SDL_SCANCODE_RGUI ||
+             (event->state == SDL_PRESSED && (event->keysym.mod & KMOD_GUI)))) {
+        return;
+    }
+
     // Check for our special key combos
     if ((event->state == SDL_PRESSED) &&
             (event->keysym.mod & KMOD_CTRL) &&

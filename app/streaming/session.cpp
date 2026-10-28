@@ -2066,7 +2066,7 @@ void Session::handleDeskEvent(void* raw)
     else if (ev->kind == "resize") {
         sendWindowAction(ev->hwnd, "resize", 0, 0, ev->w, ev->h);
     }
-    else if (ev->kind == "minimize" || ev->kind == "restore" || ev->kind == "lower" || ev->kind == "activate") {
+    else if (ev->kind == "minimize" || ev->kind == "restore" || ev->kind == "lower" || ev->kind == "activate" || ev->kind == "park") {
         sendWindowAction(ev->hwnd, ev->kind);
     }
     else if (ev->kind == "dragend") {
@@ -2619,6 +2619,9 @@ void Session::exec()
     if (m_HideHostCursor || m_IsAppWindow) {
         // The host leaves its cursor out of the picture; ours stays visible.
         m_InputHandler->setLocalCursorAlwaysVisible();
+    }
+    if (m_IsAppWindow) {
+        m_InputHandler->setSwallowCommandKey(true);
     }
 
     if (m_IsAppWindow) {
