@@ -68,7 +68,7 @@ pub fn app_window_canvas(w: i32, h: i32, max: Option<(i32, i32)>) -> (i32, i32) 
         _ => (round64(w + 512), round64(h + 512)),
     };
     cw = cw.max((w + 1) & !1).min(4096);
-    ch = ch.max((h + 1) & !1).min(4096);
+    ch = ch.max((h + 1) & !1).min(2048);  // the alpha band below doubles the frame height
     (cw, ch)
 }
 

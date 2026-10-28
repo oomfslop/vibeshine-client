@@ -98,8 +98,15 @@ fragment half4 ps_draw_biplanar_aw(VertexAW v [[ stage_in ]],
                       chrominancePlane.sample(s, v.texCoords + chromaOffset).rg);
     yuv *= cscParams.bitnessScaleFactor;
     yuv -= cscParams.offsets;
-    half a = aw_coverage(v.local, v.rect);
-    return half4((yuv * cscParams.matrix) * a, a);
+    // The lower half of the frame holds the picture's alpha as grey
+    float2 alphaCoords = v.texCoords + float2(0.0, 0.5);
+    half3 ayuv = half3(luminancePlane.sample(s, alphaCoords).r,
+                       chrominancePlane.sample(s, alphaCoords + chromaOffset).rg);
+    ayuv *= cscParams.bitnessScaleFactor;
+    ayuv -= cscParams.offsets;
+    half alpha = clamp((ayuv * cscParams.matrix).g, 0.0h, 1.0h);
+    half cov = aw_coverage(v.local, v.rect);
+    return half4((yuv * cscParams.matrix) * cov, alpha * cov);
 }
 
 fragment half4 ps_draw_triplanar_aw(VertexAW v [[ stage_in ]],
@@ -115,6 +122,13 @@ fragment half4 ps_draw_triplanar_aw(VertexAW v [[ stage_in ]],
                       chrominancePlaneV.sample(s, v.texCoords + chromaOffset).r);
     yuv *= cscParams.bitnessScaleFactor;
     yuv -= cscParams.offsets;
-    half a = aw_coverage(v.local, v.rect);
-    return half4((yuv * cscParams.matrix) * a, a);
+    float2 alphaCoords = v.texCoords + float2(0.0, 0.5);
+    half3 ayuv = half3(luminancePlane.sample(s, alphaCoords).r,
+                       chrominancePlaneU.sample(s, alphaCoords + chromaOffset).r,
+                       chrominancePlaneV.sample(s, alphaCoords + chromaOffset).r);
+    ayuv *= cscParams.bitnessScaleFactor;
+    ayuv -= cscParams.offsets;
+    half alpha = clamp((ayuv * cscParams.matrix).g, 0.0h, 1.0h);
+    half cov = aw_coverage(v.local, v.rect);
+    return half4((yuv * cscParams.matrix) * cov, alpha * cov);
 }

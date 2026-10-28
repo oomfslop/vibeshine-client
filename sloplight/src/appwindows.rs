@@ -175,8 +175,9 @@ impl Root {
             (a, b) => a.or(b),
         };
         let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], max);
+        // The encoder frame is two bands: the picture and, below it, its alpha.
         settings.width = cw;
-        settings.height = ch;
+        settings.height = ch * 2;
         let layout = host.http(self.identity.clone()).and_then(|h| h.get_window_layout(&w.hwnd, (cw, ch), "0", 0).ok());
         let cfg = AppWindowConfig {
             title: w.title.clone(),
@@ -188,11 +189,6 @@ impl Root {
             anchor: layout.as_ref().map(|l| l.anchor).unwrap_or([0, 0]),
             radius: layout.as_ref().map(|l| l.radius).unwrap_or(0),
         };
-        if settings.fps > 60 {
-            // App windows are desktop content; 60 fps keeps several of them cheap to decode.
-            settings.fps = 60;
-            settings.fractional_fps = 0.0;
-        }
         settings.window_mode = settings::WindowMode::Windowed;
         settings.enable_vsync = false;
         settings.frame_pacing = false;

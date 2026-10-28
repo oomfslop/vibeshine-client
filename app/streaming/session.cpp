@@ -1884,7 +1884,8 @@ void Session::applyAppWindowLayout(bool placeWindow)
     const double s = appWindowScale();  // points per host pixel
     const QRect win(m_AppWindow.x, m_AppWindow.y, qMax(1, m_AppWindow.widthPx), qMax(1, m_AppWindow.heightPx));
     // Only what the canvas actually holds can be shown
-    const QRect canvas(win.x() - m_AppWindow.anchorX, win.y() - m_AppWindow.anchorY, m_StreamConfig.width, m_StreamConfig.height);
+    // The stream is two bands: the picture on top, its alpha below
+    const QRect canvas(win.x() - m_AppWindow.anchorX, win.y() - m_AppWindow.anchorY, m_StreamConfig.width, m_StreamConfig.height / 2);
     QVector<QRect> popups;
     QRect ext = win;
     for (const QRect& p : m_AppWindow.popups) {
@@ -2243,7 +2244,7 @@ void Session::exec()
         // The window can't outgrow the canvas it is cut from.
         SDL_SetWindowMaximumSize(m_Window,
                                  qMax(64, (int)qFloor(m_StreamConfig.width * appWindowScale())),
-                                 qMax(48, (int)qFloor(m_StreamConfig.height * appWindowScale())));
+                                 qMax(48, (int)qFloor(m_StreamConfig.height / 2 * appWindowScale())));
         SDL_SetWindowMinimumSize(m_Window, 120, 60);
     }
 
