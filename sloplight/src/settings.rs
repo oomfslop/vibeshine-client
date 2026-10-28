@@ -97,6 +97,10 @@ pub struct Settings {
     pub use_virtual_display: bool,
     /// Vibeshine/Vibepollo: capture right after each present (1000 Hz virtual display).
     pub vrr_capture: bool,
+    /// App windows: resize the host window on every Mac resize step (true) or
+    /// only once the drag settles (false).
+    #[serde(default = "default_true")]
+    pub app_window_live_resize: bool,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
     // Audio
@@ -165,6 +169,7 @@ impl Default for Settings {
             window_mode: recommended_window_mode(),
             use_virtual_display: false,
             vrr_capture: false,
+            app_window_live_resize: true,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             audio_config: AudioConfig::Stereo,
@@ -349,4 +354,8 @@ impl Settings {
 pub fn format_mbps(kbps: i32) -> String {
     let mbps = kbps as f64 / 1000.0;
     if (mbps - mbps.round()).abs() < 0.001 { format!("{}", mbps.round() as i64) } else { format!("{mbps:.1}") }
+}
+
+fn default_true() -> bool {
+    true
 }

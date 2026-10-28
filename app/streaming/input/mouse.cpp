@@ -270,6 +270,11 @@ bool SdlInputHandler::isMouseInVideoRegion(int mouseX, int mouseY, int windowWid
 {
     SDL_Rect src, dst;
 
+    if (m_AppWindowCanvasW > 0) {
+        // App window: the window is the video (a crop of the canvas)
+        return mouseX >= 0 && mouseY >= 0;
+    }
+
     if (windowWidth < 0 || windowHeight < 0) {
         SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
     }

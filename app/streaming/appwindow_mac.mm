@@ -103,4 +103,44 @@ void toggleZoom(SDL_Window* window)
     }
 }
 
+// "Fill" (macOS 15): take the screen's visible area without becoming a
+// full-screen Space; a second time restores the previous frame.
+static NSMutableDictionary<NSNumber*, NSValue*>* g_fillRestoreFrames = nil;
+
+void performTitleAction(SDL_Window* window)
+{
+    NSWindow* ns = nsWindowFor(window);
+    if (!ns) {
+        return;
+    }
+    NSString* action = [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleActionOnDoubleClick"];
+    if (action == nil) {
+        action = @"Maximize";  // macOS default is Zoom
+    }
+    if ([action isEqualToString:@"None"]) {
+        return;
+    }
+    if ([action isEqualToString:@"Minimize"]) {
+        [ns miniaturize:nil];
+        return;
+    }
+    if ([action isEqualToString:@"Fill"]) {
+        if (!g_fillRestoreFrames) {
+            g_fillRestoreFrames = [NSMutableDictionary new];
+        }
+        NSNumber* key = @(ns.windowNumber);
+        NSRect fill = ns.screen.visibleFrame;
+        if (NSEqualRects(ns.frame, fill) && g_fillRestoreFrames[key]) {
+            [ns setFrame:[g_fillRestoreFrames[key] rectValue] display:YES animate:YES];
+            [g_fillRestoreFrames removeObjectForKey:key];
+        }
+        else {
+            g_fillRestoreFrames[key] = [NSValue valueWithRect:ns.frame];
+            [ns setFrame:fill display:YES animate:YES];
+        }
+        return;
+    }
+    [ns zoom:nil];  // "Maximize"
+}
+
 }

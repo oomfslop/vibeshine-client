@@ -465,6 +465,23 @@ NvHTTP::getClipboardText()
                                   REQUEST_TIMEOUT_MS);
 }
 
+QString
+NvHTTP::hitTestWindow(quint64 windowHandle, int x, int y)
+{
+    QString body = openConnectionToString(m_BaseUrlHttps,
+                                          "actions/window-hittest",
+                                          QString("hwnd=0x%1&x=%2&y=%3").arg(QString::number(windowHandle, 16)).arg(x).arg(y),
+                                          500);
+    // {"hit":"drag"}
+    int k = body.indexOf("\"hit\":\"");
+    if (k < 0) {
+        return "none";
+    }
+    k += 7;
+    int e = body.indexOf('"', k);
+    return e > k ? body.mid(k, e - k) : "none";
+}
+
 void
 NvHTTP::setClipboardText(const QString& text)
 {

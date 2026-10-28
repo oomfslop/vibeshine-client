@@ -44,8 +44,8 @@ pub struct WindowStream {
     poller_stop: Arc<AtomicBool>,
     /// Encoder frame size this session was launched with (host pixels)
     pub canvas: (i32, i32),
-    /// Bumped on every Mac-side resize; the debounced sender only acts on the latest
-    resize_generation: Arc<std::sync::atomic::AtomicU64>,
+    /// Mac-side resizes go through one worker thread that always sends the latest size
+    resize_tx: std::sync::mpsc::Sender<(i32, i32)>,
 }
 
 impl Drop for WindowStream {
@@ -209,7 +209,7 @@ impl Root {
                     error_lines: Vec::new(),
                     poller_stop,
                     canvas: (cw, ch),
-                    resize_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    resize_tx: spawn_resize_worker(host.http(self.identity.clone()), w.hwnd.clone(), self.settings.app_window_live_resize),
                 });
             }
             Err(e) => self.toast(ToastKind::Error, format!("Couldn't stream {}: {e}", w.title), cx),
@@ -243,20 +243,9 @@ impl Root {
                 match kind.as_str() {
                     "resize" => {
                         if w > ws.canvas.0 || h > ws.canvas.1 {
-                            log::info!("app window {hwnd} grew past its {}x{} canvas; a relaunch would be needed for full detail", ws.canvas.0, ws.canvas.1);
+                            log::info!("app window {hwnd} grew past its {}x{} canvas", ws.canvas.0, ws.canvas.1);
                         }
-                        // Debounce: live resizing fires many events; send the latest after a pause.
-                        let generation = ws.resize_generation.fetch_add(1, Ordering::Relaxed) + 1;
-                        let gen_ref = ws.resize_generation.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(Duration::from_millis(120));
-                            if gen_ref.load(Ordering::Relaxed) != generation {
-                                return;
-                            }
-                            if let Err(e) = http.window_action(&hwnd, "resize", 0, 0, w, h) {
-                                log::warn!("window resize on {hwnd}: {e}");
-                            }
-                        });
+                        let _ = ws.resize_tx.send((w, h));
                     }
                     "focus" | "close" => {
                         let op = if kind == "focus" { "activate" } else { "close" };
@@ -327,3 +316,28 @@ fn spawn_geometry_poller(http: NvHttp, hwnd: String, commander: StreamCommander,
 }
 
 pub type WindowsSender = UnboundedSender<WindowsEvent>;
+
+/// One thread per window stream sends host resizes in order, always the
+/// latest size: immediately when live, or after a 120 ms pause otherwise.
+fn spawn_resize_worker(http: Option<NvHttp>, hwnd: String, live: bool) -> std::sync::mpsc::Sender<(i32, i32)> {
+    let (tx, rx) = std::sync::mpsc::channel::<(i32, i32)>();
+    std::thread::Builder::new()
+        .name(format!("window resize {hwnd}"))
+        .spawn(move || {
+            let Some(http) = http else { return };
+            while let Ok(mut size) = rx.recv() {
+                if !live {
+                    std::thread::sleep(Duration::from_millis(120));
+                }
+                // Collapse everything queued meanwhile into the newest size.
+                while let Ok(newer) = rx.try_recv() {
+                    size = newer;
+                }
+                if let Err(e) = http.window_action(&hwnd, "resize", 0, 0, size.0, size.1) {
+                    log::warn!("window resize on {hwnd}: {e}");
+                }
+            }
+        })
+        .ok();
+    tx
+}

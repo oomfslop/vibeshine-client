@@ -2616,16 +2616,18 @@ void Session::exec()
                 // with Cmd held (apps with custom title bars report caption 0).
                 if (event.type == SDL_MOUSEBUTTONDOWN) {
                     const bool cmdHeld = (SDL_GetModState() & KMOD_GUI) != 0;
-                    const int captionPt = (int)qRound(m_AppWindow.captionPx * appWindowScale());
-                    // Host pixel under the cursor, matched against the host's
-                    // own non-client hit map (caption, buttons).
+                    // Host pixel under the cursor. For presses near the top of
+                    // the window ask the host app live what is there (its own
+                    // WM_NCHITTEST), so tabs, custom title bars and caption
+                    // buttons behave exactly as the app defines them.
                     const QPoint px((int)qRound(event.button.x / appWindowScale()), (int)qRound(event.button.y / appWindowScale()));
-                    QString hit;
-                    for (const HitRegion& r : m_AppWindow.hits) {
-                        if (r.rect.contains(px)) {
-                            hit = r.kind;
-                            break;
-                        }
+                    QString hit = "client";
+                    if (cmdHeld) {
+                        hit = "drag";
+                    }
+                    else if (px.y() < 96 && m_WindowHandle != 0) {
+                        NvHTTP http(m_Computer);
+                        hit = http.hitTestWindow(m_WindowHandle, px.x(), px.y());
                     }
                     if (hit == "min") {
                         m_AppWindowDragging = true;  // swallow the matching button-up
@@ -2634,7 +2636,7 @@ void Session::exec()
                     }
                     if (hit == "max") {
                         m_AppWindowDragging = true;
-                        AppWindow::toggleZoom(m_Window);
+                        AppWindow::performTitleAction(m_Window);
                         break;
                     }
                     if (hit == "close") {
@@ -2642,9 +2644,14 @@ void Session::exec()
                         emit appWindowEvent({{"kind", "close"}});
                         break;
                     }
-                    if (cmdHeld || hit == "drag" || (captionPt > 0 && event.button.y < captionPt)) {
+                    if (hit == "drag") {
                         m_AppWindowDragging = true;
-                        AppWindow::beginDrag(m_Window);
+                        if (event.button.clicks >= 2) {
+                            AppWindow::performTitleAction(m_Window);
+                        }
+                        else {
+                            AppWindow::beginDrag(m_Window);
+                        }
                         break;
                     }
                 }

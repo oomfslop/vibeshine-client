@@ -8,6 +8,7 @@ void setAppIcon(const QByteArray&) {}
 void beginDrag(SDL_Window*) {}
 double backingScale(SDL_Window*) { return 1.0; }
 void toggleZoom(SDL_Window*) {}
+void performTitleAction(SDL_Window*) {}
 }
 #endif
 

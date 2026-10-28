@@ -210,6 +210,11 @@ public:
     QString
     getClipboardText();
 
+    // App-window streaming: what the host app says is under a frame-relative
+    // pixel ("drag", "min", "max", "close", "border", "client", "none").
+    QString
+    hitTestWindow(quint64 windowHandle, int x, int y);
+
     void
     setClipboardText(const QString& text);
 
