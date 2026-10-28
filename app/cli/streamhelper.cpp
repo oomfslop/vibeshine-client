@@ -255,6 +255,7 @@ void Launcher::execute()
         }
         info.captionPx = aw.value("caption").toInt(0);
         info.dpi = aw.value("dpi").toInt(96);
+        info.hits = Session::parseHitRegions(aw.value("hit").toArray());
         m_Session->setAppWindow(info);
         connect(m_Session, &Session::appWindowEvent, this, &Launcher::onAppWindowEvent);
         startStdinCommandReader();

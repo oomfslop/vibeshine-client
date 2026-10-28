@@ -13,6 +13,9 @@
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
 #include <QJsonObject>
+#include <QJsonArray>
+#include <QVector>
+#include <QRect>
 #include "quickmenu.h"
 
 // SDL_USEREVENT codes shared with helper classes
@@ -125,6 +128,10 @@ public:
     // App-window streaming: present the stream as a borderless window that
     // mirrors one host window (size in host pixels, caption height, title,
     // icon PNG). Implies windowed mode.
+    struct HitRegion {
+        QString kind;  // "drag", "min", "max", "close"
+        QRect rect;    // host pixels relative to the window's frame
+    };
     struct AppWindowInfo {
         QString title;
         QByteArray iconPng;
@@ -132,7 +139,9 @@ public:
         int heightPx = 0;
         int captionPx = 0;
         int dpi = 96;
+        QVector<HitRegion> hits;
     };
+    static QVector<HitRegion> parseHitRegions(const QJsonArray& arr);
     void setAppWindow(const AppWindowInfo& info) { m_AppWindow = info; m_IsAppWindow = true; }
     bool isAppWindow() const { return m_IsAppWindow; }
     // Points per host pixel for the app window (logical-size parity with the host)

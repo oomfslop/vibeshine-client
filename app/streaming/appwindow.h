@@ -28,4 +28,13 @@ void beginDrag(SDL_Window* window);
 // Backing scale factor of the window's screen (1.0 when unknown).
 double backingScale(SDL_Window* window);
 
+// Toggle the window between its normal frame and the screen's visible area
+// (what the Windows maximize button means on the Mac side).
+void toggleZoom(SDL_Window* window);
+
+// Crop (in stream pixels) the renderer should show, top-left anchored:
+// app-window streams are padded canvases larger than the window. 0 = none.
+void setCrop(int w, int h);
+void crop(int& w, int& h);
+
 }

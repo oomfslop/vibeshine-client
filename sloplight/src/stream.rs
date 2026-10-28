@@ -48,6 +48,20 @@ pub struct AppWindowConfig {
     pub rect: [i32; 4],
     pub caption: i32,
     pub dpi: i32,
+    /// Host hit-test map: where the caption (drag) and the caption buttons are
+    pub hit: Vec<crate::backend::http::HitRegion>,
+}
+
+/// Encoder frame for an app window: the window size rounded up with a margin
+/// so moderate growth needs no relaunch (the client crops), capped at `max`.
+pub fn app_window_canvas(w: i32, h: i32, max: Option<(i32, i32)>) -> (i32, i32) {
+    let round = |v: i32| ((v.max(64) + 192 + 255) / 256) * 256;
+    let (mut cw, mut ch) = (round(w), round(h));
+    if let Some((mw, mh)) = max {
+        cw = cw.min((mw.max(64) + 1) & !1);
+        ch = ch.min((mh.max(64) + 1) & !1);
+    }
+    (cw.max((w + 1) & !1), ch.max((h + 1) & !1))
 }
 
 #[derive(Serialize)]

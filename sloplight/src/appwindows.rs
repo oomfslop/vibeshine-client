@@ -42,6 +42,10 @@ pub struct WindowStream {
     pub connected: bool,
     pub error_lines: Vec<String>,
     poller_stop: Arc<AtomicBool>,
+    /// Encoder frame size this session was launched with (host pixels)
+    pub canvas: (i32, i32),
+    /// Bumped on every Mac-side resize; the debounced sender only acts on the latest
+    resize_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Drop for WindowStream {
@@ -156,16 +160,25 @@ impl Root {
             return;
         };
         let icon_png = self.windows.icons.get(&w.icon).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
+        let hit = host.http(self.identity.clone()).and_then(|h| h.get_window_hittest(&w.hwnd).ok()).unwrap_or_default();
         let cfg = AppWindowConfig {
             title: w.title.clone(),
             icon_png_base64: stream::base64_encode(&icon_png),
             rect: w.rect,
             caption: w.caption,
             dpi: w.dpi,
+            hit,
         };
         let mut settings = self.settings.clone();
-        settings.width = ((w.rect[2].max(64)) + 1) & !1;
-        settings.height = ((w.rect[3].max(48)) + 1) & !1;
+        // Padded canvas: the window plus room to grow; the helper crops to the window.
+        let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], None);
+        settings.width = cw;
+        settings.height = ch;
+        if settings.fps > 60 {
+            // App windows are desktop content; 60 fps keeps several of them cheap to decode.
+            settings.fps = 60;
+            settings.fractional_fps = 0.0;
+        }
         settings.window_mode = settings::WindowMode::Windowed;
         settings.enable_vsync = false;
         settings.frame_pacing = false;
@@ -184,6 +197,8 @@ impl Root {
                     connected: false,
                     error_lines: Vec::new(),
                     poller_stop,
+                    canvas: (cw, ch),
+                    resize_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 });
             }
             Err(e) => self.toast(ToastKind::Error, format!("Couldn't stream {}: {e}", w.title), cx),
@@ -210,21 +225,37 @@ impl Root {
             HelperEvent::LaunchError { text } => ws.error_lines.push(text),
             HelperEvent::AppWindow { kind, w, h } => {
                 // Mac-side window change -> host window action, off the UI thread.
-                let op = match kind.as_str() {
-                    "resize" => Some(("resize", w, h)),
-                    "focus" => Some(("activate", 0, 0)),
-                    "minimize" => Some(("minimize", 0, 0)),
-                    "restore" => Some(("restore", 0, 0)),
-                    "close" => Some(("close", 0, 0)),
-                    _ => None,
-                };
-                if let (Some((op, w, h)), Some(http)) = (op, host.and_then(|h| h.http(self.identity.clone()))) {
-                    let hwnd = ws.hwnd.clone();
-                    std::thread::spawn(move || {
-                        if let Err(e) = http.window_action(&hwnd, op, 0, 0, w, h) {
-                            log::warn!("window {op} on {hwnd}: {e}");
+                // Minimize/restore stay on the Mac: the host window keeps running
+                // (and its capture alive) while the Mac window is in the Dock.
+                let Some(http) = host.and_then(|h| h.http(self.identity.clone())) else { return };
+                let hwnd = ws.hwnd.clone();
+                match kind.as_str() {
+                    "resize" => {
+                        if w > ws.canvas.0 || h > ws.canvas.1 {
+                            log::info!("app window {hwnd} grew past its {}x{} canvas; a relaunch would be needed for full detail", ws.canvas.0, ws.canvas.1);
                         }
-                    });
+                        // Debounce: live resizing fires many events; send the latest after a pause.
+                        let generation = ws.resize_generation.fetch_add(1, Ordering::Relaxed) + 1;
+                        let gen_ref = ws.resize_generation.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(120));
+                            if gen_ref.load(Ordering::Relaxed) != generation {
+                                return;
+                            }
+                            if let Err(e) = http.window_action(&hwnd, "resize", 0, 0, w, h) {
+                                log::warn!("window resize on {hwnd}: {e}");
+                            }
+                        });
+                    }
+                    "focus" | "close" => {
+                        let op = if kind == "focus" { "activate" } else { "close" };
+                        std::thread::spawn(move || {
+                            if let Err(e) = http.window_action(&hwnd, op, 0, 0, 0, 0) {
+                                log::warn!("window {op} on {hwnd}: {e}");
+                            }
+                        });
+                    }
+                    _ => {}
                 }
             }
             HelperEvent::Exited { code, .. } => {
@@ -254,9 +285,17 @@ fn spawn_geometry_poller(http: NvHttp, hwnd: String, commander: StreamCommander,
                         Some(w) => {
                             misses = 0;
                             if last.as_ref() != Some(&w) {
-                                commander.send_command(&serde_json::json!({
+                                let size_changed = last.as_ref().map(|l| l.rect[2] != w.rect[2] || l.rect[3] != w.rect[3]).unwrap_or(false);
+                                let mut cmd = serde_json::json!({
                                     "cmd": "geometry", "rect": w.rect, "caption": w.caption, "title": w.title, "state": w.state
-                                }));
+                                });
+                                if size_changed && w.state != "minimized" {
+                                    // The caption buttons move with the width: refresh the hit map.
+                                    if let Ok(hit) = http.get_window_hittest(&w.hwnd) {
+                                        cmd["hit"] = serde_json::to_value(hit).unwrap_or_default();
+                                    }
+                                }
+                                commander.send_command(&cmd);
                                 last = Some(w);
                             }
                         }

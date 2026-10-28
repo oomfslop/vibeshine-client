@@ -9,6 +9,7 @@
 #include <Limelight.h>
 #include "streaming/session.h"
 #include "streaming/streamutils.h"
+#include "streaming/appwindow.h"
 #include "path.h"
 
 #import <Cocoa/Cocoa.h>
@@ -143,24 +144,37 @@ public:
     {
         int drawableWidth, drawableHeight;
         SDL_Metal_GetDrawableSize(m_Window, &drawableWidth, &drawableHeight);
+        int cropW = 0, cropH = 0;
+        AppWindow::crop(cropW, cropH);
 
         // Check if anything has changed since the last vertex buffer upload
         if (m_VideoVertexBuffer &&
                 frame->width == m_LastFrameWidth && frame->height == m_LastFrameHeight &&
-                drawableWidth == m_LastDrawableWidth && drawableHeight == m_LastDrawableHeight) {
+                drawableWidth == m_LastDrawableWidth && drawableHeight == m_LastDrawableHeight &&
+                cropW == m_LastCropWidth && cropH == m_LastCropHeight) {
             // Nothing to do
             return true;
         }
 
-        // Determine the correct scaled size for the video region
+        // Determine the correct scaled size for the video region. App-window
+        // streams show only the top-left crop of a padded canvas.
         SDL_Rect src, dst;
         src.x = src.y = 0;
-        src.w = frame->width;
-        src.h = frame->height;
+        src.w = cropW > 0 ? SDL_min(cropW, frame->width) : frame->width;
+        src.h = cropH > 0 ? SDL_min(cropH, frame->height) : frame->height;
+        const float uMax = (float)src.w / frame->width;
+        const float vMax = (float)src.h / frame->height;
         dst.x = dst.y = 0;
         dst.w = drawableWidth;
         dst.h = drawableHeight;
-        StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
+        if (cropW > 0) {
+            // Fill the window: the crop *is* the window's content
+            dst.w = drawableWidth;
+            dst.h = drawableHeight;
+        }
+        else {
+            StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
+        }
 
         {
             int winW = 0, winH = 0;
@@ -177,10 +191,10 @@ public:
 
         Vertex verts[] =
         {
-            { { renderRect.x, renderRect.y, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+            { { renderRect.x, renderRect.y, 0.0f, 1.0f }, { 0.0f, vMax } },
             { { renderRect.x, renderRect.y+renderRect.h, 0.0f, 1.0f }, { 0.0f, 0} },
-            { { renderRect.x+renderRect.w, renderRect.y, 0.0f, 1.0f }, { 1.0f, 1.0f} },
-            { { renderRect.x+renderRect.w, renderRect.y+renderRect.h, 0.0f, 1.0f }, { 1.0f, 0} },
+            { { renderRect.x+renderRect.w, renderRect.y, 0.0f, 1.0f }, { uMax, vMax} },
+            { { renderRect.x+renderRect.w, renderRect.y+renderRect.h, 0.0f, 1.0f }, { uMax, 0} },
         };
 
         [m_VideoVertexBuffer release];
@@ -196,6 +210,8 @@ public:
         m_LastFrameHeight = frame->height;
         m_LastDrawableWidth = drawableWidth;
         m_LastDrawableHeight = drawableHeight;
+        m_LastCropWidth = cropW;
+        m_LastCropHeight = cropH;
 
         return true;
     }
@@ -996,6 +1012,8 @@ private:
     int m_LastFrameHeight;
     int m_LastDrawableWidth;
     int m_LastDrawableHeight;
+    int m_LastCropWidth = 0;
+    int m_LastCropHeight = 0;
 };
 
 @implementation DisplayLinkDelegate {

@@ -221,16 +221,22 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
                 Vec::new()
             }
         };
+        let hit = http.get_window_hittest(&w.hwnd).unwrap_or_default();
+        log::info!("[stream-cli] hit regions: {:?}", hit);
         let cfg = stream::AppWindowConfig {
             title: w.title.clone(),
             icon_png_base64: stream::base64_encode(&icon),
             rect: w.rect,
             caption: w.caption,
             dpi: w.dpi,
+            hit,
         };
-        // The stream is exactly the window's size (even dimensions).
-        settings.width = (w.rect[2] + 1) & !1;
-        settings.height = (w.rect[3] + 1) & !1;
+        // Padded canvas (the helper crops to the window)
+        let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], None);
+        settings.width = cw;
+        settings.height = ch;
+        settings.fps = settings.fps.min(60);
+        settings.fractional_fps = 0.0;
         settings.window_mode = settings::WindowMode::Windowed;
         log::info!("[stream-cli] app window {} {:?} {}x{} dpi {} caption {} icon {} bytes", w.hwnd, w.title, w.rect[2], w.rect[3], w.dpi, w.caption, icon.len());
         Some((w.hwnd.clone(), cfg))

@@ -90,6 +90,15 @@ public:
 
     void setWindow(SDL_Window* window);
 
+    // App-window streams: absolute mouse positions are sent 1:1 in host
+    // pixels on the padded canvas (no letterbox math).
+    void setAppWindowMapping(double pxPerPoint, int canvasW, int canvasH)
+    {
+        m_AppWindowPxPerPoint = pxPerPoint;
+        m_AppWindowCanvasW = canvasW;
+        m_AppWindowCanvasH = canvasH;
+    }
+
     void handleKeyEvent(SDL_KeyboardEvent* event);
 
     void handleMouseButtonEvent(SDL_MouseButtonEvent* event);
@@ -243,6 +252,10 @@ private:
     SDL_TimerID m_LongPressTimer;
     int m_StreamWidth;
     int m_StreamHeight;
+    // App-window streams: window points -> host pixels on a padded canvas
+    double m_AppWindowPxPerPoint = 0.0;
+    int m_AppWindowCanvasW = 0;
+    int m_AppWindowCanvasH = 0;
     bool m_AbsoluteMouseMode;
     bool m_AbsoluteTouchMode;
     bool m_DisabledTouchFeedback;

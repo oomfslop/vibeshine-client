@@ -299,6 +299,17 @@ impl NvHttp {
         Ok(resp.body)
     }
 
+    /// The host window's own hit-test map (caption/drag areas and caption buttons), relative to its frame.
+    pub fn get_window_hittest(&self, hwnd: &str) -> Result<Vec<HitRegion>, HttpError> {
+        let body = self.get_string(true, "actions/window-hittest", &format!("hwnd={hwnd}"), REQUEST_TIMEOUT)?;
+        #[derive(serde::Deserialize)]
+        struct R {
+            regions: Vec<HitRegion>,
+        }
+        let r: R = serde_json::from_str(&body).map_err(|e| HttpError::Network(format!("hit-test: {e}")))?;
+        Ok(r.regions)
+    }
+
     /// Act on a host window: activate, move (x,y), resize (w,h), minimize, restore, maximize, close.
     pub fn window_action(&self, hwnd: &str, op: &str, x: i32, y: i32, w: i32, h: i32) -> Result<(), HttpError> {
         self.request(true, "actions/window", &format!("hwnd={hwnd}&op={op}&x={x}&y={y}&w={w}&h={h}"), REQUEST_TIMEOUT, Some(("text/plain", b"")))?;
@@ -640,4 +651,11 @@ fn default_dpi() -> i32 {
 #[derive(serde::Deserialize)]
 struct HostWindowList {
     windows: Vec<HostWindow>,
+}
+
+/// One region of a host window's non-client hit-test map.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq)]
+pub struct HitRegion {
+    pub kind: String,
+    pub rect: [i32; 4],
 }

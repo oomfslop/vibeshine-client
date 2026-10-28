@@ -119,7 +119,14 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
     // We should not reference the original event anymore
     event = nullptr;
 
-    if (m_AbsoluteMouseMode) {
+    if (m_AbsoluteMouseMode && m_AppWindowCanvasW > 0) {
+        // App window: the whole window is video; map points to host pixels.
+        int px = qBound(0, (int)qRound(x * m_AppWindowPxPerPoint), m_AppWindowCanvasW);
+        int py = qBound(0, (int)qRound(y * m_AppWindowPxPerPoint), m_AppWindowCanvasH);
+        LiSendMousePositionEvent((short)px, (short)py, m_AppWindowCanvasW, m_AppWindowCanvasH);
+        m_MouseWasInVideoRegion = true;
+    }
+    else if (m_AbsoluteMouseMode) {
         int windowWidth, windowHeight;
         SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
 

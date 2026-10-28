@@ -79,4 +79,12 @@ double backingScale(SDL_Window* window)
     return ns ? ns.backingScaleFactor : 1.0;
 }
 
+void toggleZoom(SDL_Window* window)
+{
+    NSWindow* ns = nsWindowFor(window);
+    if (ns) {
+        [ns zoom:nil];
+    }
+}
+
 }

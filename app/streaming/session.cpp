@@ -1776,6 +1776,19 @@ void Session::toggleQuickMenu()
     m_QuickMenu.toggle();
 }
 
+QVector<Session::HitRegion> Session::parseHitRegions(const QJsonArray& arr)
+{
+    QVector<HitRegion> out;
+    for (const QJsonValue& v : arr) {
+        const QJsonObject o = v.toObject();
+        const QJsonArray r = o.value("rect").toArray();
+        if (r.size() == 4) {
+            out.append({o.value("kind").toString(), QRect(r.at(0).toInt(), r.at(1).toInt(), r.at(2).toInt(), r.at(3).toInt())});
+        }
+    }
+    return out;
+}
+
 void Session::handleAppWindowCommand(const QJsonObject& cmd)
 {
     if (!m_Window) {
@@ -1799,6 +1812,9 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         }
         if (cmd.contains("caption")) {
             m_AppWindow.captionPx = cmd.value("caption").toInt();
+        }
+        if (cmd.contains("hit")) {
+            m_AppWindow.hits = parseHitRegions(cmd.value("hit").toArray());
         }
         if (cmd.contains("title")) {
             const QString title = cmd.value("title").toString();
@@ -2115,6 +2131,9 @@ void Session::exec()
     if (m_IsAppWindow) {
         AppWindow::configureWindow(m_Window, m_AppWindow.title);
         AppWindow::setAppIcon(m_AppWindow.iconPng);
+        // 1 point = 1/appWindowScale() host pixels; the stream is the padded canvas
+        m_InputHandler->setAppWindowMapping(1.0 / appWindowScale(), m_StreamConfig.width, m_StreamConfig.height);
+        AppWindow::setCrop(m_AppWindow.widthPx, m_AppWindow.heightPx);
     }
 
     // Push our clipboard to the host at the start of the stream if enabled
@@ -2318,6 +2337,9 @@ void Session::exec()
                 const double s = appWindowScale();
                 switch (event.window.event) {
                 case SDL_WINDOWEVENT_SIZE_CHANGED:
+                    // The window's content is always the top-left crop of the
+                    // padded canvas at the window's own size in host pixels.
+                    AppWindow::setCrop((int)qRound(event.window.data1 / s), (int)qRound(event.window.data2 / s));
                     // Only user-driven resizes go back to the host; sizes the
                     // host asked for (initial size, geometry commands) echo
                     // here first and must not bounce.
@@ -2581,7 +2603,32 @@ void Session::exec()
                 if (event.type == SDL_MOUSEBUTTONDOWN) {
                     const bool cmdHeld = (SDL_GetModState() & KMOD_GUI) != 0;
                     const int captionPt = (int)qRound(m_AppWindow.captionPx * appWindowScale());
-                    if (cmdHeld || (captionPt > 0 && event.button.y < captionPt)) {
+                    // Host pixel under the cursor, matched against the host's
+                    // own non-client hit map (caption, buttons).
+                    const QPoint px((int)qRound(event.button.x / appWindowScale()), (int)qRound(event.button.y / appWindowScale()));
+                    QString hit;
+                    for (const HitRegion& r : m_AppWindow.hits) {
+                        if (r.rect.contains(px)) {
+                            hit = r.kind;
+                            break;
+                        }
+                    }
+                    if (hit == "min") {
+                        m_AppWindowDragging = true;  // swallow the matching button-up
+                        SDL_MinimizeWindow(m_Window);
+                        break;
+                    }
+                    if (hit == "max") {
+                        m_AppWindowDragging = true;
+                        AppWindow::toggleZoom(m_Window);
+                        break;
+                    }
+                    if (hit == "close") {
+                        m_AppWindowDragging = true;
+                        emit appWindowEvent({{"kind", "close"}});
+                        break;
+                    }
+                    if (cmdHeld || hit == "drag" || (captionPt > 0 && event.button.y < captionPt)) {
                         m_AppWindowDragging = true;
                         AppWindow::beginDrag(m_Window);
                         break;
