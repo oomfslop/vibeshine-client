@@ -2,6 +2,7 @@
 
 #include <SDL_syswm.h>
 #import <AppKit/AppKit.h>
+#import <objc/runtime.h>
 
 namespace {
 
@@ -41,8 +42,29 @@ void configureWindow(SDL_Window* window, const QString& title)
     // of the window is see-through.
     ns.opaque = NO;
     ns.backgroundColor = [NSColor clearColor];
+    // SDL's content view paints itself black in drawRect: (a "no white
+    // flash" measure) unless the window was created transparent, which the
+    // SDL2 API cannot ask for. Replace that drawing with nothing so the
+    // Metal layer's alpha reaches the screen.
+    {
+        Class cls = [ns.contentView class];
+        Method draw = class_getInstanceMethod(cls, @selector(drawRect:));
+        static IMP s_noop = imp_implementationWithBlock(^(id, NSRect) {});
+        if (draw && method_getImplementation(draw) != s_noop) {
+            method_setImplementation(draw, s_noop);
+        }
+    }
     ns.contentView.wantsLayer = YES;
     ns.contentView.layer.masksToBounds = NO;
+    ns.contentView.layer.backgroundColor = [NSColor clearColor].CGColor;
+    ns.contentView.layer.opaque = NO;
+    for (NSView* sub in ns.contentView.subviews) {
+        if (sub.layer) {
+            sub.layer.opaque = NO;
+            sub.layer.backgroundColor = [NSColor clearColor].CGColor;
+        }
+    }
+    [ns.contentView setNeedsDisplay:YES];
     [ns invalidateShadow];
 }
 
@@ -53,6 +75,30 @@ void invalidateShadow(SDL_Window* window)
         return;
     }
     dispatch_async(dispatch_get_main_queue(), ^{
+        // Re-assert transparency: SDL may touch these when the window is
+        // shown or restyled, and it is cheap to set them again here.
+        ns.opaque = NO;
+        ns.backgroundColor = [NSColor clearColor];
+        if (ns.contentView.layer) {
+            ns.contentView.layer.opaque = NO;
+            ns.contentView.layer.backgroundColor = [NSColor clearColor].CGColor;
+        }
+        for (NSView* sub in ns.contentView.subviews) {
+            if (sub.layer) {
+                sub.layer.opaque = NO;
+                sub.layer.backgroundColor = [NSColor clearColor].CGColor;
+            }
+        }
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "AppWindow transparency: window opaque=%d bg=%s content=%s layer=%s(opaque=%d) subviews=%lu first=%s layer=%s(opaque=%d)",
+                    ns.opaque, ns.backgroundColor.description.UTF8String,
+                    NSStringFromClass([ns.contentView class]).UTF8String,
+                    ns.contentView.layer ? NSStringFromClass([ns.contentView.layer class]).UTF8String : "none",
+                    ns.contentView.layer ? (int)ns.contentView.layer.opaque : -1,
+                    (unsigned long)ns.contentView.subviews.count,
+                    ns.contentView.subviews.count ? NSStringFromClass([ns.contentView.subviews[0] class]).UTF8String : "none",
+                    ns.contentView.subviews.count && ns.contentView.subviews[0].layer ? NSStringFromClass([ns.contentView.subviews[0].layer class]).UTF8String : "none",
+                    ns.contentView.subviews.count && ns.contentView.subviews[0].layer ? (int)ns.contentView.subviews[0].layer.opaque : -1);
         [ns invalidateShadow];
     });
 }
