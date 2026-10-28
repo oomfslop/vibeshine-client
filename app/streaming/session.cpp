@@ -1930,6 +1930,9 @@ void Session::handleChildInput(void* raw)
             LiSendMousePositionEvent((short)px, (short)py, canvasW, canvasH);
             break;
         case 1: {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Child 0x%llx press button %d at host %d,%d -> canvas %d,%d (slot %d,%d %dx%d)",
+                        (unsigned long long)in->hwnd, in->button, in->hostX, in->hostY, px, py,
+                        child->canvas.x(), child->canvas.y(), child->canvas.width(), child->canvas.height());
             QString hit = "client";
             if (child->dialog && in->button == 1 && in->hostY < qMax(96, child->caption) && m_WindowHandle != 0) {
                 NvHTTP http(m_Computer);
