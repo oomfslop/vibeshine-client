@@ -118,6 +118,8 @@ public:
     // Test harness: fixed window geometry and always-on-top so an
     // automated windowed stream stays visible (and un-throttled) while the
     // user works in other apps.
+    void setWindowHandle(quint64 handle) { m_WindowHandle = handle; }
+
     void setTestWindow(int x, int y, int w, int h)
     {
         m_TestWindow = QRect(x, y, w, h);
@@ -316,6 +318,8 @@ private:
 
     QRect m_TestWindow;
     bool m_HasTestWindow = false;
+    // App-window streaming: host window handle to capture (0 = whole display)
+    quint64 m_WindowHandle = 0;
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;

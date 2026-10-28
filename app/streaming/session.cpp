@@ -1623,6 +1623,7 @@ bool Session::startConnectionAsync()
         launchOptions.useVirtualDisplay = m_Preferences->useVirtualDisplay;
         launchOptions.scaleFactor = m_Preferences->resolutionScaleFactor;
         launchOptions.clientVrrRequested = m_Preferences->vrrCapture;
+        launchOptions.windowHandle = m_WindowHandle;
 
         NvHTTP http(m_Computer);
         http.startApp(m_Computer->currentGameId != 0 ? "resume" : "launch",

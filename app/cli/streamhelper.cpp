@@ -192,6 +192,14 @@ void Launcher::execute()
     if (origin.size() == 2) {
         m_Session->setPreferredDisplayOrigin(origin.at(0).toInt(), origin.at(1).toInt());
     }
+    if (m_Config.contains("window_handle")) {
+        // Accept a number or a "0x..." string (JSON numbers lose precision above 2^53).
+        const QJsonValue wh = m_Config.value("window_handle");
+        quint64 handle = wh.isString() ? wh.toString().toULongLong(nullptr, 0) : (quint64)wh.toDouble(0);
+        if (handle != 0) {
+            m_Session->setWindowHandle(handle);
+        }
+    }
     QJsonArray tw = m_Config.value("test_window").toArray();
     if (tw.size() == 4) {
         m_Session->setTestWindow(tw.at(0).toInt(), tw.at(1).toInt(), tw.at(2).toInt(), tw.at(3).toInt());

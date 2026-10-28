@@ -32,6 +32,8 @@ struct HelperConfig<'a> {
     /// Fixed always-on-top window `[x, y, w, h]` (test runs; `SLOPLIGHT_TEST_WINDOW=x,y,w,h`).
     #[serde(skip_serializing_if = "Option::is_none")]
     test_window: Option<[i32; 4]>,
+    /// App-window streaming: host window handle as a "0x..." string
+    window_handle: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -205,6 +207,7 @@ pub fn start(
         display_origin,
         max_duration_ms: std::env::var("SLOPLIGHT_MAX_STREAM_MS").ok().and_then(|v| v.parse().ok()),
         test_input_period_ms: std::env::var("SLOPLIGHT_TEST_INPUT_MS").ok().and_then(|v| v.parse().ok()),
+        window_handle: std::env::var("SLOPLIGHT_WINDOW_HANDLE").ok().filter(|v| !v.is_empty()),
         test_window: std::env::var("SLOPLIGHT_TEST_WINDOW").ok().and_then(|v| {
             let n: Vec<i32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
             (n.len() == 4).then(|| [n[0], n[1], n[2], n[3]])

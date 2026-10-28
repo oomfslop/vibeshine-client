@@ -240,6 +240,9 @@ NvHTTP::startApp(QString verb,
     if (launchOptions.clientVrrRequested) {
         apolloParams += "&clientVrrRequested=1";
     }
+    if (launchOptions.windowHandle != 0) {
+        apolloParams += "&windowHandle=0x" + QString::number(launchOptions.windowHandle, 16);
+    }
 
     QString response =
             openConnectionToString(m_BaseUrlHttps,

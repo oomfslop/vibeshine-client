@@ -120,6 +120,8 @@ public:
     // virtual display runs at 1000 Hz and frames are captured right after
     // the game presents them, instead of on the display's refresh grid.
     bool clientVrrRequested = false;
+    // App-window streaming (Vibeshine fork): capture only this host window
+    quint64 windowHandle = 0;
 };
 
 class NvHTTP : public QObject
