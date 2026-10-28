@@ -33,6 +33,7 @@ struct ChildLayer {
     int canvasX = 0, canvasY = 0, w = 0, h = 0;
     int radius = 0;
     bool visible = true;           // false while the window is minimized or fully covered: nothing to draw
+    int viewW = 0, viewH = 0;      // the Mac window's size in host px: the picture (w x h) sits top-left in it
     bool popup = false;            // caption-less popup (menu, tooltip): its window carries margins to trim
     int hostX = 0, hostY = 0, hostW = 0, hostH = 0;  // the window's whole rect on the desk (untrimmed)
 };

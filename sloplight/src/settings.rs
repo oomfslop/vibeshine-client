@@ -188,7 +188,7 @@ impl Default for Settings {
             vrr_capture: false,
             app_window_follow_new: true,
             app_window_scale: 100,
-            app_window_bitrate_kbps: 40000,
+            app_window_bitrate_kbps: 20000,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             hide_host_cursor: false,
@@ -381,7 +381,7 @@ fn default_app_window_scale() -> i32 {
 }
 
 fn default_app_window_bitrate() -> i32 {
-    40000
+    20000
 }
 
 fn default_true() -> bool {

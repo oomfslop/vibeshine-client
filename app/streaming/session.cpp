@@ -1827,6 +1827,19 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         AppWindow::deskTestSetFrame(cmd.value("hwnd").toString().toULongLong(nullptr, 0),
                                     cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
     }
+    else if (kind == "scroll") {
+        // Test hook: scroll steps on a desk window (window-relative host px, lines)
+        for (int k = 0; k < qMax(1, cmd.value("n").toInt(1)); k++) {
+            auto* in = new AppWindow::ChildInput;
+            in->hwnd = cmd.value("hwnd").toString().toULongLong(nullptr, 0);
+            in->kind = 3;
+            in->hostX = cmd.value("x").toInt();
+            in->hostY = cmd.value("y").toInt();
+            in->scrollY = (float)cmd.value("dy").toDouble(-3.0);
+            handleChildInput(in);  // releases it
+            SDL_Delay(16);
+        }
+    }
     else if (kind == "click") {
         // Test hook: a press and release on a desk window at window-relative host px
         for (int k = 1; k <= 2; k++) {
@@ -1994,13 +2007,58 @@ void Session::handleDeskEvent(void* raw)
 // rendering and input. NvComputer outlives the session.
 void Session::sendWindowAction(quint64 hwnd, const QString& op, int x, int y, int w, int h)
 {
-    NvComputer* computer = m_Computer;
-    QThreadPool::globalInstance()->start([computer, hwnd, op, x, y, w, h]() {
-        NvHTTP http(computer);
-        if (!http.windowAction(hwnd, op, x, y, w, h)) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Desk: %s of 0x%llx failed", qPrintable(op), (unsigned long long)hwnd);
+    if (!m_DeskSender) {
+        m_DeskSender = std::make_shared<DeskSender>();
+        auto sender = m_DeskSender;
+        NvComputer* computer = m_Computer;
+        QThread* thread = QThread::create([sender, computer]() {
+            NvHTTP http(computer);
+            for (;;) {
+                QHash<quint64, QPoint> moves;
+                QHash<quint64, QSize> resizes;
+                QVector<std::pair<quint64, QString>> ops;
+                {
+                    QMutexLocker locker(&sender->lock);
+                    while (!sender->stop.load() && sender->moves.isEmpty() && sender->resizes.isEmpty() && sender->ops.isEmpty()) {
+                        sender->wake.wait(&sender->lock);
+                    }
+                    if (sender->stop.load()) {
+                        return;
+                    }
+                    moves.swap(sender->moves);
+                    resizes.swap(sender->resizes);
+                    ops.swap(sender->ops);
+                }
+                for (auto it = resizes.cbegin(); it != resizes.cend(); ++it) {
+                    http.windowAction(it.key(), "resize", 0, 0, it.value().width(), it.value().height());
+                }
+                for (auto it = moves.cbegin(); it != moves.cend(); ++it) {
+                    http.windowAction(it.key(), "adopt", it.value().x(), it.value().y());
+                }
+                for (const auto& op : ops) {
+                    if (!http.windowAction(op.first, op.second)) {
+                        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Desk: %s of 0x%llx failed", qPrintable(op.second), (unsigned long long)op.first);
+                    }
+                }
+            }
+        });
+        thread->setObjectName("desk window ops");
+        connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+        thread->start();
+    }
+    {
+        QMutexLocker locker(&m_DeskSender->lock);
+        if (op == "adopt") {
+            m_DeskSender->moves[hwnd] = QPoint(x, y);
         }
-    });
+        else if (op == "resize") {
+            m_DeskSender->resizes[hwnd] = QSize(w, h);
+        }
+        else {
+            m_DeskSender->ops.append({hwnd, op});
+        }
+    }
+    m_DeskSender->wake.wakeOne();
 }
 
 // Long-polls the desk's layout from the host and hands each change to the
@@ -3026,6 +3084,10 @@ DispatchDeferredCleanup:
     if (m_IsAppWindow) {
         if (m_DeskPollStop) {
             m_DeskPollStop->store(true);
+        }
+        if (m_DeskSender) {
+            m_DeskSender->stop.store(true);
+            m_DeskSender->wake.wakeAll();
         }
         AppWindow::closeChildren();
     }

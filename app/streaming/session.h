@@ -2,6 +2,11 @@
 
 #include <QSemaphore>
 #include <QSet>
+#include <QSize>
+#include <QPoint>
+#include <QHash>
+#include <QWaitCondition>
+#include <QMutex>
 #include <atomic>
 #include <memory>
 #include <QAtomicInt>
@@ -366,6 +371,17 @@ private:
     QVector<DeskWin> m_DeskWindows;
     QSet<QString> m_DeskIconsRequested;
     std::shared_ptr<std::atomic<bool>> m_DeskPollStop;
+    // Window ops go out in order on one thread; moves and resizes of a window
+    // coalesce (only the latest is sent) so a drag never queues up.
+    struct DeskSender {
+        QMutex lock;
+        QWaitCondition wake;
+        QHash<quint64, QPoint> moves;
+        QHash<quint64, QSize> resizes;
+        QVector<std::pair<quint64, QString>> ops;
+        std::atomic<bool> stop {false};
+    };
+    std::shared_ptr<DeskSender> m_DeskSender;
     void startDeskPoller();
     void handleDeskLayout(const QJsonObject& layout);
     void handleDeskEvent(void* event);

@@ -11,6 +11,8 @@
 #include "streaming/streamutils.h"
 #include "streaming/appwindow.h"
 #include <QHash>
+#include <atomic>
+#include <memory>
 #include <QJsonObject>
 #include <QRect>
 #include "path.h"
@@ -540,22 +542,47 @@ public:
             if (layer.drawableSize.width < 1 || layer.drawableSize.height < 1) {
                 return;
             }
+            // Never wait for a drawable: a window that is not being presented
+            // (hidden, mid-animation, in Mission Control) would stall every
+            // other window. Two in flight and nothing presented lately: skip.
+            std::shared_ptr<Inflight> inflight = m_Inflight.value(child.hwnd);
+            if (!inflight) {
+                inflight = std::make_shared<Inflight>();
+                m_Inflight.insert(child.hwnd, inflight);
+            }
+            const double now = CACurrentMediaTime();
+            if (inflight->count.load() >= 2) {
+                if (now - inflight->lastPresented.load() < 1.0) {
+                    return;
+                }
+                inflight->count.store(0);  // give it another try once a second
+            }
             id<CAMetalDrawable> drawable = [layer nextDrawable];
             if (!drawable) {
                 return;
             }
+            inflight->count.fetch_add(1);
+            std::shared_ptr<Inflight> captured = inflight;
+            [drawable addPresentedHandler:^(id<MTLDrawable>) {
+                captured->count.fetch_sub(1);
+                captured->lastPresented.store(CACurrentMediaTime());
+            }];
+            // The picture (w x h) sits top-left in a window of viewW x viewH
+            const float fx = (float)child.w / (float)qMax(child.w, child.viewW);
+            const float fy = (float)child.h / (float)qMax(child.h, child.viewH);
+            const float x1 = -1.0f + 2.0f * fx, y0 = 1.0f - 2.0f * fy;
             const simd_float4 rect = { (float)child.w, (float)child.h, (float)child.radius, 0.0f };
             const float u0 = (float)child.canvasX / frame->width;
             const float v0 = (float)child.canvasY / frame->height;
             const float u1 = (float)(child.canvasX + child.w) / frame->width;
             const float v1 = (float)(child.canvasY + child.h) / frame->height;
             const VertexAW verts[] = {
-                { { -1.0f, -1.0f, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)child.h }, rect },
-                { { -1.0f,  1.0f, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
-                { {  1.0f, -1.0f, 0.0f, 1.0f }, { u1, v1 }, { (float)child.w, (float)child.h }, rect },
-                { {  1.0f, -1.0f, 0.0f, 1.0f }, { u1, v1 }, { (float)child.w, (float)child.h }, rect },
-                { { -1.0f,  1.0f, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
-                { {  1.0f,  1.0f, 0.0f, 1.0f }, { u1, v0 }, { (float)child.w, 0.0f }, rect },
+                { { -1.0f, y0, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)child.h }, rect },
+                { { -1.0f, 1.0f, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
+                { { x1, y0, 0.0f, 1.0f }, { u1, v1 }, { (float)child.w, (float)child.h }, rect },
+                { { x1, y0, 0.0f, 1.0f }, { u1, v1 }, { (float)child.w, (float)child.h }, rect },
+                { { -1.0f, 1.0f, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
+                { { x1, 1.0f, 0.0f, 1.0f }, { u1, v0 }, { (float)child.w, 0.0f }, rect },
             };
             id<MTLBuffer> vb = [m_MetalLayer.device newBufferWithBytes:verts length:sizeof(verts) options:MTLResourceStorageModeShared];
             auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -1223,6 +1250,11 @@ private:
     bool m_AppWindowMode = false;  // desk session: see AppWindow::deskActive()
     unsigned m_DeskFrameCount = 0;
     QHash<quint64, QRect> m_PopupTrims;
+    struct Inflight {
+        std::atomic<int> count {0};
+        std::atomic<double> lastPresented {0.0};
+    };
+    QHash<quint64, std::shared_ptr<Inflight>> m_Inflight;
 };
 
 @implementation DisplayLinkDelegate {
