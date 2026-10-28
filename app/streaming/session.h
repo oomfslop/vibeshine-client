@@ -358,7 +358,14 @@ private:
     void handleAppWindowCommand(const QJsonObject& cmd);
     // Mouse input from a desk window (releases the ChildInput)
     void handleChildInput(void* input);
-    QSet<quint64> m_ChildPressSwallowed;  // presses that acted on the window itself: swallow the release
+    QSet<quint64> m_ChildPressSwallowed;
+    // A press on a caption: a click unless the mouse moves before the release
+    struct PendingCaption {
+        int x = 0, y = 0;   // window-relative host px of the press
+        int button = 1;
+        bool dragging = false;
+    };
+    QHash<quint64, PendingCaption> m_PendingCaption;  // presses that acted on the window itself: swallow the release
     struct DeskWin {
         quint64 hwnd = 0, owner = 0;
         int kind = 0;          // 0 window, 1 dialog, 2 popup

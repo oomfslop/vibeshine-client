@@ -1827,6 +1827,9 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         AppWindow::deskTestSetFrame(cmd.value("hwnd").toString().toULongLong(nullptr, 0),
                                     cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
     }
+    else if (kind == "drag") {
+        AppWindow::deskTestDrag(cmd.value("hwnd").toString().toULongLong(nullptr, 0), cmd.value("dx").toInt(), cmd.value("dy").toInt());
+    }
     else if (kind == "scroll") {
         // Test hook: scroll steps on a desk window (window-relative host px, lines)
         for (int k = 0; k < qMax(1, cmd.value("n").toInt(1)); k++) {
@@ -1893,6 +1896,14 @@ void Session::handleChildInput(void* raw)
     }
     switch (in->kind) {
     case 0:
+        if (m_PendingCaption.contains(in->hwnd)) {
+            PendingCaption& pc = m_PendingCaption[in->hwnd];
+            if (!pc.dragging && qAbs(in->hostX - pc.x) + qAbs(in->hostY - pc.y) > 8) {
+                pc.dragging = true;
+                AppWindow::deskBeginDrag(in->hwnd);
+            }
+            break;  // the mouse is moving the Mac window, not pointing at the host
+        }
         LiSendMousePositionEvent((short)px, (short)py, deskW, deskH);
         break;
     case 1: {
@@ -1903,8 +1914,13 @@ void Session::handleChildInput(void* raw)
                 hit = "drag";
             }
             else if (in->hostY < qMax(96, win->caption)) {
-                NvHTTP http(m_Computer);
-                hit = http.hitTestWindow(in->hwnd, in->hostX, in->hostY);
+                try {
+                    NvHTTP http(m_Computer);
+                    hit = http.hitTestWindow(in->hwnd, in->hostX, in->hostY);
+                }
+                catch (...) {
+                    hit = "client";  // the host did not answer in time: treat it as a click
+                }
             }
         }
         if (hit == "drag") {
@@ -1913,7 +1929,13 @@ void Session::handleChildInput(void* raw)
                 AppWindow::deskTitleAction(in->hwnd);
             }
             else {
-                AppWindow::dragChild(in->hwnd, in->nsEvent);
+                // A drag if the mouse moves, else a click for the host (tabs,
+                // custom title bars whose hit test over-reports the caption)
+                PendingCaption pc;
+                pc.x = in->hostX;
+                pc.y = in->hostY;
+                pc.button = in->button;
+                m_PendingCaption.insert(in->hwnd, pc);
             }
         }
         else if (hit == "min") {
@@ -1944,6 +1966,21 @@ void Session::handleChildInput(void* raw)
         break;
     }
     case 2:
+        if (m_PendingCaption.contains(in->hwnd)) {
+            const PendingCaption pc = m_PendingCaption.take(in->hwnd);
+            m_ChildPressSwallowed.remove(in->hwnd);
+            if (pc.dragging) {
+                AppWindow::deskEndDrag(in->hwnd);
+            }
+            else {
+                const int cx = qBound(0, win->rect.x() + win->trim.x() + pc.x, deskW);
+                const int cy = qBound(0, win->rect.y() + win->trim.y() + pc.y, deskH);
+                LiSendMousePositionEvent((short)cx, (short)cy, deskW, deskH);
+                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, pc.button);
+                LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, pc.button);
+            }
+            break;
+        }
         if (m_ChildPressSwallowed.remove(in->hwnd)) {
             break;
         }
@@ -1951,11 +1988,14 @@ void Session::handleChildInput(void* raw)
         LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, in->button);
         break;
     case 3:
+        // At most one notch per event, as Moonlight does: macOS acceleration
+        // produces wild deltas on fast flicks (hundreds of notches at once).
+        LiSendMousePositionEvent((short)px, (short)py, deskW, deskH);
         if (in->scrollY != 0.0f) {
-            LiSendHighResScrollEvent((short)qBound(-32767.0f, in->scrollY * 12.0f, 32767.0f));
+            LiSendHighResScrollEvent((short)qBound(-120.0f, in->scrollY * 12.0f, 120.0f));
         }
         if (in->scrollX != 0.0f) {
-            LiSendHighResHScrollEvent((short)qBound(-32767.0f, in->scrollX * 12.0f, 32767.0f));
+            LiSendHighResHScrollEvent((short)qBound(-120.0f, in->scrollX * 12.0f, 120.0f));
         }
         break;
     default:
@@ -1996,7 +2036,7 @@ void Session::handleDeskEvent(void* raw)
     else if (ev->kind == "resize") {
         sendWindowAction(ev->hwnd, "resize", 0, 0, ev->w, ev->h);
     }
-    else if (ev->kind == "minimize" || ev->kind == "restore") {
+    else if (ev->kind == "minimize" || ev->kind == "restore" || ev->kind == "lower" || ev->kind == "activate") {
         sendWindowAction(ev->hwnd, ev->kind);
     }
     emit appWindowEvent({{"kind", ev->kind}, {"hwnd", QString("0x%1").arg(ev->hwnd, 0, 16)}, {"x", ev->x}, {"y", ev->y}, {"w", ev->w}, {"h", ev->h}});
@@ -2145,6 +2185,12 @@ void Session::handleDeskLayout(const QJsonObject& layout)
         w.title = o.value("title").toString();
         w.iconKey = o.value("icon").toString();
         if (!w.hwnd || w.rect.width() <= 0 || w.rect.height() <= 0) {
+            continue;
+        }
+        if (w.kind == 2 && (qint64)w.rect.width() * w.rect.height() >= (qint64)m_StreamConfig.width * m_StreamConfig.height * 6 / 10) {
+            // A full-screen transparent overlay (WinUI light-dismiss layer
+            // behind a context menu): its content shows in the windows under
+            // it, and a window of its own would cover the whole screen.
             continue;
         }
         for (const DeskWin& old : m_DeskWindows) {
@@ -2611,6 +2657,7 @@ void Session::exec()
     // because we want to suspend all Qt processing until the stream is over.
     SDL_Event event;
     for (;;) {
+        try {
 #if SDL_VERSION_ATLEAST(2, 0, 18) && !defined(STEAM_LINK)
         // SDL 2.0.18 has a proper wait event implementation that uses platform
         // support to block on events rather than polling on Windows, macOS, X11,
@@ -3021,6 +3068,17 @@ void Session::exec()
                 break;
             }
             break;
+        }
+        }
+        catch (const std::exception& ex) {
+            // One bad event must not end the session: before, an exception
+            // here unwound out of exec() into the app's run loop, which
+            // swallowed it, and the stream kept running with no input, no
+            // window updates and no way to quit.
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: exception while handling an event: %s", ex.what());
+        }
+        catch (...) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: unknown exception while handling an event");
         }
     }
 

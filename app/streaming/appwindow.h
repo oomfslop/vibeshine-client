@@ -34,6 +34,7 @@ struct ChildLayer {
     int radius = 0;
     bool visible = true;           // false while the window is minimized or fully covered: nothing to draw
     int viewW = 0, viewH = 0;      // the Mac window's size in host px: the picture (w x h) sits top-left in it
+    bool frozen = false;           // keep showing the last picture (the window is being dragged)
     bool popup = false;            // caption-less popup (menu, tooltip): its window carries margins to trim
     int hostX = 0, hostY = 0, hostW = 0, hostH = 0;  // the window's whole rect on the desk (untrimmed)
 };
@@ -86,6 +87,13 @@ struct DeskEvent {
     int x = 0, y = 0, w = 0, h = 0;
 };
 void deskMinimize(quint64 hwnd);
+// A press on a window's caption turned into a drag (the mouse moved): the
+// Mac window follows the mouse, its picture is frozen and the host window is
+// left alone (lowered, so nothing shows through others) until deskEndDrag.
+void deskBeginDrag(quint64 hwnd);
+void deskEndDrag(quint64 hwnd);
+// Test hook: a caption drag by (dx, dy) points over ~0.3 s, as the user would.
+void deskTestDrag(quint64 hwnd, int dx, int dy);
 // Points per host pixel of the desk: 1 / the mirrored screen's backing scale,
 // so one desk pixel is one device pixel (valid after beginDesk).
 double deskPointsPerPx();

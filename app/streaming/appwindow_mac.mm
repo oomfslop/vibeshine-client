@@ -54,6 +54,9 @@ void deskNotePress(quint64 hwnd);
 @property (nonatomic) BOOL dialog;
 @property (nonatomic, assign) NSWindow* mainWindow;
 @property (nonatomic, strong) NSTrackingArea* tracking;
+@property (nonatomic) BOOL dragging;       // a caption drag is moving the window
+@property (nonatomic) NSPoint downMouse;   // screen location of the last left press
+@property (nonatomic) NSPoint downOrigin;  // window origin at that press
 @end
 
 @implementation AWChildView
@@ -156,14 +159,35 @@ void deskNotePress(quint64 hwnd);
     }
     AppWindow::deskNotePress(self.hwnd);
 }
-- (void)mouseDown:(NSEvent*)e { [self focusMain]; [self push:1 event:e button:1]; }
-- (void)mouseUp:(NSEvent*)e { [self push:2 event:e button:1]; }
+- (void)mouseDown:(NSEvent*)e
+{
+    self.dragging = NO;
+    self.downMouse = [NSEvent mouseLocation];
+    self.downOrigin = self.window.frame.origin;
+    [self focusMain];
+    [self push:1 event:e button:1];
+}
+- (void)mouseUp:(NSEvent*)e
+{
+    self.dragging = NO;  // the session ends the drag when the release reaches it
+    [self push:2 event:e button:1];
+}
 - (void)rightMouseDown:(NSEvent*)e { [self focusMain]; [self push:1 event:e button:3]; }
 - (void)rightMouseUp:(NSEvent*)e { [self push:2 event:e button:3]; }
 - (void)otherMouseDown:(NSEvent*)e { [self focusMain]; [self push:1 event:e button:2]; }
 - (void)otherMouseUp:(NSEvent*)e { [self push:2 event:e button:2]; }
 - (void)mouseMoved:(NSEvent*)e { [self push:0 event:e button:0]; }
-- (void)mouseDragged:(NSEvent*)e { [self push:0 event:e button:0]; }
+- (void)mouseDragged:(NSEvent*)e
+{
+    if (self.dragging) {
+        // A caption drag: the window follows the mouse locally, nothing goes
+        // to the host until it ends.
+        const NSPoint m = [NSEvent mouseLocation];
+        [self.window setFrameOrigin:NSMakePoint(self.downOrigin.x + m.x - self.downMouse.x, self.downOrigin.y + m.y - self.downMouse.y)];
+        return;
+    }
+    [self push:0 event:e button:0];
+}
 - (void)rightMouseDragged:(NSEvent*)e { [self push:0 event:e button:0]; }
 - (void)otherMouseDragged:(NSEvent*)e { [self push:0 event:e button:0]; }
 - (void)scrollWheel:(NSEvent*)e { [self push:3 event:e button:0]; }
@@ -214,6 +238,16 @@ void setChildLayer(quint64 hwnd, CALayer* metalLayer, int canvasX, int canvasY, 
     layer->hostH = hostH;
     layer->viewW = viewW > 0 ? viewW : w;
     layer->viewH = viewH > 0 ? viewH : h;
+}
+
+void setChildLayerFrozen(quint64 hwnd, bool frozen)
+{
+    std::lock_guard<std::mutex> lock(g_childMutex);
+    for (auto& l : g_childLayers) {
+        if (l.hwnd == hwnd) {
+            l.frozen = frozen;
+        }
+    }
 }
 
 void removeChildLayer(quint64 hwnd)
@@ -292,6 +326,8 @@ struct DeskState {
     double lastResizeSent = 0;
     double lastMoveSent = 0;
     double goneSince = 0;        // left the layout at this time; closed for good a little later (layered skins flicker)
+    bool dragging = false;       // a caption drag is under way (picture frozen, host untouched)
+    bool frozen = false;         // picture frozen: during a drag and until the host shows the drop
     bool userPlaced = false;     // the user moved it: the host's position is only a crop, not the Mac position
     int hostX = 0, hostY = 0;    // the host's position when the user last placed it
     QRect trim;                  // popups: the visible part of the host rect (empty = all of it)
@@ -421,6 +457,19 @@ void updateDeskIcon()
     }
 }
 
+// The host shows the drop; the video needs a few frames more to show it.
+void scheduleUnfreeze(quint64 hwnd)
+{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DeskState* st = deskState(hwnd);
+        if (st && st->frozen && !st->dragging) {
+            st->frozen = false;
+            setChildLayerFrozen(hwnd, false);
+            updateDeskCrop(st);
+        }
+    });
+}
+
 void closeDesk(DeskState* st)
 {
     removeChildLayer(st->info.hwnd);
@@ -449,18 +498,10 @@ void closeDesk(DeskState* st)
     if (!st || st->applying) {
         return;
     }
-    st->userMoving = true;
-    // The host follows the drag live (coalesced on the way out), so windows
-    // under this one stop showing it where it was; moveSettled sends the end.
-    const double now = CACurrentMediaTime();
-    if (now - st->lastMoveSent >= 0.016) {
-        int x, y, w, h;
-        cocoaToDesk(st->window.frame, x, y, w, h);
-        st->lastMoveSent = now;
-        st->pendingMove = true;
-        st->pendingSince = now;
-        pushDeskEvent(self.hwnd, "move", x, y, 0, 0);
+    if (st->dragging) {
+        return;  // our caption drag: deskEndDrag tells the host
     }
+    st->userMoving = true;
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(moveSettled) object:nil];
     [self performSelector:@selector(moveSettled) withObject:nil afterDelay:0.05];
 }
@@ -736,6 +777,9 @@ void syncDesk(const QVector<DeskWindow>& windows)
                 int hx, hy, hw, hh;
                 cocoaToDesk(st->window.frame, hx, hy, hw, hh);
                 if (st->pendingMove && (abs(hx - w.x) <= 1 && abs(hy - w.y) <= 1)) {
+                    if (st->frozen && !st->dragging) {
+                        scheduleUnfreeze(w.hwnd);  // once the video shows it there
+                    }
                     st->pendingMove = false;
                     st->userPlaced = true;
                     st->hostX = w.x;
@@ -751,6 +795,9 @@ void syncDesk(const QVector<DeskWindow>& windows)
                     st->pendingRestore = false;
                 }
                 if ((st->pendingMove || st->pendingResize || st->pendingMinimize || st->pendingRestore) && now - st->pendingSince > kPendingGraceSec) {
+                    if (st->frozen && !st->dragging) {
+                        scheduleUnfreeze(w.hwnd);
+                    }
                     if (st->pendingMove) {
                         // The host put it elsewhere (kept it on the desk): the
                         // Mac window stays where the user left it, the crop follows.
@@ -827,7 +874,13 @@ void syncDesk(const QVector<DeskWindow>& windows)
                 }
             }
             bool pressPending = false;
-            if (g_deskPressed && now - g_deskPressedAt < 0.6) {
+            for (const DeskWindow& w : wanted) {
+                DeskState* st = deskState(w.hwnd);
+                if (st && (st->dragging || st->frozen)) {
+                    pressPending = true;  // a drag or its drop is in progress: our order stands
+                }
+            }
+            if (!pressPending && g_deskPressed && now - g_deskPressedAt < 0.6) {
                 pressPending = hostOrder.isEmpty() || deskState(g_deskPressed) == nullptr || hostOrder.last() != deskState(g_deskPressed)->window;
             }
             if (!pressPending) {
@@ -919,6 +972,76 @@ void deskMinimize(quint64 hwnd)
         DeskState* st = deskState(hwnd);
         if (st && st->window) {
             [st->window miniaturize:nil];  // the delegate tells the host
+        }
+    });
+}
+
+static void beginDragNow(quint64 hwnd, bool force)
+{
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->window || (!force && !(NSEvent.pressedMouseButtons & 1))) {
+            return;  // released already: it was a click after all
+        }
+        st->dragging = true;
+        st->frozen = true;
+        setChildLayerFrozen(hwnd, true);
+        st->view.dragging = YES;
+        // Out of the way on the host, so the windows it covered there show
+        // their own content on the Mac while it is dragged around.
+        pushDeskEvent(hwnd, "lower", 0, 0, 0, 0);
+}
+
+void deskBeginDrag(quint64 hwnd)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        beginDragNow(hwnd, false);
+    });
+}
+
+void deskTestDrag(quint64 hwnd, int dx, int dy)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        beginDragNow(hwnd, true);
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->dragging) {
+            return;
+        }
+        const NSPoint origin = st->window.frame.origin;
+        for (int i = 1; i <= 20; i++) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(i * 0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                DeskState* s = deskState(hwnd);
+                if (s && s->dragging) {
+                    [s->window setFrameOrigin:NSMakePoint(origin.x + dx * i / 20.0, origin.y - dy * i / 20.0)];
+                }
+            });
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            deskEndDrag(hwnd);
+        });
+    });
+}
+
+void deskEndDrag(quint64 hwnd)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->window) {
+            return;
+        }
+        st->view.dragging = NO;
+        if (!st->dragging) {
+            return;
+        }
+        st->dragging = false;
+        int x, y, w, h;
+        cocoaToDesk(st->window.frame, x, y, w, h);
+        const double now = CACurrentMediaTime();
+        st->pendingMove = true;
+        st->pendingSince = now;
+        pushDeskEvent(hwnd, "move", x, y, 0, 0);
+        pushDeskEvent(hwnd, "activate", 0, 0, 0, 0);
+        if (x == st->info.x && y == st->info.y) {
+            scheduleUnfreeze(hwnd);
         }
     });
 }

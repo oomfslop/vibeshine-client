@@ -530,7 +530,7 @@ public:
     {
         AppWindow::forEachChildLayer([&](const AppWindow::ChildLayer& child) {
             CAMetalLayer* layer = (__bridge CAMetalLayer*)child.metalLayer;
-            if (!layer || child.w <= 0 || child.h <= 0 || !child.visible) {
+            if (!layer || child.w <= 0 || child.h <= 0 || !child.visible || child.frozen) {
                 return;
             }
             if (layer.device != m_MetalLayer.device || layer.pixelFormat != m_MetalLayer.pixelFormat) {
