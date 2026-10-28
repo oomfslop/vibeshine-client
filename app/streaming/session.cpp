@@ -2836,10 +2836,10 @@ void Session::exec()
             if (m_IsAppWindow) {
                 switch (event.window.event) {
                 case SDL_WINDOWEVENT_FOCUS_GAINED:
-                    // The app came to the front: the host focuses our front window
-                    if (quint64 front = AppWindow::deskFrontWindow()) {
-                        sendWindowAction(front, "activate");
-                    }
+                    // Nothing to do: the host focuses a window when the user
+                    // picks one (click, switcher, Mission Control), not when
+                    // the hidden key window comes and goes (the app switcher
+                    // toggles it just by opening)
                     break;
                 case SDL_WINDOWEVENT_MINIMIZED:
                     // The hidden key window has nothing to minimize

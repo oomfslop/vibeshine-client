@@ -229,7 +229,13 @@ void deskNotePress(quint64 hwnd);
 // Keyboard stays with the hidden key (SDL) window: the host routes keys to
 // whichever of its windows has focus, which the forwarded click just set.
 - (BOOL)canBecomeKeyWindow { return NO; }
-- (BOOL)canBecomeMainWindow { return NO; }
+// Windows and dialogs can become main (never key: the keyboard stays with
+// the hidden key window): window switchers, Mission Control and the Dock
+// pick a window by making it main.
+- (BOOL)canBecomeMainWindow
+{
+    return [self.contentView isKindOfClass:[AWChildView class]] && ((AWChildView*)self.contentView).dialog;
+}
 @end
 
 namespace {
@@ -592,16 +598,6 @@ QVector<quint64> g_lastOrder;
 double g_orderPushedAt = 0;
 double g_activationChangedAt = 0;  // the app became (in)active: macOS restacks our windows itself
 
-void applyHostOrder(const QVector<quint64>& order)
-{
-    for (int i = 1; i < order.size(); i++) {
-        DeskState* below = deskState(order[i - 1]);
-        DeskState* st = deskState(order[i]);
-        if (below && st && below->window && st->window) {
-            [st->window orderWindow:NSWindowAbove relativeTo:below->window.windowNumber];
-        }
-    }
-}
 
 QString orderString(const QVector<quint64>& order)
 {
@@ -612,12 +608,16 @@ QString orderString(const QVector<quint64>& order)
     return parts.join(' ');
 }
 
+// The Mac's stacking of our windows is the truth and only travels one way:
+// whenever it changes (clicks, window switchers, Mission Control, new
+// windows), the host gets the same z-order, without any focus change.
+// The Mac windows are never reordered to match the host: that would pull
+// windows sitting behind other apps to the front.
 void deskSyncOrder()
 {
     if (!g_desk) {
         return;
     }
-    static double s_lastReport = 0;
     QVector<quint64> mac;  // bottom-most first
     for (NSWindow* w in [[NSApp orderedWindows] reverseObjectEnumerator]) {
         if (![w isKindOfClass:[AWChildWindow class]] || ![w.contentView isKindOfClass:[AWChildView class]]) {
@@ -629,9 +629,13 @@ void deskSyncOrder()
             continue;
         }
         if (st->dragging || st->frozen) {
-            return;  // a drag and its drop: hands off until it settles
+            return;  // a drag and its drop: the drop pushes the order
         }
         mac.append(hwnd);
+    }
+    const double now = CACurrentMediaTime();
+    if (mac.isEmpty() || (mac == g_lastOrder && !g_forceOrderPush)) {
+        return;
     }
     QVector<quint64> host;
     for (quint64 h : g_hostOrder) {
@@ -639,74 +643,23 @@ void deskSyncOrder()
             host.append(h);
         }
     }
-    QVector<quint64> macCommon;
-    for (quint64 h : mac) {
-        if (host.contains(h)) {
-            macCommon.append(h);
-        }
+    g_forceOrderPush = false;
+    g_lastOrder = mac;
+    g_orderPushedAt = now;
+    if (mac == host) {
+        return;  // the host is there already
     }
-    if (macCommon.size() < 2) {
-        g_lastOrder = macCommon;
-        return;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: mac [%s] -> host (was [%s])", qPrintable(orderString(mac)), qPrintable(orderString(host)));
+    auto* ev = new AppWindow::DeskEvent;
+    ev->kind = QStringLiteral("order");
+    for (int i = mac.size() - 1; i >= 0; i--) {
+        ev->order.append(mac[i]);
     }
-    const double now = CACurrentMediaTime();
-    bool sameSet = macCommon.size() == g_lastOrder.size();
-    for (quint64 h : macCommon) {
-        sameSet = sameSet && g_lastOrder.contains(h);
-    }
-    if (now - s_lastReport > 2.0 && (macCommon != host || host != g_lastOrder)) {
-        s_lastReport = now;
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: mac [%s] host [%s] agreed [%s]",
-                    qPrintable(orderString(macCommon)), qPrintable(orderString(host)), qPrintable(orderString(g_lastOrder)));
-    }
-    if (!sameSet) {
-        // Windows came or went: the host decided where they are
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: windows changed, host order [%s]", qPrintable(orderString(host)));
-        applyHostOrder(host);
-        g_lastOrder = host;
-        return;
-    }
-    // Only the user's own acts reorder the host: a press that brought a
-    // window to the front, or a drop. Everything else that reshuffles our
-    // windows (the app switcher, key-window changes, (de)activation) is put
-    // back as agreed.
-    const bool pressed = g_deskPressed != 0 && now - g_deskPressedAt < 1.0 && macCommon.last() == g_deskPressed;
-    if (macCommon != g_lastOrder && !g_forceOrderPush && !pressed) {
-        if (now - s_lastReport > 2.0) {
-            s_lastReport = now;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: not the user's [%s]; restoring [%s]", qPrintable(orderString(macCommon)), qPrintable(orderString(g_lastOrder)));
-        }
-        applyHostOrder(g_lastOrder);
-        return;
-    }
-    if (macCommon != g_lastOrder || g_forceOrderPush) {
-        g_forceOrderPush = false;
-        // Reordered here: tell the host, top-most first
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: reordered here [%s] (was [%s])", qPrintable(orderString(macCommon)), qPrintable(orderString(g_lastOrder)));
-        const quint64 oldTop = g_lastOrder.isEmpty() ? 0 : g_lastOrder.last();
-        g_lastOrder = macCommon;
-        g_orderPushedAt = now;
-        auto* ev = new AppWindow::DeskEvent;
-        ev->kind = QStringLiteral("order");
-        for (int i = macCommon.size() - 1; i >= 0; i--) {
-            ev->order.append(macCommon[i]);
-        }
-        SDL_Event e = {};
-        e.type = SDL_USEREVENT;
-        e.user.code = SDL_CODE_APPWINDOW_DESK_EVENT;
-        e.user.data1 = ev;
-        SDL_PushEvent(&e);
-        if (macCommon.last() != oldTop && NSApp.isActive) {
-            pushDeskEvent(macCommon.last(), "activate", 0, 0, 0, 0);  // the keyboard follows the front window
-        }
-        return;
-    }
-    if (host != g_lastOrder && now - g_orderPushedAt > 1.0) {
-        // Reordered on the host by itself
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: reordered on the host [%s] (was [%s])", qPrintable(orderString(host)), qPrintable(orderString(g_lastOrder)));
-        applyHostOrder(host);
-        g_lastOrder = host;
-    }
+    SDL_Event e = {};
+    e.type = SDL_USEREVENT;
+    e.user.code = SDL_CODE_APPWINDOW_DESK_EVENT;
+    e.user.data1 = ev;
+    SDL_PushEvent(&e);
 }
 
 // Size the window to the picture, keeping the edges the picture hugs. While
@@ -979,6 +932,19 @@ void closeDesk(DeskState* st)
     DESK_CATCH("windowDidEndLiveResize")
 }
 
+- (void)windowDidBecomeMain:(NSNotification*)notification
+{
+    DESK_TRY
+    DeskState* st = deskState(self.hwnd);
+    if (!st || st->applying || !isDeskPane(st->info)) {
+        return;
+    }
+    // The user chose this window (switcher, Mission Control, click): the
+    // host focuses it too
+    pushDeskEvent(self.hwnd, "activate", 0, 0, 0, 0);
+    DESK_CATCH("windowDidBecomeMain")
+}
+
 - (void)windowDidChangeOcclusionState:(NSNotification*)notification
 {
     DESK_TRY
@@ -1057,7 +1023,6 @@ void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHo
                                                                              usingBlock:^(NSNotification*) {
                 g_activationChangedAt = CACurrentMediaTime();
                 @try {
-                    applyHostOrder(g_lastOrder);
                 }
                 @catch (NSException* e) {
                     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "AppWindow activation: %s: %s", e.name.UTF8String, e.reason.UTF8String);
@@ -1324,7 +1289,8 @@ void syncDesk(const QVector<DeskWindow>& windows)
                     }
                 }
                 updateDeskCrop(st);
-                pushDeskGeometry(w.hwnd, w.ts, w.x, w.y, w.w, w.h);
+                // Minimized on the host: frames from then on no longer show it
+                pushDeskGeometry(w.hwnd, w.ts, w.x, w.y, w.state == "minimized" ? 0 : w.w, w.state == "minimized" ? 0 : w.h);
                 updateDeskVisible(st);
                 if (before.radius != w.radius) {
                     [st->window invalidateShadow];
@@ -1439,9 +1405,22 @@ void deskMinimize(quint64 hwnd)
 {
     deskOnMain("deskMinimize", ^{
         DeskState* st = deskState(hwnd);
-        if (st && st->window) {
-            [st->window miniaturize:nil];  // the delegate tells the host
+        if (!st || !st->window) {
+            return;
         }
+        // The genie animation snapshots the picture: raise the window on the
+        // host first, so no other host window covers part of it, and give
+        // the video a few frames to show that.
+        [st->window orderFront:nil];
+        pushDeskEvent(hwnd, "activate", 0, 0, 0, 0);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.15 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            DESK_TRY
+            DeskState* d = deskState(hwnd);
+            if (d && d->window && !d->window.miniaturized) {
+                [d->window miniaturize:nil];  // the delegate tells the host
+            }
+            DESK_CATCH("deskMinimize")
+        });
     });
 }
 
