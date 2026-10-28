@@ -567,22 +567,66 @@ public:
                 captured->count.fetch_sub(1);
                 captured->lastPresented.store(CACurrentMediaTime());
             }];
-            // The picture (w x h) sits top-left in a window of viewW x viewH
-            const float fx = (float)child.w / (float)qMax(child.w, child.viewW);
-            const float fy = (float)child.h / (float)qMax(child.h, child.viewH);
-            const float x1 = -1.0f + 2.0f * fx, y0 = 1.0f - 2.0f * fy;
-            const simd_float4 rect = { (float)child.w, (float)child.h, (float)child.radius, 0.0f };
-            const float u0 = (float)child.canvasX / frame->width;
-            const float v0 = (float)child.canvasY / frame->height;
-            const float u1 = (float)(child.canvasX + child.w) / frame->width;
-            const float v1 = (float)(child.canvasY + child.h) / frame->height;
+            // The window's rect as it was when this frame was captured: the
+            // newest one stamped at or before the frame's capture time.
+            int gx = child.canvasX, gy = child.canvasY, gw = child.w, gh = child.h;
+            if (child.geoCount > 0) {
+                int pick = child.geoCount - 1;
+                if (frame->pts != AV_NOPTS_VALUE) {
+                    const quint32 pts = (quint32)frame->pts;
+                    pick = 0;
+                    for (int i = child.geoCount - 1; i >= 0; i--) {
+                        if ((qint32)(pts - child.geo[i].ts) >= 0) {
+                            pick = i;
+                            break;
+                        }
+                    }
+                }
+                gx = child.geo[pick].x;
+                gy = child.geo[pick].y;
+                gw = child.geo[pick].w;
+                gh = child.geo[pick].h;
+                if (child.popup && child.trimW > 0 && child.trimH > 0) {
+                    gx += child.trimX;
+                    gy += child.trimY;
+                    gw = child.trimW;
+                    gh = child.trimH;
+                }
+            }
+            if (gw <= 0 || gh <= 0) {
+                return;
+            }
+            if (child.shown) {
+                const quint64 shown = ((quint64)gw << 32) | (quint32)gh;
+                if (child.shown->exchange(shown) != shown) {
+                    AppWindow::deskShownChanged(child.hwnd, gw, gh);
+                }
+            }
+            // Drawn 1:1 against the edges it hugs; cut (never scaled) where the
+            // window is smaller than the picture
+            const int vw = qMax(1, child.viewW), vh = qMax(1, child.viewH);
+            const int dw = qMin(gw, vw), dh = qMin(gh, vh);
+            if (child.anchorRight) {
+                gx += gw - dw;
+            }
+            if (child.anchorBottom) {
+                gy += gh - dh;
+            }
+            const int ox = child.anchorRight ? vw - dw : 0, oy = child.anchorBottom ? vh - dh : 0;
+            const float xl = -1.0f + 2.0f * ox / vw, xr = -1.0f + 2.0f * (ox + dw) / vw;
+            const float yt = 1.0f - 2.0f * oy / vh, yb = 1.0f - 2.0f * (oy + dh) / vh;
+            const simd_float4 rect = { (float)dw, (float)dh, (float)child.radius, 0.0f };
+            const float u0 = (float)gx / frame->width;
+            const float v0 = (float)gy / frame->height;
+            const float u1 = (float)(gx + dw) / frame->width;
+            const float v1 = (float)(gy + dh) / frame->height;
             const VertexAW verts[] = {
-                { { -1.0f, y0, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)child.h }, rect },
-                { { -1.0f, 1.0f, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
-                { { x1, y0, 0.0f, 1.0f }, { u1, v1 }, { (float)child.w, (float)child.h }, rect },
-                { { x1, y0, 0.0f, 1.0f }, { u1, v1 }, { (float)child.w, (float)child.h }, rect },
-                { { -1.0f, 1.0f, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
-                { { x1, 1.0f, 0.0f, 1.0f }, { u1, v0 }, { (float)child.w, 0.0f }, rect },
+                { { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)dh }, rect },
+                { { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
+                { { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { (float)dw, (float)dh }, rect },
+                { { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { (float)dw, (float)dh }, rect },
+                { { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
+                { { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { (float)dw, 0.0f }, rect },
             };
             id<MTLBuffer> vb = [m_MetalLayer.device newBufferWithBytes:verts length:sizeof(verts) options:MTLResourceStorageModeShared];
             auto pass = [MTLRenderPassDescriptor renderPassDescriptor];

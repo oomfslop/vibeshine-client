@@ -16,6 +16,8 @@
 #include <QVector>
 #include <QtGlobal>
 #include <functional>
+#include <atomic>
+#include <memory>
 
 namespace AppWindow {
 
@@ -37,8 +39,25 @@ struct ChildLayer {
     bool frozen = false;           // keep showing the last picture (the window is being dragged)
     bool popup = false;            // caption-less popup (menu, tooltip): its window carries margins to trim
     int hostX = 0, hostY = 0, hostW = 0, hostH = 0;  // the window's whole rect on the desk (untrimmed)
+    // The window's rect on the desk over time, stamped on the video frames'
+    // clock (90 kHz RTP time): each frame is cut with the rect that was true
+    // when it was captured, so moves and resizes never show a stale crop.
+    struct Geo {
+        quint32 ts = 0;
+        int x = 0, y = 0, w = 0, h = 0;
+    };
+    Geo geo[12];
+    int geoCount = 0;              // oldest first
+    int trimX = 0, trimY = 0, trimW = 0, trimH = 0;  // popups: the visible part, relative to the rect
+    bool anchorRight = false, anchorBottom = false;  // mid-resize: the picture hugs these edges of the window
+    std::shared_ptr<std::atomic<quint64>> shown;      // the picture size last drawn (w << 32 | h), written by the renderer
 };
 QVector<ChildLayer> childLayers();
+// The renderer drew a picture of a new size for this window (render thread).
+void deskShownChanged(quint64 hwnd, int w, int h);
+// "What was that?" for an exception being handled: name, reason and where,
+// for AppKit exceptions (call from a catch block).
+QString describeCurrentException();
 // Runs fn for each child layer while holding the lock that keeps the layers
 // alive: use this from the render thread.
 void forEachChildLayer(const std::function<void(const ChildLayer&)>& fn);
@@ -67,6 +86,7 @@ struct DeskWindow {
     int radius = 0, caption = 0, z = 0;
     bool focused = false;
     QString title, state, iconKey;   // state: normal, minimized, maximized
+    quint32 ts = 0;                  // when the host saw this, on the video frames' clock
 };
 // Make the SDL window the hidden key window and set the screen mapping:
 // screenPts is the mirrored screen in SDL global points (top-left origin).
@@ -95,6 +115,9 @@ void deskBeginDrag(quint64 hwnd);
 void deskEndDrag(quint64 hwnd);
 // Test hook: a caption drag by (dx, dy) points over ~0.3 s, as the user would.
 void deskTestDrag(quint64 hwnd, int dx, int dy);
+// Test hook: a live resize as AppKit runs it (dw, dh points over ~0.5 s;
+// fromLeft drags the left edge instead of the right).
+void deskTestLiveResize(quint64 hwnd, int dw, int dh, bool fromLeft);
 // Points per host pixel of the desk: 1 / the mirrored screen's backing scale,
 // so one desk pixel is one device pixel (valid after beginDesk).
 double deskPointsPerPx();

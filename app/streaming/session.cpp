@@ -1830,6 +1830,9 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         AppWindow::deskTestSetFrame(cmd.value("hwnd").toString().toULongLong(nullptr, 0),
                                     cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
     }
+    else if (kind == "liveresize") {
+        AppWindow::deskTestLiveResize(cmd.value("hwnd").toString().toULongLong(nullptr, 0), cmd.value("dw").toInt(), cmd.value("dh").toInt(), cmd.value("left").toBool());
+    }
     else if (kind == "drag") {
         AppWindow::deskTestDrag(cmd.value("hwnd").toString().toULongLong(nullptr, 0), cmd.value("dx").toInt(), cmd.value("dy").toInt());
     }
@@ -2051,6 +2054,9 @@ double Session::appWindowScale() const
 void Session::handleDeskEvent(void* raw)
 {
     auto* ev = static_cast<AppWindow::DeskEvent*>(raw);
+    if (ev->kind == "move" || ev->kind == "resize") {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk send %s 0x%llx %d,%d %dx%d", qPrintable(ev->kind), (unsigned long long)ev->hwnd, ev->x, ev->y, ev->w, ev->h);
+    }
     if (ev->kind == "move") {
         sendWindowAction(ev->hwnd, "adopt", ev->x, ev->y);
     }
@@ -2270,6 +2276,7 @@ void Session::handleDeskLayout(const QJsonObject& layout)
         m.title = w.title;
         m.state = w.state;
         m.iconKey = w.iconKey;
+        m.ts = (quint32)(qint64)layout.value("ts").toDouble(0);
         macWindows.append(m);
         if (!w.iconKey.isEmpty() && !m_DeskIconsRequested.contains(w.iconKey)) {
             m_DeskIconsRequested.insert(w.iconKey);
@@ -3135,8 +3142,11 @@ void Session::exec()
         }
         catch (...) {
             const std::type_info* type = abi::__cxa_current_exception_type();
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: exception of type %s while handling event %u/%d",
-                         type ? type->name() : "?", event.type, event.type == SDL_USEREVENT ? event.user.code : -1);
+            static int s_reported = 0;
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: exception of type %s after event %u/%d%s%s",
+                         type ? type->name() : "?", event.type, event.type == SDL_USEREVENT ? event.user.code : -1,
+                         s_reported < 5 ? ": " : "", s_reported < 5 ? qPrintable(AppWindow::describeCurrentException()) : "");
+            s_reported++;
         }
     }
 
