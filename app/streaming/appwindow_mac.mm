@@ -147,7 +147,9 @@ void deskNotePress(quint64 hwnd);
     input->hostX = (int)lround(p.x / self.pointsPerPx);
     input->hostY = (int)lround(p.y / self.pointsPerPx);
     input->button = button;
-    input->clicks = (int)event.clickCount;
+    // clickCount is only valid on button events: on a scroll event it
+    // throws, which used to drop every scroll before it reached the host
+    input->clicks = (kind == 1 || kind == 2) ? (int)event.clickCount : 0;
     if (kind == 3) {
         input->scrollX = (float)event.scrollingDeltaX;
         input->scrollY = (float)event.scrollingDeltaY;
@@ -594,6 +596,8 @@ void scheduleUnfreeze(quint64 hwnd)
 // raising a window): that order comes to the Mac. g_lastOrder is the order
 // both last agreed on.
 QVector<quint64> g_hostOrder;  // panes, bottom-most first, from the last layout
+quint64 g_hostFocused = 0;     // the pane the host has focused (or owns the focused popup/dialog)
+double g_focusMismatchSince = 0, g_lastFocusPush = 0;
 QVector<quint64> g_lastOrder;
 double g_orderPushedAt = 0;
 double g_activationChangedAt = 0;  // the app became (in)active: macOS restacks our windows itself
@@ -634,6 +638,30 @@ void deskSyncOrder()
         mac.append(hwnd);
     }
     const double now = CACurrentMediaTime();
+    // Keyboard focus: while we are the active app, the host focuses the
+    // window that is main here (the one the user last picked: click, window
+    // switcher, Mission Control). Checked continuously, so a missed or
+    // refused activation is retried.
+    if (NSApp.isActive && [NSApp.mainWindow isKindOfClass:[AWChildWindow class]]) {
+        const quint64 mainHwnd = ((AWChildView*)NSApp.mainWindow.contentView).hwnd;
+        bool ok = g_hostFocused == mainHwnd;
+        for (DeskState* f = deskState(g_hostFocused); !ok && f && f->info.owner; f = deskState(f->info.owner)) {
+            ok = f->info.owner == mainHwnd;  // its dialog or menu has the focus: fine
+        }
+        DeskState* mainSt = deskState(mainHwnd);
+        if (ok || !mainSt || mainSt->dragging || g_hostFocused == 0) {
+            g_focusMismatchSince = 0;
+        }
+        else if (g_focusMismatchSince == 0) {
+            g_focusMismatchSince = now;
+        }
+        else if (now - g_focusMismatchSince > 0.5 && now - g_lastFocusPush > 1.0) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk focus: host has 0x%llx, main here is 0x%llx; activating",
+                        (unsigned long long)g_hostFocused, (unsigned long long)mainHwnd);
+            g_lastFocusPush = now;
+            pushDeskEvent(mainHwnd, "activate", 0, 0, 0, 0);
+        }
+    }
     if (mac.isEmpty() || (mac == g_lastOrder && !g_forceOrderPush)) {
         return;
     }
@@ -998,6 +1026,12 @@ void deskNotePress(quint64 hwnd)
     if (deskState(hwnd) && isDeskPane(deskState(hwnd)->info)) {
         g_deskPressed = hwnd;
         g_deskPressedAt = CACurrentMediaTime();
+        // The clicked window is the user's choice: main, so the focus check
+        // keeps the host on it
+        NSWindow* win = deskState(hwnd)->window;
+        if (win && !win.isMainWindow) {
+            [win makeMainWindow];
+        }
         updateDeskIcon();
     }
 }
@@ -1303,9 +1337,14 @@ void syncDesk(const QVector<DeskWindow>& windows)
         }
         // Stacking: two-way, see deskSyncOrder
         g_hostOrder.clear();
+        g_hostFocused = 0;
         for (const DeskWindow& w : wanted) {
             if (isDeskPane(w) && w.state != "minimized") {
                 g_hostOrder.append(w.hwnd);
+            }
+            if (w.focused) {
+                // A focused popup or dialog counts for its owner too
+                g_hostFocused = w.hwnd;
             }
         }
         deskSyncOrder();
@@ -1351,10 +1390,14 @@ void deskShownChanged(quint64 hwnd, int w, int h)
         if (!st || !st->window || st->dragging || !isDeskPane(st->info)) {
             return;
         }
+        // During a live resize the window is never resized from here: AppKit
+        // computes its next proposal from the current frame, and changing it
+        // under its feet sent sizes flying (1054x2, 2x368). windowWillResize
+        // keeps it no smaller than the picture; the end of the resize fits it.
         if (st->inResize) {
-            fitFrameToPicture(st, w * g_deskPointsPerPx, h * g_deskPointsPerPx);
+            return;
         }
-        else if (st->settling) {
+        if (st->settling) {
             settleResize(hwnd, false);
         }
     });
