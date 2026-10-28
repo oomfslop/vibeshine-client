@@ -231,6 +231,8 @@ void performTitleAction(SDL_Window* window)
 @interface AWChildView : NSView
 @property (nonatomic) quint64 hwnd;
 @property (nonatomic) double pointsPerPx;
+@property (nonatomic) BOOL dialog;
+@property (nonatomic, assign) NSWindow* mainWindow;
 @property (nonatomic, strong) NSTrackingArea* tracking;
 @end
 
@@ -321,11 +323,23 @@ void performTitleAction(SDL_Window* window)
     SDL_PushEvent(&ev);
 }
 
-- (void)mouseDown:(NSEvent*)e { [self push:1 event:e button:1]; }
+// A click on a child window: the keyboard must have somewhere to go (the
+// main window, which forwards it; the host routes it to the clicked window),
+// and a dialog comes to the front of the app.
+- (void)focusMain
+{
+    if (self.mainWindow && !self.mainWindow.isKeyWindow) {
+        [self.mainWindow makeKeyWindow];
+    }
+    if (self.dialog && self.window) {
+        [self.window orderFront:nil];
+    }
+}
+- (void)mouseDown:(NSEvent*)e { [self focusMain]; [self push:1 event:e button:1]; }
 - (void)mouseUp:(NSEvent*)e { [self push:2 event:e button:1]; }
-- (void)rightMouseDown:(NSEvent*)e { [self push:1 event:e button:3]; }
+- (void)rightMouseDown:(NSEvent*)e { [self focusMain]; [self push:1 event:e button:3]; }
 - (void)rightMouseUp:(NSEvent*)e { [self push:2 event:e button:3]; }
-- (void)otherMouseDown:(NSEvent*)e { [self push:1 event:e button:2]; }
+- (void)otherMouseDown:(NSEvent*)e { [self focusMain]; [self push:1 event:e button:2]; }
 - (void)otherMouseUp:(NSEvent*)e { [self push:2 event:e button:2]; }
 - (void)mouseMoved:(NSEvent*)e { [self push:0 event:e button:0]; }
 - (void)mouseDragged:(NSEvent*)e { [self push:0 event:e button:0]; }
@@ -391,6 +405,39 @@ void removeChildLayer(quint64 hwnd)
             return;
         }
     }
+}
+
+// On the host the window sits at the top of a tall display, so menus always
+// open downwards there; on the Mac the window may be near the bottom of the
+// screen. Keep a menu inside the visible area: flip it above its anchor when
+// it would run off the bottom, shift it in horizontally.
+NSRect fitMenuOnScreen(NSRect frame, NSWindow* main)
+{
+    NSScreen* screen = main.screen ?: [NSScreen mainScreen];
+    if (!screen) {
+        return frame;
+    }
+    const NSRect vis = screen.visibleFrame;
+    if (NSMinY(frame) < NSMinY(vis)) {
+        // Flip: the menu's top becomes its bottom (approximates Windows' flip)
+        const CGFloat flippedBottom = NSMaxY(frame);
+        if (flippedBottom + frame.size.height <= NSMaxY(vis)) {
+            frame.origin.y = flippedBottom;
+        }
+        else {
+            frame.origin.y = NSMinY(vis);
+        }
+    }
+    if (NSMaxY(frame) > NSMaxY(vis)) {
+        frame.origin.y = NSMaxY(vis) - frame.size.height;
+    }
+    if (NSMaxX(frame) > NSMaxX(vis)) {
+        frame.origin.x = NSMaxX(vis) - frame.size.width;
+    }
+    if (NSMinX(frame) < NSMinX(vis)) {
+        frame.origin.x = NSMinX(vis);
+    }
+    return frame;
 }
 
 void closeChild(ChildState* st)
@@ -462,6 +509,9 @@ void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, do
                     top = NSMaxY(mainFrame) - c.offsetY * pointsPerHostPx;
                 }
                 NSRect frame = NSMakeRect(x, top - h, w, h);
+                if (!c.dialog) {
+                    frame = fitMenuOnScreen(frame, ns);
+                }
                 st->window = [[AWChildWindow alloc] initWithContentRect:frame
                                                               styleMask:NSWindowStyleMaskBorderless
                                                                 backing:NSBackingStoreBuffered
@@ -476,6 +526,8 @@ void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, do
                 st->view = [[AWChildView alloc] initWithFrame:NSMakeRect(0, 0, w, h)];
                 st->view.hwnd = c.hwnd;
                 st->view.pointsPerPx = pointsPerHostPx;
+                st->view.dialog = c.dialog;
+                st->view.mainWindow = ns;
                 st->window.contentView = st->view;
                 [st->view updateDrawableSize];
                 [st->view updateTrackingAreas];
@@ -503,6 +555,8 @@ void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, do
                     const NSRect mainFrame = ns.frame;
                     frame.origin.x = mainFrame.origin.x + c.offsetX * pointsPerHostPx;
                     frame.origin.y = NSMaxY(mainFrame) - c.offsetY * pointsPerHostPx - h;
+                    frame.size = NSMakeSize(w, h);
+                    frame = fitMenuOnScreen(frame, ns);
                 }
                 if (fabs(frame.size.width - w) >= 1.0 || fabs(frame.size.height - h) >= 1.0 || !NSEqualRects(frame, st->window.frame)) {
                     if (c.dialog) {
