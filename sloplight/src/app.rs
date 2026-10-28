@@ -697,6 +697,7 @@ impl Root {
                 }
             }
             HelperEvent::TestInput { .. } => {}
+            HelperEvent::AppWindow { .. } => {}
             HelperEvent::Exited { code, stderr_tail } => {
                 let stream = self.stream.take().unwrap();
                 if !stream.finished && stream.error_lines.is_empty() && code != Some(0) {

@@ -34,6 +34,20 @@ struct HelperConfig<'a> {
     test_window: Option<[i32; 4]>,
     /// App-window streaming: host window handle as a "0x..." string
     window_handle: Option<String>,
+    /// App-window streaming: how the helper should present the window
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_window: Option<AppWindowConfig>,
+}
+
+/// App-window presentation passed to the helper (`app_window` in the config).
+#[derive(Serialize, Clone, Debug)]
+pub struct AppWindowConfig {
+    pub title: String,
+    pub icon_png_base64: String,
+    /// Host window frame rect x, y, w, h in host pixels
+    pub rect: [i32; 4],
+    pub caption: i32,
+    pub dpi: i32,
 }
 
 #[derive(Serialize)]
@@ -87,6 +101,31 @@ pub enum HelperEvent {
     Exited { code: Option<i32>, stderr_tail: String },
     /// A synthetic test mouse move was sent at this wall-clock time (ms).
     TestInput { t_ms: f64 },
+    /// App-window mode: the Mac window changed (kind = resize|focus|blur|minimize|restore|close;
+    /// w/h in host pixels for resize)
+    AppWindow {
+        kind: String,
+        #[serde(default)]
+        w: i32,
+        #[serde(default)]
+        h: i32,
+    },
+}
+
+/// Command-only handle to a helper process (see `StreamProcess::clone_commander`).
+#[derive(Clone)]
+pub struct StreamCommander {
+    stdin: Option<Arc<Mutex<std::process::ChildStdin>>>,
+}
+
+impl StreamCommander {
+    pub fn send_command(&self, cmd: &serde_json::Value) -> bool {
+        let Some(stdin) = &self.stdin else { return false };
+        let mut line = cmd.to_string();
+        line.push('\n');
+        let mut stdin = stdin.lock().unwrap();
+        stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()).is_ok()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -106,9 +145,26 @@ pub struct StreamProcess {
     child: Arc<Mutex<Option<Child>>>,
     pub host_uuid: String,
     pub app_id: i32,
+    /// App-window mode: the helper's stdin, kept open for JSON command lines
+    stdin: Option<Arc<Mutex<std::process::ChildStdin>>>,
 }
 
 impl StreamProcess {
+    /// A handle that can only send commands (for a poller thread).
+    pub fn clone_commander(&self) -> StreamCommander {
+        StreamCommander { stdin: self.stdin.clone() }
+    }
+
+    /// App-window mode: send a command line to the helper
+    /// (`{"cmd":"geometry",...}`, `{"cmd":"activate"}`, `{"cmd":"close"}`).
+    pub fn send_command(&self, cmd: &serde_json::Value) -> bool {
+        let Some(stdin) = &self.stdin else { return false };
+        let mut line = cmd.to_string();
+        line.push('\n');
+        let mut stdin = stdin.lock().unwrap();
+        stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()).is_ok()
+    }
+
     /// Asks the helper to end the stream cleanly (it handles SIGTERM by
     /// closing the session like the window's close button would).
     pub fn terminate(&self) {
@@ -179,6 +235,21 @@ pub fn start(
     display_origin: Option<(i32, i32)>,
     events: UnboundedSender<StreamEvent>,
 ) -> Result<StreamProcess, String> {
+    start_with_window(helper, identity, host, app, settings, display_origin, events, None)
+}
+
+/// Like `start`, for an app-window session: `window` carries the host window
+/// handle and presentation; the helper's stdin stays open for commands.
+pub fn start_with_window(
+    helper: &Path,
+    identity: &Identity,
+    host: &Host,
+    app: &App,
+    settings: &Settings,
+    display_origin: Option<(i32, i32)>,
+    events: UnboundedSender<StreamEvent>,
+    window: Option<(String, AppWindowConfig)>,
+) -> Result<StreamProcess, String> {
     let address = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).ok_or("The host has no known address.")?;
     let cert = host.server_cert_pem.clone().ok_or("The host isn't paired.")?;
     let config = HelperConfig {
@@ -207,7 +278,8 @@ pub fn start(
         display_origin,
         max_duration_ms: std::env::var("SLOPLIGHT_MAX_STREAM_MS").ok().and_then(|v| v.parse().ok()),
         test_input_period_ms: std::env::var("SLOPLIGHT_TEST_INPUT_MS").ok().and_then(|v| v.parse().ok()),
-        window_handle: std::env::var("SLOPLIGHT_WINDOW_HANDLE").ok().filter(|v| !v.is_empty()),
+        window_handle: window.as_ref().map(|(h, _)| h.clone()).or_else(|| std::env::var("SLOPLIGHT_WINDOW_HANDLE").ok().filter(|v| !v.is_empty())),
+        app_window: window.as_ref().map(|(_, c)| c.clone()),
         test_window: std::env::var("SLOPLIGHT_TEST_WINDOW").ok().and_then(|v| {
             let n: Vec<i32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
             (n.len() == 4).then(|| [n[0], n[1], n[2], n[3]])
@@ -227,12 +299,13 @@ pub fn start(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Couldn't start the streaming helper at {}: {e}", helper.display()))?;
-    {
-        let mut stdin = child.stdin.take().ok_or("helper stdin")?;
-        stdin.write_all(&json).map_err(|e| e.to_string())?;
-        stdin.write_all(b"\n").map_err(|e| e.to_string())?;
-        // Closing stdin signals end of config
-    }
+    let mut stdin = child.stdin.take().ok_or("helper stdin")?;
+    stdin.write_all(&json).map_err(|e| e.to_string())?;
+    stdin.write_all(b"\n").map_err(|e| e.to_string())?;
+    stdin.flush().map_err(|e| e.to_string())?;
+    // Normal streams: closing stdin signals the end of the config. App windows
+    // keep it open for commands.
+    let kept_stdin = if window.is_some() { Some(Arc::new(Mutex::new(stdin))) } else { drop(stdin); None };
     let stdout = child.stdout.take().ok_or("helper stdout")?;
     let stderr = child.stderr.take().ok_or("helper stderr")?;
     let child = Arc::new(Mutex::new(Some(child)));
@@ -291,5 +364,20 @@ pub fn start(
             })
             .ok();
     }
-    Ok(StreamProcess { child, host_uuid: host.uuid.clone(), app_id: app.id })
+    Ok(StreamProcess { child, host_uuid: host.uuid.clone(), app_id: app.id, stdin: kept_stdin })
+}
+
+/// Standard base64 (no dependency needed for the few icons we ship to the helper).
+pub fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        out.push(T[(n >> 18) as usize & 63] as char);
+        out.push(T[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    out
 }

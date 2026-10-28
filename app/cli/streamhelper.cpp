@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <QDateTime>
 #include <QTextStream>
+#include <thread>
 
 #include <cstdio>
 #include <csignal>
@@ -59,6 +60,38 @@ void Launcher::emitEvent(const QJsonObject& event)
     fflush(stdout);
 }
 
+void Launcher::onAppWindowEvent(QJsonObject event)
+{
+    event.insert("event", "app_window");
+    emitEvent(event);
+}
+
+// Reads JSON command lines from stdin (app-window mode) and hands them to
+// the session through the SDL event queue, which is the only thing the
+// streaming loop services.
+void Launcher::startStdinCommandReader()
+{
+    std::thread([]() {
+        char buffer[16384];
+        while (fgets(buffer, sizeof(buffer), stdin)) {
+            QJsonParseError error;
+            QJsonDocument doc = QJsonDocument::fromJson(QByteArray(buffer), &error);
+            if (!doc.isObject()) {
+                continue;
+            }
+            SDL_Event event = {};
+            event.type = SDL_USEREVENT;
+            event.user.code = SDL_CODE_APPWINDOW_CMD;
+            event.user.data1 = new QJsonObject(doc.object());
+            SDL_PushEvent(&event);
+        }
+        // stdin closed: the launcher went away, end the stream.
+        SDL_Event quit = {};
+        quit.type = SDL_QUIT;
+        SDL_PushEvent(&quit);
+    }).detach();
+}
+
 bool Launcher::loadConfigFromStdin()
 {
     QFile in;
@@ -66,7 +99,9 @@ bool Launcher::loadConfigFromStdin()
         emitEvent({{"event", "launch_error"}, {"text", "Unable to read helper config"}});
         return false;
     }
-    QByteArray data = in.readAll();
+    // The config is the first line; in app-window mode the launcher keeps
+    // stdin open afterwards and sends one JSON command per line.
+    QByteArray data = in.readLine();
     QJsonParseError error;
     QJsonDocument doc = QJsonDocument::fromJson(data, &error);
     if (!doc.isObject()) {
@@ -112,6 +147,10 @@ void Launcher::applySettings(const QJsonObject& s)
     p->enableYUV444 = jsonBool(s, "enable_yuv444", p->enableYUV444);
     p->showPerformanceOverlay = jsonBool(s, "show_performance_overlay", p->showPerformanceOverlay);
     p->windowMode = static_cast<StreamingPreferences::WindowMode>(jsonInt(s, "window_mode", p->windowMode));
+    if (m_Config.contains("app_window")) {
+        // App windows are always plain windows on the client.
+        p->windowMode = StreamingPreferences::WM_WINDOWED;
+    }
     p->useVirtualDisplay = jsonBool(s, "use_virtual_display", p->useVirtualDisplay);
     p->vrrCapture = jsonBool(s, "vrr_capture", p->vrrCapture);
     p->resolutionScaleFactor = jsonInt(s, "resolution_scale_factor", p->resolutionScaleFactor);
@@ -203,6 +242,22 @@ void Launcher::execute()
     QJsonArray tw = m_Config.value("test_window").toArray();
     if (tw.size() == 4) {
         m_Session->setTestWindow(tw.at(0).toInt(), tw.at(1).toInt(), tw.at(2).toInt(), tw.at(3).toInt());
+    }
+    if (m_Config.contains("app_window")) {
+        const QJsonObject aw = m_Config.value("app_window").toObject();
+        Session::AppWindowInfo info;
+        info.title = aw.value("title").toString();
+        info.iconPng = QByteArray::fromBase64(aw.value("icon_png_base64").toString().toLatin1());
+        const QJsonArray rect = aw.value("rect").toArray();
+        if (rect.size() == 4) {
+            info.widthPx = rect.at(2).toInt();
+            info.heightPx = rect.at(3).toInt();
+        }
+        info.captionPx = aw.value("caption").toInt(0);
+        info.dpi = aw.value("dpi").toInt(96);
+        m_Session->setAppWindow(info);
+        connect(m_Session, &Session::appWindowEvent, this, &Launcher::onAppWindowEvent);
+        startStdinCommandReader();
     }
 
     connect(m_Session, &Session::stageStarting, this, &Launcher::onStageStarting);

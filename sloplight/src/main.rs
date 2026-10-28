@@ -192,8 +192,52 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         // SAFETY: set before the helper is spawned, single-threaded at this point.
         unsafe { std::env::set_var("SLOPLIGHT_MAX_STREAM_MS", (seconds * 1000).to_string()) };
     }
+    // App-window test mode: SLOPLIGHT_WINDOW_HANDLE=0x... streams that host
+    // window as a native-looking window; the launcher polls the host window
+    // list for geometry and forwards the helper's window events as actions.
+    let window_hwnd = std::env::var("SLOPLIGHT_WINDOW_HANDLE").ok().filter(|v| !v.is_empty());
+    let http = {
+        let addr = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).expect("host address");
+        backend::http::NvHttp::new(addr, host.active_https_port, host.server_cert(), !host.is_nvidia_server_software, identity.clone())
+    };
+    let mut settings = settings;
+    let window = if let Some(hwnd) = &window_hwnd {
+        let windows = match http.get_host_windows() {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("windows list: {e}");
+                return 1;
+            }
+        };
+        let Some(w) = windows.iter().find(|w| w.hwnd.eq_ignore_ascii_case(hwnd)) else {
+            eprintln!("Window {hwnd} not found on the host; known: {:?}", windows.iter().map(|w| format!("{} {}", w.hwnd, w.title)).collect::<Vec<_>>());
+            return 2;
+        };
+        let icon = match http.get_window_icon(&w.hwnd) {
+            Ok(i) => i,
+            Err(e) => {
+                log::warn!("[stream-cli] window icon: {e}");
+                Vec::new()
+            }
+        };
+        let cfg = stream::AppWindowConfig {
+            title: w.title.clone(),
+            icon_png_base64: stream::base64_encode(&icon),
+            rect: w.rect,
+            caption: w.caption,
+            dpi: w.dpi,
+        };
+        // The stream is exactly the window's size (even dimensions).
+        settings.width = (w.rect[2] + 1) & !1;
+        settings.height = (w.rect[3] + 1) & !1;
+        settings.window_mode = settings::WindowMode::Windowed;
+        log::info!("[stream-cli] app window {} {:?} {}x{} dpi {} caption {} icon {} bytes", w.hwnd, w.title, w.rect[2], w.rect[3], w.dpi, w.caption, icon.len());
+        Some((w.hwnd.clone(), cfg))
+    } else {
+        None
+    };
     let (tx, mut rx) = futures::channel::mpsc::unbounded();
-    let process = match stream::start(&helper, &identity, host, app, &settings, None, tx) {
+    let process = match stream::start_with_window(&helper, &identity, host, app, &settings, None, tx, window.clone()) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("start: {e}");
@@ -202,15 +246,70 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
     };
     log::info!("Streaming {} from {} for {}s (helper {})", app.name, host.name, seconds, helper.display());
     let mut code = 0;
+    // Geometry poller for app windows: forwards host-side changes to the helper.
+    let poller = window_hwnd.as_ref().map(|hwnd| {
+        let http2 = {
+            let addr = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).expect("host address");
+            backend::http::NvHttp::new(addr, host.active_https_port, host.server_cert(), !host.is_nvidia_server_software, identity.clone())
+        };
+        let hwnd = hwnd.clone();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop2 = stop.clone();
+        let proc_cmd = process.clone_commander();
+        let handle = std::thread::spawn(move || {
+            let mut last: Option<backend::http::HostWindow> = None;
+            while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(list) = http2.get_host_windows() {
+                    match list.into_iter().find(|w| w.hwnd.eq_ignore_ascii_case(&hwnd)) {
+                        Some(w) => {
+                            if last.as_ref() != Some(&w) {
+                                proc_cmd.send_command(&serde_json::json!({"cmd": "geometry", "rect": w.rect, "caption": w.caption, "title": w.title, "state": w.state}));
+                                last = Some(w);
+                            }
+                        }
+                        None => {
+                            log::info!("[stream-cli] host window gone; closing");
+                            proc_cmd.send_command(&serde_json::json!({"cmd": "close"}));
+                            break;
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+        (stop, handle)
+    });
     futures::executor::block_on(async {
         while let Some(ev) = rx.next().await {
             log::info!("[stream-cli] {:?}", ev.event);
-            if let stream::HelperEvent::Exited { code: c, .. } = ev.event {
-                code = c.unwrap_or(1);
-                break;
+            match &ev.event {
+                stream::HelperEvent::Exited { code: c, .. } => {
+                    code = c.unwrap_or(1);
+                    break;
+                }
+                stream::HelperEvent::AppWindow { kind, w, h } => {
+                    if let Some(hwnd) = &window_hwnd {
+                        let r = match kind.as_str() {
+                            "resize" => http.window_action(hwnd, "resize", 0, 0, *w, *h),
+                            "focus" => http.window_action(hwnd, "activate", 0, 0, 0, 0),
+                            "minimize" => http.window_action(hwnd, "minimize", 0, 0, 0, 0),
+                            "restore" => http.window_action(hwnd, "restore", 0, 0, 0, 0),
+                            "close" => http.window_action(hwnd, "close", 0, 0, 0, 0),
+                            _ => Ok(()),
+                        };
+                        if let Err(e) = r {
+                            log::warn!("[stream-cli] window {kind}: {e}");
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     });
+    if let Some((stop, handle)) = poller {
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = handle.join();
+    }
     drop(process);
     code
 }

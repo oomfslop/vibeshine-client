@@ -1,4 +1,6 @@
 #include "session.h"
+#include "appwindow.h"
+#include <QJsonArray>
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
@@ -1397,6 +1399,13 @@ void Session::getWindowDimensions(int& x, int& y,
     }
 
     x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex);
+    if (m_IsAppWindow && m_AppWindow.widthPx > 0 && m_AppWindow.heightPx > 0) {
+        // Logical-size parity with the host window (host pixels -> points).
+        width = qMax(64, (int)qRound(m_AppWindow.widthPx * appWindowScale()));
+        height = qMax(48, (int)qRound(m_AppWindow.heightPx * appWindowScale()));
+        m_AppWindowHostW = width;
+        m_AppWindowHostH = height;
+    }
     if (m_HasTestWindow) {
         x = m_TestWindow.x();
         y = m_TestWindow.y();
@@ -1767,6 +1776,58 @@ void Session::toggleQuickMenu()
     m_QuickMenu.toggle();
 }
 
+void Session::handleAppWindowCommand(const QJsonObject& cmd)
+{
+    if (!m_Window) {
+        return;
+    }
+    const QString kind = cmd.value("cmd").toString();
+    const double s = appWindowScale();
+    if (kind == "geometry") {
+        const QJsonArray rect = cmd.value("rect").toArray();
+        if (rect.size() == 4) {
+            const int w = (int)qRound(rect.at(2).toInt() * s), h = (int)qRound(rect.at(3).toInt() * s);
+            int cw, ch;
+            SDL_GetWindowSize(m_Window, &cw, &ch);
+            if (w > 0 && h > 0 && (w != cw || h != ch)) {
+                m_AppWindow.widthPx = rect.at(2).toInt();
+                m_AppWindow.heightPx = rect.at(3).toInt();
+                m_AppWindowHostW = w;
+                m_AppWindowHostH = h;
+                SDL_SetWindowSize(m_Window, w, h);
+            }
+        }
+        if (cmd.contains("caption")) {
+            m_AppWindow.captionPx = cmd.value("caption").toInt();
+        }
+        if (cmd.contains("title")) {
+            const QString title = cmd.value("title").toString();
+            if (title != m_AppWindow.title) {
+                m_AppWindow.title = title;
+                AppWindow::setTitle(m_Window, title);
+            }
+        }
+        if (cmd.contains("state")) {
+            const QString state = cmd.value("state").toString();
+            const Uint32 flags = SDL_GetWindowFlags(m_Window);
+            if (state == "minimized" && !(flags & SDL_WINDOW_MINIMIZED)) {
+                SDL_MinimizeWindow(m_Window);
+            }
+            else if (state != "minimized" && (flags & SDL_WINDOW_MINIMIZED)) {
+                SDL_RestoreWindow(m_Window);
+            }
+        }
+    }
+    else if (kind == "activate") {
+        SDL_RaiseWindow(m_Window);
+    }
+    else if (kind == "close") {
+        SDL_Event quit = {};
+        quit.type = SDL_QUIT;
+        SDL_PushEvent(&quit);
+    }
+}
+
 bool Session::isClipboardSyncAllowed(ClipboardDirection direction)
 {
     if (!m_Computer->hasApolloExtensions) {
@@ -1984,6 +2045,10 @@ void Session::exec()
     if (m_HasTestWindow) {
         defaultWindowFlags |= SDL_WINDOW_ALWAYS_ON_TOP;
     }
+    if (m_IsAppWindow) {
+        // The host window's own decorations are in the video; ours stay hidden.
+        defaultWindowFlags |= SDL_WINDOW_BORDERLESS;
+    }
 
     // If we're starting in windowed mode and the Moonlight GUI is maximized or
     // minimized, match that with the streaming window.
@@ -2046,6 +2111,11 @@ void Session::exec()
     }
 
     m_InputHandler->setWindow(m_Window);
+
+    if (m_IsAppWindow) {
+        AppWindow::configureWindow(m_Window, m_AppWindow.title);
+        AppWindow::setAppIcon(m_AppWindow.iconPng);
+    }
 
     // Push our clipboard to the host at the start of the stream if enabled
     if (m_Preferences->clipboardSync) {
@@ -2188,6 +2258,14 @@ void Session::exec()
             case SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER:
                 m_FlushingWindowEventsRef--;
                 break;
+            case SDL_CODE_APPWINDOW_CMD: {
+                QJsonObject* cmd = reinterpret_cast<QJsonObject*>(event.user.data1);
+                if (cmd) {
+                    handleAppWindowCommand(*cmd);
+                    delete cmd;
+                }
+                break;
+            }
             case SDL_CODE_GAMECONTROLLER_RUMBLE:
                 m_InputHandler->rumble((uint16_t)(uintptr_t)event.user.data1,
                                        (uint16_t)((uintptr_t)event.user.data2 >> 16),
@@ -2236,6 +2314,38 @@ void Session::exec()
             break;
 
         case SDL_WINDOWEVENT:
+            if (m_IsAppWindow) {
+                const double s = appWindowScale();
+                switch (event.window.event) {
+                case SDL_WINDOWEVENT_SIZE_CHANGED:
+                    // Only user-driven resizes go back to the host; sizes the
+                    // host asked for (initial size, geometry commands) echo
+                    // here first and must not bounce.
+                    if (qAbs(event.window.data1 - m_AppWindowHostW) > 2 || qAbs(event.window.data2 - m_AppWindowHostH) > 2) {
+                        emit appWindowEvent({{"kind", "resize"},
+                                             {"w", (int)qRound(event.window.data1 / s)},
+                                             {"h", (int)qRound(event.window.data2 / s)}});
+                    }
+                    break;
+                case SDL_WINDOWEVENT_FOCUS_GAINED:
+                    emit appWindowEvent({{"kind", "focus"}});
+                    break;
+                case SDL_WINDOWEVENT_FOCUS_LOST:
+                    emit appWindowEvent({{"kind", "blur"}});
+                    break;
+                case SDL_WINDOWEVENT_MINIMIZED:
+                    emit appWindowEvent({{"kind", "minimize"}});
+                    break;
+                case SDL_WINDOWEVENT_RESTORED:
+                    emit appWindowEvent({{"kind", "restore"}});
+                    break;
+                case SDL_WINDOWEVENT_CLOSE:
+                    emit appWindowEvent({{"kind", "close"}});
+                    break;
+                default:
+                    break;
+                }
+            }
             // Early handling of some events
             switch (event.window.event) {
             case SDL_WINDOWEVENT_FOCUS_LOST:
@@ -2463,6 +2573,24 @@ void Session::exec()
             presence.runCallbacks();
             if (m_QuickMenu.handleMouseButtonEvent(&event.button)) {
                 break;
+            }
+            if (m_IsAppWindow && event.button.button == SDL_BUTTON_LEFT) {
+                // Move the Mac window instead of clicking through when the
+                // press lands on the host window's caption bar, or anywhere
+                // with Cmd held (apps with custom title bars report caption 0).
+                if (event.type == SDL_MOUSEBUTTONDOWN) {
+                    const bool cmdHeld = (SDL_GetModState() & KMOD_GUI) != 0;
+                    const int captionPt = (int)qRound(m_AppWindow.captionPx * appWindowScale());
+                    if (cmdHeld || (captionPt > 0 && event.button.y < captionPt)) {
+                        m_AppWindowDragging = true;
+                        AppWindow::beginDrag(m_Window);
+                        break;
+                    }
+                }
+                else if (m_AppWindowDragging) {
+                    m_AppWindowDragging = false;
+                    break;
+                }
             }
             m_InputHandler->handleMouseButtonEvent(&event.button);
             break;

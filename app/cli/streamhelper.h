@@ -36,7 +36,10 @@ private slots:
     void onSessionFinished(int portTestResult);
     void onReadyForDeletion();
 
+    void onAppWindowEvent(QJsonObject event);
+
 private:
+    void startStdinCommandReader();
     void emitEvent(const QJsonObject& event);
     void applySettings(const QJsonObject& settings);
 

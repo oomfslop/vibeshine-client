@@ -286,6 +286,25 @@ impl NvHttp {
         Ok(())
     }
 
+    /// App-window streaming (Vibeshine fork): the host's top-level windows.
+    pub fn get_host_windows(&self) -> Result<Vec<HostWindow>, HttpError> {
+        let body = self.get_string(true, "actions/windows", "", REQUEST_TIMEOUT)?;
+        let parsed: HostWindowList = serde_json::from_str(&body).map_err(|e| HttpError::Network(format!("windows list: {e}")))?;
+        Ok(parsed.windows)
+    }
+
+    /// PNG bytes of a host window's icon.
+    pub fn get_window_icon(&self, hwnd: &str) -> Result<Vec<u8>, HttpError> {
+        let resp = self.request(true, "actions/window-icon", &format!("hwnd={hwnd}"), REQUEST_TIMEOUT, None)?;
+        Ok(resp.body)
+    }
+
+    /// Act on a host window: activate, move (x,y), resize (w,h), minimize, restore, maximize, close.
+    pub fn window_action(&self, hwnd: &str, op: &str, x: i32, y: i32, w: i32, h: i32) -> Result<(), HttpError> {
+        self.request(true, "actions/window", &format!("hwnd={hwnd}&op={op}&x={x}&y={y}&w={w}&h={h}"), REQUEST_TIMEOUT, Some(("text/plain", b"")))?;
+        Ok(())
+    }
+
     pub fn get_clipboard_text(&self) -> Result<String, HttpError> {
         self.get_string(true, "actions/clipboard", "type=text", REQUEST_TIMEOUT)
     }
@@ -559,6 +578,9 @@ fn build_tls_config(pinned: CertificateDer<'static>, identity: &Identity) -> Cli
         .with_client_auth_cert(vec![identity.cert_der().clone()], identity.key_der())
         .expect("client certificate");
     config.enable_sni = false;
+    // Sunshine-family hosts answer a resumed TLS session with a fatal
+    // InternalError alert; every request gets a full handshake instead.
+    config.resumption = rustls::client::Resumption::disabled();
     config
 }
 
@@ -578,4 +600,44 @@ mod tests {
             Err(e) => println!("ERR {e:?}"),
         }
     }
+}
+
+/// One entry of `GET /actions/windows` (Vibeshine fork, app-window streaming).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq)]
+pub struct HostWindow {
+    pub hwnd: String,
+    pub title: String,
+    #[serde(default)]
+    pub process: String,
+    #[serde(default)]
+    pub pid: u32,
+    /// Visible (DWM frame) rect: x, y, w, h in host pixels
+    pub rect: [i32; 4],
+    #[serde(default)]
+    pub bounds: [i32; 4],
+    #[serde(default)]
+    pub client: [i32; 4],
+    #[serde(default)]
+    pub caption: i32,
+    #[serde(default)]
+    pub borders: [i32; 4],
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub focused: bool,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub monitor: String,
+    #[serde(default = "default_dpi")]
+    pub dpi: i32,
+}
+
+fn default_dpi() -> i32 {
+    96
+}
+
+#[derive(serde::Deserialize)]
+struct HostWindowList {
+    windows: Vec<HostWindow>,
 }

@@ -12,12 +12,14 @@
 #include "video/decoder.h"
 #include "audio/renderers/renderer.h"
 #include "video/overlaymanager.h"
+#include <QJsonObject>
 #include "quickmenu.h"
 
 // SDL_USEREVENT codes shared with helper classes
 #define SDL_CODE_QUICKMENU_TIMER 106
 #define SDL_CODE_CLIPBOARD_TEXT_RECEIVED 107
 #define SDL_CODE_QUICKMENU_TOAST 108
+#define SDL_CODE_APPWINDOW_CMD 109
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -120,6 +122,22 @@ public:
     // user works in other apps.
     void setWindowHandle(quint64 handle) { m_WindowHandle = handle; }
 
+    // App-window streaming: present the stream as a borderless window that
+    // mirrors one host window (size in host pixels, caption height, title,
+    // icon PNG). Implies windowed mode.
+    struct AppWindowInfo {
+        QString title;
+        QByteArray iconPng;
+        int widthPx = 0;
+        int heightPx = 0;
+        int captionPx = 0;
+        int dpi = 96;
+    };
+    void setAppWindow(const AppWindowInfo& info) { m_AppWindow = info; m_IsAppWindow = true; }
+    bool isAppWindow() const { return m_IsAppWindow; }
+    // Points per host pixel for the app window (logical-size parity with the host)
+    double appWindowScale() const { return 96.0 / qMax(48, m_AppWindow.dpi); }
+
     void setTestWindow(int x, int y, int w, int h)
     {
         m_TestWindow = QRect(x, y, w, h);
@@ -191,6 +209,10 @@ signals:
 
     // Emitted after sessionFinished() when the session is ready to be destroyed
     void readyForDeletion();
+
+    // App-window streaming: window state changes the launcher must forward to
+    // the host (resize, focus, minimize, restore, close)
+    void appWindowEvent(QJsonObject event);
 
     void launchWarningsChanged();
 
@@ -320,6 +342,13 @@ private:
     bool m_HasTestWindow = false;
     // App-window streaming: host window handle to capture (0 = whole display)
     quint64 m_WindowHandle = 0;
+    AppWindowInfo m_AppWindow;
+    bool m_IsAppWindow = false;
+    bool m_AppWindowDragging = false;
+    // Last window size (points) that came from the host, so its SIZE_CHANGED
+    // echo isn't reported back as a user resize.
+    int m_AppWindowHostW = 0, m_AppWindowHostH = 0;
+    void handleAppWindowCommand(const QJsonObject& cmd);
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;

@@ -193,6 +193,7 @@ SOURCES += \
     streaming/input/mouse.cpp \
     streaming/input/reltouch.cpp \
     streaming/session.cpp \
+    streaming/appwindow_stub.cpp \
     streaming/quickmenu.cpp \
     streaming/audio/audio.cpp \
     streaming/audio/renderers/sdlaud.cpp \
@@ -232,6 +233,7 @@ HEADERS += \
     settings/streamingpreferences.h \
     streaming/input/input.h \
     streaming/session.h \
+    streaming/appwindow.h \
     streaming/quickmenu.h \
     backend/apollopermissions.h \
     streaming/audio/renderers/renderer.h \
@@ -415,7 +417,8 @@ macx {
     SOURCES += \
         streaming/video/ffmpeg-renderers/vt_base.mm \
         streaming/video/ffmpeg-renderers/vt_avsamplelayer.mm \
-        streaming/video/ffmpeg-renderers/vt_metal.mm
+        streaming/video/ffmpeg-renderers/vt_metal.mm \
+        streaming/appwindow_mac.mm
 
     HEADERS += \
         streaming/video/ffmpeg-renderers/vt.h
