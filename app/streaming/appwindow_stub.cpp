@@ -14,6 +14,7 @@ void setDeskIcon(const QString&, const QByteArray&) {}
 quint64 deskFrontWindow() { return 0; }
 void deskMinimize(quint64) {}
 double deskPointsPerPx() { return 1.0; }
+void setDeskTrim(quint64, int, int, int, int) {}
 void deskTestSetFrame(quint64, int, int, int, int) {}
 void deskTitleAction(quint64) {}
 }

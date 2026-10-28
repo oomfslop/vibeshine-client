@@ -185,28 +185,33 @@ namespace {
 std::mutex g_childMutex;                      // guards g_childLayers
 QVector<AppWindow::ChildLayer> g_childLayers; // retained CAMetalLayer* per desk window
 
-void setChildLayer(quint64 hwnd, CALayer* metalLayer, int canvasX, int canvasY, int w, int h, int radius)
+void setChildLayer(quint64 hwnd, CALayer* metalLayer, int canvasX, int canvasY, int w, int h, int radius,
+                   bool popup = false, int hostX = 0, int hostY = 0, int hostW = 0, int hostH = 0)
 {
     std::lock_guard<std::mutex> lock(g_childMutex);
+    AppWindow::ChildLayer* layer = nullptr;
     for (auto& l : g_childLayers) {
         if (l.hwnd == hwnd) {
-            l.canvasX = canvasX;
-            l.canvasY = canvasY;
-            l.w = w;
-            l.h = h;
-            l.radius = radius;
-            return;
+            layer = &l;
         }
     }
-    AppWindow::ChildLayer layer;
-    layer.hwnd = hwnd;
-    layer.metalLayer = (void*)CFBridgingRetain(metalLayer);
-    layer.canvasX = canvasX;
-    layer.canvasY = canvasY;
-    layer.w = w;
-    layer.h = h;
-    layer.radius = radius;
-    g_childLayers.append(layer);
+    if (!layer) {
+        AppWindow::ChildLayer fresh;
+        fresh.hwnd = hwnd;
+        fresh.metalLayer = (void*)CFBridgingRetain(metalLayer);
+        g_childLayers.append(fresh);
+        layer = &g_childLayers.last();
+    }
+    layer->canvasX = canvasX;
+    layer->canvasY = canvasY;
+    layer->w = w;
+    layer->h = h;
+    layer->radius = radius;
+    layer->popup = popup;
+    layer->hostX = hostX;
+    layer->hostY = hostY;
+    layer->hostW = hostW;
+    layer->hostH = hostH;
 }
 
 void removeChildLayer(quint64 hwnd)
@@ -283,6 +288,9 @@ struct DeskState {
     bool pendingMinimize = false, pendingRestore = false;
     double pendingSince = 0;     // CACurrentMediaTime() of the last change sent
     double lastResizeSent = 0;
+    bool userPlaced = false;     // the user moved it: the host's position is only a crop, not the Mac position
+    int hostX = 0, hostY = 0;    // the host's position when the user last placed it
+    QRect trim;                  // popups: the visible part of the host rect (empty = all of it)
 };
 
 NSMutableDictionary<NSNumber*, NSValue*>* g_desk = nil;  // hwnd -> DeskState*
@@ -343,11 +351,23 @@ void pushDeskEvent(quint64 hwnd, const char* kind, int x, int y, int w, int h)
 
 // The crop a desk window shows: the host's position (where its pixels are in
 // the frame) and the Mac window's size (the picture follows a resize at once).
+NSRect deskWantFrame(const DeskState* st)
+{
+    const AppWindow::DeskWindow& w = st->info;
+    if (w.kind == 2 && st->trim.width() > 0) {
+        return deskToCocoa(w.x + st->trim.x(), w.y + st->trim.y(), st->trim.width(), st->trim.height());
+    }
+    return deskToCocoa(w.x, w.y, w.w, w.h);
+}
+
 void updateDeskCrop(DeskState* st)
 {
     int x, y, w, h;
     cocoaToDesk(st->window.frame, x, y, w, h);
-    setChildLayer(st->info.hwnd, st->view.layer, st->info.x, st->info.y, MAX(1, w), MAX(1, h), st->info.radius);
+    const bool popup = st->info.kind == 2;
+    const int cx = st->info.x + (popup ? st->trim.x() : 0), cy = st->info.y + (popup ? st->trim.y() : 0);
+    setChildLayer(st->info.hwnd, st->view.layer, cx, cy, MAX(1, w), MAX(1, h), st->info.radius,
+                  popup, st->info.x, st->info.y, st->info.w, st->info.h);
 }
 
 // A window nobody can see (minimized, fully covered, off screen) has no
@@ -608,7 +628,7 @@ void syncDesk(const QVector<DeskWindow>& windows)
         NSWindow* prevPane = nil;  // the pane just below this one in the host's order
         for (const DeskWindow& w : wanted) {
             DeskState* st = deskState(w.hwnd);
-            const NSRect wantFrame = deskToCocoa(w.x, w.y, w.w, w.h);
+            NSRect wantFrame = deskToCocoa(w.x, w.y, w.w, w.h);
             if (!st) {
                 st = new DeskState;
                 st->info = w;
@@ -666,6 +686,7 @@ void syncDesk(const QVector<DeskWindow>& windows)
             else {
                 const DeskWindow before = st->info;
                 st->info = w;
+                wantFrame = deskWantFrame(st);
                 if (![st->window.title isEqualToString:w.title.toNSString()]) {
                     st->window.title = w.title.toNSString();
                 }
@@ -674,6 +695,9 @@ void syncDesk(const QVector<DeskWindow>& windows)
                 cocoaToDesk(st->window.frame, hx, hy, hw, hh);
                 if (st->pendingMove && (abs(hx - w.x) <= 1 && abs(hy - w.y) <= 1)) {
                     st->pendingMove = false;
+                    st->userPlaced = true;
+                    st->hostX = w.x;
+                    st->hostY = w.y;
                 }
                 if (st->pendingResize && (abs(hw - w.w) <= 1 && abs(hh - w.h) <= 1)) {
                     st->pendingResize = false;
@@ -685,6 +709,13 @@ void syncDesk(const QVector<DeskWindow>& windows)
                     st->pendingRestore = false;
                 }
                 if ((st->pendingMove || st->pendingResize || st->pendingMinimize || st->pendingRestore) && now - st->pendingSince > kPendingGraceSec) {
+                    if (st->pendingMove) {
+                        // The host put it elsewhere (kept it on the desk): the
+                        // Mac window stays where the user left it, the crop follows.
+                        st->userPlaced = true;
+                        st->hostX = w.x;
+                        st->hostY = w.y;
+                    }
                     st->pendingMove = st->pendingResize = st->pendingMinimize = st->pendingRestore = false;
                 }
                 const bool minimized = w.state == "minimized";
@@ -701,6 +732,21 @@ void syncDesk(const QVector<DeskWindow>& windows)
                 const bool userBusy = st->userMoving || st->pendingMove || st->pendingResize || st->window.inLiveResize;
                 if (!userBusy && !minimized) {
                     const NSRect cur = st->window.frame;
+                    if (st->userPlaced && isDeskPane(w)) {
+                        if (w.x != st->hostX || w.y != st->hostY) {
+                            // The host moved it on its own: follow by the same amount
+                            const double s = g_deskPointsPerPx;
+                            wantFrame.origin.x = cur.origin.x + (w.x - st->hostX) * s;
+                            wantFrame.origin.y = NSMaxY(cur) - (w.y - st->hostY) * s - wantFrame.size.height;
+                            st->hostX = w.x;
+                            st->hostY = w.y;
+                        }
+                        else {
+                            // Only the size is the host's; the top-left is the user's
+                            wantFrame.origin.x = cur.origin.x;
+                            wantFrame.origin.y = NSMaxY(cur) - wantFrame.size.height;
+                        }
+                    }
                     if (fabs(cur.origin.x - wantFrame.origin.x) > 0.5 || fabs(cur.origin.y - wantFrame.origin.y) > 0.5 ||
                         fabs(cur.size.width - wantFrame.size.width) > 0.5 || fabs(cur.size.height - wantFrame.size.height) > 0.5) {
                         st->applying = true;
@@ -792,6 +838,26 @@ quint64 deskFrontWindow()
 double deskPointsPerPx()
 {
     return g_deskPointsPerPx;
+}
+
+void setDeskTrim(quint64 hwnd, int x, int y, int w, int h)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->window) {
+            return;
+        }
+        const QRect trim = w > 0 && h > 0 ? QRect(x, y, w, h) : QRect();
+        if (trim == st->trim) {
+            return;
+        }
+        st->trim = trim;
+        const NSRect frame = deskWantFrame(st);
+        st->applying = true;
+        [st->window setFrame:frame display:YES animate:NO];
+        st->applying = false;
+        updateDeskCrop(st);
+    });
 }
 
 void dragChild(quint64 hwnd, void* nsEvent)

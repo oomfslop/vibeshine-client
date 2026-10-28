@@ -33,6 +33,8 @@ struct ChildLayer {
     int canvasX = 0, canvasY = 0, w = 0, h = 0;
     int radius = 0;
     bool visible = true;           // false while the window is minimized or fully covered: nothing to draw
+    bool popup = false;            // caption-less popup (menu, tooltip): its window carries margins to trim
+    int hostX = 0, hostY = 0, hostW = 0, hostH = 0;  // the window's whole rect on the desk (untrimmed)
 };
 QVector<ChildLayer> childLayers();
 // Runs fn for each child layer while holding the lock that keeps the layers
@@ -86,6 +88,10 @@ void deskMinimize(quint64 hwnd);
 // Points per host pixel of the desk: 1 / the mirrored screen's backing scale,
 // so one desk pixel is one device pixel (valid after beginDesk).
 double deskPointsPerPx();
+// Popups: the part of the host window's rect that is really the popup (the
+// rest is the desk's background showing through its margins); relative to
+// the rect, w = 0 clears it.
+void setDeskTrim(quint64 hwnd, int x, int y, int w, int h);
 // Test hook: set a desk window's frame as if the user had moved/resized it
 // (SDL global points, top-left origin).
 void deskTestSetFrame(quint64 hwnd, int x, int y, int w, int h);

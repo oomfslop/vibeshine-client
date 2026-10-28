@@ -1811,6 +1811,17 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
     else if (kind == "icon") {
         AppWindow::setDeskIcon(cmd.value("key").toString(), QByteArray::fromBase64(cmd.value("png_base64").toString().toLatin1()));
     }
+    else if (kind == "trim") {
+        // From the renderer: what part of a popup's rect is really the popup
+        const quint64 hwnd = cmd.value("hwnd").toString().toULongLong(nullptr, 0);
+        const QRect trim(cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
+        for (DeskWin& w : m_DeskWindows) {
+            if (w.hwnd == hwnd) {
+                w.trim = trim;
+            }
+        }
+        AppWindow::setDeskTrim(hwnd, trim.x(), trim.y(), trim.width(), trim.height());
+    }
     else if (kind == "frame") {
         // Test hook: move/resize a desk window as the user would (points)
         AppWindow::deskTestSetFrame(cmd.value("hwnd").toString().toULongLong(nullptr, 0),
@@ -1860,8 +1871,8 @@ void Session::handleChildInput(void* raw)
         return;
     }
     const int deskW = m_StreamConfig.width, deskH = m_StreamConfig.height;
-    const int px = qBound(0, win->rect.x() + in->hostX, deskW);
-    const int py = qBound(0, win->rect.y() + in->hostY, deskH);
+    const int px = qBound(0, win->rect.x() + win->trim.x() + in->hostX, deskW);
+    const int py = qBound(0, win->rect.y() + win->trim.y() + in->hostY, deskH);
     if (in->kind == 1) {
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk 0x%llx press button %d at %d,%d -> desk %d,%d (window at %d,%d %dx%d, kind %d)",
                     (unsigned long long)in->hwnd, in->button, in->hostX, in->hostY, px, py,
@@ -2077,6 +2088,11 @@ void Session::handleDeskLayout(const QJsonObject& layout)
         w.iconKey = o.value("icon").toString();
         if (!w.hwnd || w.rect.width() <= 0 || w.rect.height() <= 0) {
             continue;
+        }
+        for (const DeskWin& old : m_DeskWindows) {
+            if (old.hwnd == w.hwnd) {
+                w.trim = old.trim;
+            }
         }
         windows.append(w);
         AppWindow::DeskWindow m;

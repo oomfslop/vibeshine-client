@@ -10,6 +10,9 @@
 #include "streaming/session.h"
 #include "streaming/streamutils.h"
 #include "streaming/appwindow.h"
+#include <QHash>
+#include <QJsonObject>
+#include <QRect>
 #include "path.h"
 
 #import <Cocoa/Cocoa.h>
@@ -584,6 +587,74 @@ public:
     // Caller frees frame after we return
     // Desk mode: nothing is drawn in the (hidden) SDL window, so no drawable
     // of its layer is needed; the desk windows' layers get the frame.
+    // A popup's window on the desk is larger than the popup: WinUI menus and
+    // tooltips keep margins for their shadow, transparent on a real display,
+    // the desk's black background here. Find the popup inside its rect (the
+    // bounding box of everything that is not black) and report it; the Mac
+    // window and crop shrink to that.
+    void trimPopups(CVPixelBufferRef pixBuf, int frameW, int frameH)
+    {
+        QVector<AppWindow::ChildLayer> popups;
+        AppWindow::forEachChildLayer([&](const AppWindow::ChildLayer& l) {
+            if (l.popup && l.hostW > 0 && l.hostH > 0) {
+                popups.append(l);
+            }
+        });
+        if (popups.isEmpty()) {
+            return;
+        }
+        if (CVPixelBufferLockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+            return;
+        }
+        const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(pixBuf, 0);
+        const size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pixBuf, 0);
+        const size_t planeW = CVPixelBufferGetWidthOfPlane(pixBuf, 0);
+        const bool wide = planeW > 0 && stride / planeW >= 2;  // 10-bit: 16-bit samples, value in the top bits
+        const int threshold = 28;  // video-range black is 16; the darkest menu backgrounds are above 40
+        for (const AppWindow::ChildLayer& p : popups) {
+            const int x0 = qMax(0, p.hostX), y0 = qMax(0, p.hostY);
+            const int x1 = qMin(frameW, p.hostX + p.hostW), y1 = qMin(frameH, p.hostY + p.hostH);
+            int minX = x1, minY = y1, maxX = x0 - 1, maxY = y0 - 1;
+            for (int y = y0; y < y1; y++) {
+                const uint8_t* row = base + (size_t)y * stride;
+                int first = -1, last = -1;
+                for (int x = x0; x < x1; x++) {
+                    const int v = wide ? (((const uint16_t*)row)[x] >> 8) : row[x];
+                    if (v > threshold) {
+                        if (first < 0) {
+                            first = x;
+                        }
+                        last = x;
+                    }
+                }
+                if (first >= 0) {
+                    minX = qMin(minX, first);
+                    maxX = qMax(maxX, last);
+                    minY = qMin(minY, y);
+                    maxY = y;
+                }
+            }
+            QRect trim;
+            if (maxX >= minX && maxY >= minY) {
+                trim = QRect(minX - p.hostX, minY - p.hostY, maxX - minX + 1, maxY - minY + 1);
+                if (trim == QRect(0, 0, p.hostW, p.hostH)) {
+                    trim = QRect();
+                }
+            }
+            const QRect last = m_PopupTrims.value(p.hwnd, QRect(-1, -1, -1, -1));
+            if (trim != last) {
+                m_PopupTrims[p.hwnd] = trim;
+                SDL_Event event = {};
+                event.type = SDL_USEREVENT;
+                event.user.code = SDL_CODE_APPWINDOW_CMD;
+                event.user.data1 = new QJsonObject({{"cmd", "trim"}, {"hwnd", QString("0x%1").arg(p.hwnd, 0, 16)},
+                                                    {"x", trim.x()}, {"y", trim.y()}, {"w", trim.width()}, {"h", trim.height()}});
+                SDL_PushEvent(&event);
+            }
+        }
+        CVPixelBufferUnlockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly);
+    }
+
     void renderDeskFrame(AVFrame* frame)
     { @autoreleasepool {
         std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures;
@@ -592,6 +663,9 @@ public:
         if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
             if (!createTexturesFromFrame(frame, cvMetalTextures)) {
                 return;
+            }
+            if ((++m_DeskFrameCount % 4) == 0) {
+                trimPopups(reinterpret_cast<CVPixelBufferRef>(frame->data[3]), frame->width, frame->height);
             }
         }
         auto commandBuffer = [m_CommandQueue commandBuffer];
@@ -1147,6 +1221,8 @@ private:
     int m_LastDrawableHeight;
     int m_VideoVertexCount = 0;
     bool m_AppWindowMode = false;  // desk session: see AppWindow::deskActive()
+    unsigned m_DeskFrameCount = 0;
+    QHash<quint64, QRect> m_PopupTrims;
 };
 
 @implementation DisplayLinkDelegate {

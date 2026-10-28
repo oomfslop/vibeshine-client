@@ -361,6 +361,7 @@ private:
         int caption = 0, radius = 0, z = 0;
         bool focused = false;
         QString state, title, iconKey;
+        QRect trim;            // popups: the visible part of rect (empty = all)
     };
     QVector<DeskWin> m_DeskWindows;
     QSet<QString> m_DeskIconsRequested;
