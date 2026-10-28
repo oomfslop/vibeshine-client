@@ -1830,6 +1830,9 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         AppWindow::deskTestSetFrame(cmd.value("hwnd").toString().toULongLong(nullptr, 0),
                                     cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
     }
+    else if (kind == "front") {
+        AppWindow::deskTestFront(cmd.value("hwnd").toString().toULongLong(nullptr, 0));
+    }
     else if (kind == "tile") {
         AppWindow::deskTestTile(cmd.value("hwnd").toString().toULongLong(nullptr, 0), cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
     }

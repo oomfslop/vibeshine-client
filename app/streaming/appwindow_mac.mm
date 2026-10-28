@@ -638,28 +638,31 @@ void deskSyncOrder()
         mac.append(hwnd);
     }
     const double now = CACurrentMediaTime();
-    // Keyboard focus: while we are the active app, the host focuses the
-    // window that is main here (the one the user last picked: click, window
-    // switcher, Mission Control). Checked continuously, so a missed or
-    // refused activation is retried.
-    if (NSApp.isActive && [NSApp.mainWindow isKindOfClass:[AWChildWindow class]]) {
-        const quint64 mainHwnd = ((AWChildView*)NSApp.mainWindow.contentView).hwnd;
-        bool ok = g_hostFocused == mainHwnd;
+    // Keyboard focus: while we are the active app, the host focuses our
+    // front-most window, the one the user picked last (click, window
+    // switcher, Mission Control all bring it to the front here). Checked
+    // continuously, so a missed or refused activation is retried. (The
+    // "main" window can't be used: the hidden key window stays main.)
+    static const bool s_assumeActive = qEnvironmentVariableIntValue("DESK_TEST_ASSUME_ACTIVE") != 0;  // tests run in the background
+    if ((NSApp.isActive || s_assumeActive) && !mac.isEmpty()) {
+        const quint64 topHwnd = mac.last();
+        bool ok = g_hostFocused == topHwnd;
         for (DeskState* f = deskState(g_hostFocused); !ok && f && f->info.owner; f = deskState(f->info.owner)) {
-            ok = f->info.owner == mainHwnd;  // its dialog or menu has the focus: fine
+            ok = f->info.owner == topHwnd;  // its dialog or menu has the focus: fine
         }
-        DeskState* mainSt = deskState(mainHwnd);
-        if (ok || !mainSt || mainSt->dragging || g_hostFocused == 0) {
+        // (Focus on nothing of ours, e.g. a window on the host's own display,
+        // is a mismatch too.)
+        if (ok) {
             g_focusMismatchSince = 0;
         }
         else if (g_focusMismatchSince == 0) {
             g_focusMismatchSince = now;
         }
-        else if (now - g_focusMismatchSince > 0.5 && now - g_lastFocusPush > 1.0) {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk focus: host has 0x%llx, main here is 0x%llx; activating",
-                        (unsigned long long)g_hostFocused, (unsigned long long)mainHwnd);
+        else if (now - g_focusMismatchSince > 0.15 && now - g_lastFocusPush > 0.6) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk focus: host has 0x%llx, front here is 0x%llx; activating",
+                        (unsigned long long)g_hostFocused, (unsigned long long)topHwnd);
             g_lastFocusPush = now;
-            pushDeskEvent(mainHwnd, "activate", 0, 0, 0, 0);
+            pushDeskEvent(topHwnd, "activate", 0, 0, 0, 0);
         }
     }
     if (mac.isEmpty() || (mac == g_lastOrder && !g_forceOrderPush)) {
@@ -1611,6 +1614,22 @@ void deskTestLiveResize(quint64 hwnd, int dw, int dh, bool fromLeft)
             [del windowDidEndLiveResize:[NSNotification notificationWithName:NSWindowDidEndLiveResizeNotification object:win]];
             DESK_CATCH("test live resize end")
         });
+    });
+}
+
+void deskTestFront(quint64 hwnd)
+{
+    deskOnMain("deskTestFront", ^{
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->window) {
+            return;
+        }
+        for (NSNumber* key in g_desk) {
+            DeskState* other = (DeskState*)g_desk[key].pointerValue;
+            if (other != st && isDeskPane(other->info) && other->window) {
+                [st->window orderWindow:NSWindowAbove relativeTo:other->window.windowNumber];
+            }
+        }
     });
 }
 

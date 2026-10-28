@@ -121,6 +121,8 @@ void deskTestLiveResize(quint64 hwnd, int dw, int dh, bool fromLeft);
 // Test hook: a tile as macOS does it: a live resize that sets the frame
 // without asking the window (x, y, w, h in points, top-left origin).
 void deskTestTile(quint64 hwnd, int x, int y, int w, int h);
+// Test hook: bring this window in front of our others, as a window switcher would.
+void deskTestFront(quint64 hwnd);
 // Points per host pixel of the desk: 1 / the mirrored screen's backing scale,
 // so one desk pixel is one device pixel (valid after beginDesk).
 double deskPointsPerPx();

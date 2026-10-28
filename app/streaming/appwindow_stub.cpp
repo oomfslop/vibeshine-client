@@ -16,6 +16,7 @@ void deskMinimize(quint64) {}
 void deskBeginDrag(quint64) {}
 void deskTestLiveResize(quint64, int, int, bool) {}
 void deskTestTile(quint64, int, int, int, int) {}
+void deskTestFront(quint64) {}
 void deskShownChanged(quint64, int, int) {}
 QString describeCurrentException() { return QStringLiteral("?"); }
 void deskEndDrag(quint64) {}
