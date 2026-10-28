@@ -234,12 +234,13 @@ impl Root {
             HelperEvent::ConnectionStarted => ws.connected = true,
             HelperEvent::StageFailed { stage, error_code, .. } => ws.error_lines.push(format!("Starting {stage} failed: Error {error_code}")),
             HelperEvent::LaunchError { text } => ws.error_lines.push(text),
-            HelperEvent::AppWindow { kind, w, h } => {
+            HelperEvent::AppWindow { kind, w, h, hwnd: child } => {
                 // Mac-side window change -> host window action, off the UI thread.
                 // Minimize/restore stay on the Mac: the host window keeps running
                 // (and its capture alive) while the Mac window is in the Dock.
+                // Events about a child dialog carry its own handle.
                 let Some(http) = host.and_then(|h| h.http(self.identity.clone())) else { return };
-                let hwnd = ws.hwnd.clone();
+                let hwnd = child.clone().unwrap_or_else(|| ws.hwnd.clone());
                 match kind.as_str() {
                     "resize" => {
                         if w > ws.canvas.0 || h > ws.canvas.1 {
@@ -291,7 +292,7 @@ pub fn spawn_geometry_poller(http: NvHttp, hwnd: String, canvas: (i32, i32), com
                         etag = l.etag.clone();
                         let size_changed = last.as_ref().map(|p| p.rect[2] != l.rect[2] || p.rect[3] != l.rect[3]).unwrap_or(false);
                         let mut cmd = serde_json::json!({
-                            "cmd": "geometry", "rect": l.rect, "anchor": l.anchor, "popups": l.popups, "radius": l.radius,
+                            "cmd": "geometry", "rect": l.rect, "anchor": l.anchor, "popups": l.popups, "children": l.children, "radius": l.radius,
                             "dpi": l.dpi, "caption": l.caption, "title": l.title, "state": l.state
                         });
                         if size_changed && l.state != "minimized" {

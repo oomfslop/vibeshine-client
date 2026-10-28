@@ -666,11 +666,24 @@ struct HostWindowList {
 
 /// One region of a host window's non-client hit-test map.
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ChildWindow {
+    pub hwnd: String,
+    pub rect: [i32; 4],
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub caption: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct WindowLayout {
     pub rect: [i32; 4],
     pub anchor: [i32; 2],
     #[serde(default)]
     pub popups: Vec<[i32; 4]>,
+    /// Owned windows with a caption (dialogs): shown as Mac windows of their own
+    #[serde(default)]
+    pub children: Vec<ChildWindow>,
     #[serde(default)]
     pub radius: i32,
     #[serde(default)]

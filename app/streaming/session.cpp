@@ -1827,6 +1827,25 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
                 }
             }
         }
+        if (cmd.contains("children")) {
+            m_AppWindow.children.clear();
+            for (const QJsonValue& v : cmd.value("children").toArray()) {
+                const QJsonObject c = v.toObject();
+                const QJsonArray r = c.value("rect").toArray();
+                if (r.size() != 4 || r.at(2).toInt() <= 0 || r.at(3).toInt() <= 0) {
+                    continue;
+                }
+                AppWindowInfo::Child child;
+                child.hwnd = c.value("hwnd").toString().toULongLong(nullptr, 0);
+                child.rect = QRect(r.at(0).toInt(), r.at(1).toInt(), r.at(2).toInt(), r.at(3).toInt());
+                child.title = c.value("title").toString();
+                child.caption = c.value("caption").toInt();
+                if (child.hwnd) {
+                    m_AppWindow.children.append(child);
+                }
+            }
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "App window children: %d", (int)m_AppWindow.children.size());
+        }
         if (cmd.contains("radius")) {
             m_AppWindow.radius = cmd.value("radius").toInt();
         }
@@ -1874,6 +1893,69 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         quit.type = SDL_QUIT;
         SDL_PushEvent(&quit);
     }
+}
+
+// Mouse input from a child dialog's own Mac window: map it onto the canvas
+// like the main window's, except that a press on the dialog's caption drags
+// the Mac window and its close button closes the host dialog.
+void Session::handleChildInput(void* raw)
+{
+    auto* in = static_cast<AppWindow::ChildInput*>(raw);
+    const AppWindowInfo::Child* child = nullptr;
+    for (const AppWindowInfo::Child& c : m_AppWindow.children) {
+        if (c.hwnd == in->hwnd) {
+            child = &c;
+        }
+    }
+    if (child && m_IsAppWindow) {
+        const int canvasW = m_StreamConfig.width, canvasH = m_StreamConfig.height;
+        const int px = qBound(0, m_AppWindow.anchorX + (child->rect.x() - m_AppWindow.x) + in->hostX, canvasW);
+        const int py = qBound(0, m_AppWindow.anchorY + (child->rect.y() - m_AppWindow.y) + in->hostY, canvasH);
+        switch (in->kind) {
+        case 0:
+            LiSendMousePositionEvent((short)px, (short)py, canvasW, canvasH);
+            break;
+        case 1: {
+            QString hit = "client";
+            if (in->button == 1 && in->hostY < qMax(96, child->caption) && m_WindowHandle != 0) {
+                NvHTTP http(m_Computer);
+                hit = http.hitTestWindow(in->hwnd, in->hostX, in->hostY);
+            }
+            if (hit == "drag" && in->clicks < 2) {
+                m_ChildPressSwallowed.insert(in->hwnd);
+                AppWindow::dragChild(in->hwnd, in->nsEvent);
+            }
+            else if (hit == "close") {
+                m_ChildPressSwallowed.insert(in->hwnd);
+                emit appWindowEvent({{"kind", "close"}, {"hwnd", QString("0x%1").arg(in->hwnd, 0, 16)}});
+            }
+            else {
+                m_ChildPressSwallowed.remove(in->hwnd);
+                LiSendMousePositionEvent((short)px, (short)py, canvasW, canvasH);
+                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, in->button);
+            }
+            break;
+        }
+        case 2:
+            if (m_ChildPressSwallowed.remove(in->hwnd)) {
+                break;
+            }
+            LiSendMousePositionEvent((short)px, (short)py, canvasW, canvasH);
+            LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, in->button);
+            break;
+        case 3:
+            if (in->scrollY != 0.0f) {
+                LiSendHighResScrollEvent((short)qBound(-32767.0f, in->scrollY * 12.0f, 32767.0f));
+            }
+            if (in->scrollX != 0.0f) {
+                LiSendHighResHScrollEvent((short)qBound(-32767.0f, in->scrollX * 12.0f, 32767.0f));
+            }
+            break;
+        default:
+            break;
+        }
+    }
+    AppWindow::releaseChildInput(in);
 }
 
 QPoint Session::appWindowHostPoint(int x, int y) const
@@ -1935,6 +2017,24 @@ void Session::applyAppWindowLayout(bool placeWindow)
     AppWindow::setLayout(layout);
     m_InputHandler->setAppWindowMapping(1.0 / s, m_StreamConfig.width, m_StreamConfig.height,
                                         layout.originX, layout.originY, shape);
+
+    // Owned dialogs: windows of their own, cut from the same canvas
+    QVector<AppWindow::ChildInfo> children;
+    for (const AppWindowInfo::Child& c : m_AppWindow.children) {
+        AppWindow::ChildInfo info;
+        info.hwnd = c.hwnd;
+        info.offsetX = c.rect.x() - win.x();
+        info.offsetY = c.rect.y() - win.y();
+        info.w = c.rect.width();
+        info.h = c.rect.height();
+        info.canvasX = m_AppWindow.anchorX + info.offsetX;
+        info.canvasY = m_AppWindow.anchorY + info.offsetY;
+        info.radius = m_AppWindow.radius;
+        info.caption = c.caption;
+        info.title = c.title;
+        children.append(info);
+    }
+    AppWindow::syncChildren(m_Window, children, s);
 
     if (placeWindow) {
         int curX = 0, curY = 0, curW = 0, curH = 0;
@@ -2406,6 +2506,9 @@ void Session::exec()
                 break;
             case SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER:
                 m_FlushingWindowEventsRef--;
+                break;
+            case SDL_CODE_APPWINDOW_CHILD_INPUT:
+                handleChildInput(event.user.data1);
                 break;
             case SDL_CODE_APPWINDOW_CMD: {
                 QJsonObject* cmd = reinterpret_cast<QJsonObject*>(event.user.data1);
@@ -2907,6 +3010,9 @@ DispatchDeferredCleanup:
 
     // This must be called after the decoder is deleted, because
     // the renderer may want to interact with the window
+    if (m_IsAppWindow) {
+        AppWindow::closeChildren();
+    }
     SDL_DestroyWindow(m_Window);
 
     if (iconSurface != nullptr) {

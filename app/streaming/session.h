@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QSemaphore>
+#include <QSet>
 #include <QAtomicInt>
 #include <QSharedPointer>
 #include <QQuickWindow>
@@ -23,6 +24,7 @@
 #define SDL_CODE_CLIPBOARD_TEXT_RECEIVED 107
 #define SDL_CODE_QUICKMENU_TOAST 108
 #define SDL_CODE_APPWINDOW_CMD 109
+#define SDL_CODE_APPWINDOW_CHILD_INPUT 110
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -144,6 +146,13 @@ public:
         int anchorX = 0, anchorY = 0;  // canvas pixel of the window's top-left
         int radius = 0;           // corner radius the host OS applies
         QVector<QRect> popups;    // host screen pixels, bottom-most first
+        struct Child {             // owned dialogs: windows of their own on the Mac
+            quint64 hwnd = 0;
+            QRect rect;            // host screen pixels
+            QString title;
+            int caption = 0;
+        };
+        QVector<Child> children;
         int captionPx = 0;
         int dpi = 96;
         QVector<HitRegion> hits;
@@ -370,6 +379,8 @@ private:
     QRect m_AppWindowExt;
     QPoint m_AppWindowInset;  // host window top-left relative to the Mac window's (host pixels)
     void applyAppWindowLayout(bool placeWindow);
+    void handleChildInput(void* input);
+    QSet<quint64> m_ChildPressSwallowed;
     QPoint appWindowHostPoint(int x, int y) const;
     // Last size we asked the host for (points) and when the user last resized,
     // so host geometry echoes don't fight a live resize.

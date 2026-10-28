@@ -95,7 +95,10 @@ void Launcher::startStdinCommandReader()
 bool Launcher::loadConfigFromStdin()
 {
     QFile in;
-    if (!in.open(stdin, QIODevice::ReadOnly)) {
+    // Unbuffered: the launcher starts sending command lines right after the
+    // config, and a read-ahead here would swallow them before the stdin
+    // command reader exists.
+    if (!in.open(stdin, QIODevice::ReadOnly | QIODevice::Unbuffered)) {
         emitEvent({{"event", "launch_error"}, {"text", "Unable to read helper config"}});
         return false;
     }

@@ -131,6 +131,9 @@ pub enum HelperEvent {
         w: i32,
         #[serde(default)]
         h: i32,
+        /// Set when the event is about one of the window's child dialogs
+        #[serde(default)]
+        hwnd: Option<String>,
     },
 }
 

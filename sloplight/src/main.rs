@@ -277,8 +277,8 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
                     code = c.unwrap_or(1);
                     break;
                 }
-                stream::HelperEvent::AppWindow { kind, w, h } => {
-                    if let Some(hwnd) = &window_hwnd {
+                stream::HelperEvent::AppWindow { kind, w, h, hwnd: child } => {
+                    if let Some(hwnd) = child.as_ref().or(window_hwnd.as_ref()) {
                         let r = match kind.as_str() {
                             "resize" => http.window_action(hwnd, "resize", 0, 0, *w, *h),
                             "focus" => http.window_action(hwnd, "activate", 0, 0, 0, 0),

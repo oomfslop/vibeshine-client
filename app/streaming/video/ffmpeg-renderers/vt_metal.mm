@@ -557,6 +557,70 @@ public:
         return true;
     }}
 
+    // Child dialogs of an app window have Mac windows of their own, each
+    // showing its rectangle of the canvas: draw those with the same pipeline
+    // and textures, one drawable per child, on the same command buffer.
+    void renderChildWindows(AVFrame* frame, id<MTLCommandBuffer> commandBuffer, size_t planes,
+                            const std::array<CVMetalTextureRef, MAX_VIDEO_PLANES>& cvMetalTextures)
+    {
+        AppWindow::forEachChildLayer([&](const AppWindow::ChildLayer& child) {
+            CAMetalLayer* layer = (__bridge CAMetalLayer*)child.metalLayer;
+            if (!layer || child.w <= 0 || child.h <= 0) {
+                return;
+            }
+            if (layer.device != m_MetalLayer.device || layer.pixelFormat != m_MetalLayer.pixelFormat) {
+                layer.device = m_MetalLayer.device;
+                layer.pixelFormat = m_MetalLayer.pixelFormat;
+                layer.colorspace = m_MetalLayer.colorspace;
+                layer.displaySyncEnabled = m_MetalLayer.displaySyncEnabled;
+            }
+            if (layer.drawableSize.width < 1 || layer.drawableSize.height < 1) {
+                return;
+            }
+            id<CAMetalDrawable> drawable = [layer nextDrawable];
+            if (!drawable) {
+                return;
+            }
+            const simd_float4 rect = { (float)child.w, (float)child.h, (float)child.radius, 0.0f };
+            const float u0 = (float)child.canvasX / frame->width;
+            const float v0 = (float)child.canvasY / frame->height;
+            const float u1 = (float)(child.canvasX + child.w) / frame->width;
+            const float v1 = (float)(child.canvasY + child.h) / frame->height;
+            const VertexAW verts[] = {
+                { { -1.0f, -1.0f, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)child.h }, rect },
+                { { -1.0f,  1.0f, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
+                { {  1.0f, -1.0f, 0.0f, 1.0f }, { u1, v1 }, { (float)child.w, (float)child.h }, rect },
+                { {  1.0f, -1.0f, 0.0f, 1.0f }, { u1, v1 }, { (float)child.w, (float)child.h }, rect },
+                { { -1.0f,  1.0f, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
+                { {  1.0f,  1.0f, 0.0f, 1.0f }, { u1, v0 }, { (float)child.w, 0.0f }, rect },
+            };
+            id<MTLBuffer> vb = [m_MetalLayer.device newBufferWithBytes:verts length:sizeof(verts) options:MTLResourceStorageModeShared];
+            auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
+            pass.colorAttachments[0].texture = drawable.texture;
+            pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+            pass.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+            pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+            auto encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
+            [encoder setRenderPipelineState:m_VideoPipelineState];
+            if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+                for (size_t i = 0; i < planes; i++) {
+                    [encoder setFragmentTexture:CVMetalTextureGetTexture(cvMetalTextures[i]) atIndex:i];
+                }
+            }
+            else {
+                for (size_t i = 0; i < planes; i++) {
+                    [encoder setFragmentTexture:mapPlaneForSoftwareFrame(frame, i) atIndex:i];
+                }
+            }
+            [encoder setFragmentBuffer:m_CscParamsBuffer offset:0 atIndex:0];
+            [encoder setVertexBuffer:vb offset:0 atIndex:0];
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+            [encoder endEncoding];
+            [commandBuffer presentDrawable:drawable];
+            [vb release];
+        });
+    }
+
     // Caller frees frame after we return
     virtual void renderFrameIntoDrawable(AVFrame* frame, id<CAMetalDrawable> drawable)
     { @autoreleasepool {
@@ -672,6 +736,10 @@ public:
         }
 
         [renderEncoder endEncoding];
+
+        if (m_AppWindowMode) {
+            renderChildWindows(frame, commandBuffer, planes, cvMetalTextures);
+        }
 
         // Flip to the newly rendered buffer
         [commandBuffer presentDrawable:drawable];

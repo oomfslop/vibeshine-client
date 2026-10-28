@@ -219,3 +219,333 @@ void performTitleAction(SDL_Window* window)
 }
 
 }
+
+// ---------------------------------------------------------------------------
+// Child dialogs as windows of their own
+// ---------------------------------------------------------------------------
+
+#import <QuartzCore/CAMetalLayer.h>
+#include <mutex>
+#include "session.h"
+
+@interface AWChildView : NSView
+@property (nonatomic) quint64 hwnd;
+@property (nonatomic) double pointsPerPx;
+@property (nonatomic, strong) NSTrackingArea* tracking;
+@end
+
+@implementation AWChildView
+
+- (instancetype)initWithFrame:(NSRect)frame
+{
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.wantsLayer = YES;
+        self.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
+    }
+    return self;
+}
+
+- (CALayer*)makeBackingLayer
+{
+    CAMetalLayer* layer = [CAMetalLayer layer];
+    layer.opaque = NO;
+    layer.backgroundColor = [NSColor clearColor].CGColor;
+    layer.framebufferOnly = YES;
+    return layer;
+}
+
+- (BOOL)isFlipped { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent*)event { return YES; }
+- (BOOL)acceptsFirstResponder { return NO; }
+
+- (void)updateDrawableSize
+{
+    CAMetalLayer* layer = (CAMetalLayer*)self.layer;
+    const CGFloat scale = self.window ? self.window.backingScaleFactor : 2.0;
+    layer.contentsScale = scale;
+    layer.drawableSize = CGSizeMake(self.bounds.size.width * scale, self.bounds.size.height * scale);
+}
+
+- (void)setFrameSize:(NSSize)newSize
+{
+    [super setFrameSize:newSize];
+    [self updateDrawableSize];
+}
+
+- (void)viewDidChangeBackingProperties
+{
+    [super viewDidChangeBackingProperties];
+    [self updateDrawableSize];
+}
+
+- (void)updateTrackingAreas
+{
+    [super updateTrackingAreas];
+    if (self.tracking) {
+        [self removeTrackingArea:self.tracking];
+    }
+    self.tracking = [[NSTrackingArea alloc] initWithRect:self.bounds
+                                                 options:NSTrackingMouseMoved | NSTrackingActiveAlways | NSTrackingInVisibleRect
+                                                   owner:self
+                                                userInfo:nil];
+    [self addTrackingArea:self.tracking];
+}
+
+- (void)push:(int)kind event:(NSEvent*)event button:(int)button
+{
+    const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+    auto* input = new AppWindow::ChildInput;
+    input->hwnd = self.hwnd;
+    input->kind = kind;
+    input->hostX = (int)lround(p.x / self.pointsPerPx);
+    input->hostY = (int)lround(p.y / self.pointsPerPx);
+    input->button = button;
+    input->clicks = (int)event.clickCount;
+    if (kind == 3) {
+        input->scrollX = (float)event.scrollingDeltaX;
+        input->scrollY = (float)event.scrollingDeltaY;
+        if (!event.hasPreciseScrollingDeltas) {
+            // Line deltas: WHEEL_DELTA per line on the host side
+            input->scrollX *= 10.0f;
+            input->scrollY *= 10.0f;
+        }
+    }
+    if (kind == 1) {
+        input->nsEvent = (void*)CFBridgingRetain(event);
+    }
+    SDL_Event ev = {};
+    ev.type = SDL_USEREVENT;
+    ev.user.code = SDL_CODE_APPWINDOW_CHILD_INPUT;
+    ev.user.data1 = input;
+    SDL_PushEvent(&ev);
+}
+
+- (void)mouseDown:(NSEvent*)e { [self push:1 event:e button:1]; }
+- (void)mouseUp:(NSEvent*)e { [self push:2 event:e button:1]; }
+- (void)rightMouseDown:(NSEvent*)e { [self push:1 event:e button:3]; }
+- (void)rightMouseUp:(NSEvent*)e { [self push:2 event:e button:3]; }
+- (void)otherMouseDown:(NSEvent*)e { [self push:1 event:e button:2]; }
+- (void)otherMouseUp:(NSEvent*)e { [self push:2 event:e button:2]; }
+- (void)mouseMoved:(NSEvent*)e { [self push:0 event:e button:0]; }
+- (void)mouseDragged:(NSEvent*)e { [self push:0 event:e button:0]; }
+- (void)rightMouseDragged:(NSEvent*)e { [self push:0 event:e button:0]; }
+- (void)otherMouseDragged:(NSEvent*)e { [self push:0 event:e button:0]; }
+- (void)scrollWheel:(NSEvent*)e { [self push:3 event:e button:0]; }
+
+@end
+
+@interface AWChildWindow : NSWindow
+@end
+
+@implementation AWChildWindow
+// Keyboard stays with the main (SDL) window: the host routes keys to whichever
+// of its windows has focus, which the forwarded click just set.
+- (BOOL)canBecomeKeyWindow { return NO; }
+- (BOOL)canBecomeMainWindow { return NO; }
+@end
+
+namespace {
+
+struct ChildState {
+    AWChildWindow* window = nil;
+    AWChildView* view = nil;
+    AppWindow::ChildInfo info;
+};
+
+std::mutex g_childMutex;                      // guards g_childLayers
+QVector<AppWindow::ChildLayer> g_childLayers; // retained CAMetalLayer* per child
+NSMutableDictionary<NSNumber*, NSValue*>* g_childWindows = nil;  // hwnd -> ChildState*
+
+void replaceChildLayer(const ChildState& st)
+{
+    std::lock_guard<std::mutex> lock(g_childMutex);
+    for (auto& l : g_childLayers) {
+        if (l.hwnd == st.info.hwnd) {
+            l.canvasX = st.info.canvasX;
+            l.canvasY = st.info.canvasY;
+            l.w = st.info.w;
+            l.h = st.info.h;
+            l.radius = st.info.radius;
+            return;
+        }
+    }
+    AppWindow::ChildLayer layer;
+    layer.hwnd = st.info.hwnd;
+    layer.metalLayer = (void*)CFBridgingRetain(st.view.layer);
+    layer.canvasX = st.info.canvasX;
+    layer.canvasY = st.info.canvasY;
+    layer.w = st.info.w;
+    layer.h = st.info.h;
+    layer.radius = st.info.radius;
+    g_childLayers.append(layer);
+}
+
+void removeChildLayer(quint64 hwnd)
+{
+    std::lock_guard<std::mutex> lock(g_childMutex);
+    for (int i = 0; i < g_childLayers.size(); i++) {
+        if (g_childLayers[i].hwnd == hwnd) {
+            CFBridgingRelease(g_childLayers[i].metalLayer);
+            g_childLayers.removeAt(i);
+            return;
+        }
+    }
+}
+
+void closeChild(ChildState* st)
+{
+    removeChildLayer(st->info.hwnd);
+    if (st->window) {
+        if (st->window.parentWindow) {
+            [st->window.parentWindow removeChildWindow:st->window];
+        }
+        [st->window orderOut:nil];
+        [st->window close];
+    }
+    delete st;
+}
+
+}  // namespace
+
+namespace AppWindow {
+
+void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, double pointsPerHostPx)
+{
+    NSWindow* ns = nsWindowFor(mainWindow);
+    if (!ns) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "AppWindow syncChildren: no NSWindow");
+        return;
+    }
+    QVector<ChildInfo> wanted = children;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_childWindows) {
+            g_childWindows = [NSMutableDictionary new];
+        }
+        // Drop the ones that are gone
+        NSMutableArray<NSNumber*>* gone = [NSMutableArray new];
+        for (NSNumber* key in g_childWindows) {
+            bool still = false;
+            for (const ChildInfo& c : wanted) {
+                if (c.hwnd == key.unsignedLongLongValue) {
+                    still = true;
+                }
+            }
+            if (!still) {
+                [gone addObject:key];
+            }
+        }
+        for (NSNumber* key in gone) {
+            closeChild((ChildState*)g_childWindows[key].pointerValue);
+            [g_childWindows removeObjectForKey:key];
+        }
+        // Create or update the rest
+        for (const ChildInfo& c : wanted) {
+            NSNumber* key = @(c.hwnd);
+            const CGFloat w = MAX(32.0, c.w * pointsPerHostPx);
+            const CGFloat h = MAX(24.0, c.h * pointsPerHostPx);
+            ChildState* st = g_childWindows[key] ? (ChildState*)g_childWindows[key].pointerValue : nullptr;
+            if (!st) {
+                st = new ChildState;
+                st->info = c;
+                // Centred over the main window (on the host it is parked beside
+                // the parent so their pictures don't overlap on the canvas).
+                const NSRect mainFrame = ns.frame;
+                const CGFloat x = NSMidX(mainFrame) - w / 2;
+                const CGFloat top = NSMidY(mainFrame) + h / 2;
+                NSRect frame = NSMakeRect(x, top - h, w, h);
+                st->window = [[AWChildWindow alloc] initWithContentRect:frame
+                                                              styleMask:NSWindowStyleMaskBorderless
+                                                                backing:NSBackingStoreBuffered
+                                                                  defer:NO];
+                st->window.releasedWhenClosed = NO;
+                st->window.opaque = NO;
+                st->window.backgroundColor = [NSColor clearColor];
+                st->window.hasShadow = YES;
+                st->window.title = c.title.toNSString();
+                st->window.movableByWindowBackground = NO;
+                st->window.level = ns.level;
+                st->view = [[AWChildView alloc] initWithFrame:NSMakeRect(0, 0, w, h)];
+                st->view.hwnd = c.hwnd;
+                st->view.pointsPerPx = pointsPerHostPx;
+                st->window.contentView = st->view;
+                [st->view updateDrawableSize];
+                [st->view updateTrackingAreas];
+                g_childWindows[key] = [NSValue valueWithPointer:st];
+                replaceChildLayer(*st);
+                [ns addChildWindow:st->window ordered:NSWindowAbove];
+                [st->window orderFront:nil];
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "AppWindow child 0x%llx created: %dx%d pt at %d,%d (canvas %d,%d)",
+                            (unsigned long long)c.hwnd, (int)w, (int)h, (int)frame.origin.x, (int)frame.origin.y, c.canvasX, c.canvasY);
+            }
+            else {
+                st->info = c;
+                st->view.pointsPerPx = pointsPerHostPx;
+                NSRect frame = st->window.frame;
+                if (fabs(frame.size.width - w) >= 1.0 || fabs(frame.size.height - h) >= 1.0) {
+                    // Keep the top-left where it is
+                    frame.origin.y = NSMaxY(frame) - h;
+                    frame.size = NSMakeSize(w, h);
+                    [st->window setFrame:frame display:YES animate:NO];
+                }
+                if (![st->window.title isEqualToString:c.title.toNSString()]) {
+                    st->window.title = c.title.toNSString();
+                }
+                replaceChildLayer(*st);
+            }
+            [st->window invalidateShadow];
+        }
+    });
+}
+
+void closeChildren()
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_childWindows) {
+            return;
+        }
+        for (NSNumber* key in g_childWindows) {
+            closeChild((ChildState*)g_childWindows[key].pointerValue);
+        }
+        [g_childWindows removeAllObjects];
+    });
+}
+
+QVector<ChildLayer> childLayers()
+{
+    std::lock_guard<std::mutex> lock(g_childMutex);
+    return g_childLayers;
+}
+
+void forEachChildLayer(const std::function<void(const ChildLayer&)>& fn)
+{
+    std::lock_guard<std::mutex> lock(g_childMutex);
+    for (const ChildLayer& l : g_childLayers) {
+        fn(l);
+    }
+}
+
+void dragChild(quint64 hwnd, void* nsEvent)
+{
+    NSEvent* event = (__bridge NSEvent*)nsEvent;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_childWindows) {
+            return;
+        }
+        NSValue* v = g_childWindows[@(hwnd)];
+        if (v && event) {
+            auto* st = (ChildState*)v.pointerValue;
+            [st->window performWindowDragWithEvent:event];
+        }
+    });
+}
+
+void releaseChildInput(ChildInput* input)
+{
+    if (input->nsEvent) {
+        CFBridgingRelease(input->nsEvent);
+    }
+    delete input;
+}
+
+}

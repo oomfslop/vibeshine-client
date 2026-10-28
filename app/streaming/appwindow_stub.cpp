@@ -11,6 +11,12 @@ void toggleZoom(SDL_Window*) {}
 void performTitleAction(SDL_Window*) {}
 void invalidateShadow(SDL_Window*) {}
 bool setFrame(SDL_Window*, int, int, int, int) { return false; }
+void syncChildren(SDL_Window*, const QVector<ChildInfo>&, double) {}
+void closeChildren() {}
+QVector<ChildLayer> childLayers() { return {}; }
+void forEachChildLayer(const std::function<void(const ChildLayer&)>&) {}
+void dragChild(quint64, void*) {}
+void releaseChildInput(ChildInput* input) { delete input; }
 }
 #endif
 
