@@ -133,3 +133,46 @@ fragment half4 ps_draw_triplanar_aw(VertexAW v [[ stage_in ]],
     half cov = aw_coverage(v.local, v.rect);
     return half4((yuv * cscParams.matrix) * cov, alpha * cov);
 }
+
+// Desk mode: the whole frame is picture (no alpha band); anything sampled
+// outside the frame (a window hanging off the desk) is transparent.
+static half desk_coverage(float2 texCoords, float2 local, float4 rect)
+{
+    half cov = aw_coverage(local, rect);
+    if (texCoords.x < 0.0 || texCoords.y < 0.0 || texCoords.x > 1.0 || texCoords.y > 1.0) {
+        cov = 0.0h;
+    }
+    return cov;
+}
+
+fragment half4 ps_draw_biplanar_desk(VertexAW v [[ stage_in ]],
+                                     constant CscParams &cscParams [[ buffer(0) ]],
+                                     texture2d<half> luminancePlane [[ texture(0) ]],
+                                     texture2d<half> chrominancePlane [[ texture(1) ]])
+{
+    float2 chromaOffset = float2(cscParams.chromaOffset) / float2(luminancePlane.get_width(),
+                                                                  luminancePlane.get_height());
+    half3 yuv = half3(luminancePlane.sample(s, v.texCoords).r,
+                      chrominancePlane.sample(s, v.texCoords + chromaOffset).rg);
+    yuv *= cscParams.bitnessScaleFactor;
+    yuv -= cscParams.offsets;
+    half cov = desk_coverage(v.texCoords, v.local, v.rect);
+    return half4((yuv * cscParams.matrix) * cov, cov);
+}
+
+fragment half4 ps_draw_triplanar_desk(VertexAW v [[ stage_in ]],
+                                      constant CscParams &cscParams [[ buffer(0) ]],
+                                      texture2d<half> luminancePlane [[ texture(0) ]],
+                                      texture2d<half> chrominancePlaneU [[ texture(1) ]],
+                                      texture2d<half> chrominancePlaneV [[ texture(2) ]])
+{
+    float2 chromaOffset = float2(cscParams.chromaOffset) / float2(luminancePlane.get_width(),
+                                                                  luminancePlane.get_height());
+    half3 yuv = half3(luminancePlane.sample(s, v.texCoords).r,
+                      chrominancePlaneU.sample(s, v.texCoords + chromaOffset).r,
+                      chrominancePlaneV.sample(s, v.texCoords + chromaOffset).r);
+    yuv *= cscParams.bitnessScaleFactor;
+    yuv -= cscParams.offsets;
+    half cov = desk_coverage(v.texCoords, v.local, v.rect);
+    return half4((yuv * cscParams.matrix) * cov, cov);
+}

@@ -268,6 +268,11 @@ void Launcher::execute()
         info.captionPx = aw.value("caption").toInt(0);
         info.dpi = aw.value("dpi").toInt(96);
         info.hits = Session::parseHitRegions(aw.value("hit").toArray());
+        info.desk = aw.value("desk").toBool(false);
+        const QJsonArray screen = aw.value("screen").toArray();
+        if (screen.size() == 4) {
+            info.screenPts = QRect(screen.at(0).toInt(), screen.at(1).toInt(), screen.at(2).toInt(), screen.at(3).toInt());
+        }
         m_Session->setAppWindow(info);
         connect(m_Session, &Session::appWindowEvent, this, &Launcher::onAppWindowEvent);
         startStdinCommandReader();

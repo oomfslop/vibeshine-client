@@ -157,7 +157,7 @@ pub struct Root {
     pub stream_tx: UnboundedSender<StreamEvent>,
     /// App-window streaming: window list of the selected host and the streamed windows
     pub windows: crate::appwindows::WindowsState,
-    pub window_streams: Vec<crate::appwindows::WindowStream>,
+    pub desk_stream: Option<crate::appwindows::DeskStream>,
     pub windows_tx: crate::appwindows::WindowsSender,
     /// Stops the "new host windows" watcher that runs while windows are streamed
     pub window_watch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -232,7 +232,7 @@ impl Root {
             pending_launch: None,
             box_art_requested: HashSet::new(),
             windows: Default::default(),
-            window_streams: Vec::new(),
+            desk_stream: None,
             windows_tx,
             window_watch_stop: None,
             cache_dir: cache_dir_copy,
@@ -687,8 +687,8 @@ impl Root {
     }
 
     fn on_stream_event(&mut self, event: StreamEvent, cx: &mut Context<Self>) {
-        if let Some(hwnd) = event.window.clone() {
-            self.on_window_stream_event(&hwnd, event, cx);
+        if event.window.is_some() {
+            self.on_desk_stream_event(event, cx);
             return;
         }
         let Some(stream) = &mut self.stream else { return };

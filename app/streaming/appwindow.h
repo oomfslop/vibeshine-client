@@ -9,6 +9,7 @@
 
 #include <SDL.h>
 #include <QByteArray>
+#include <QRect>
 #include <QString>
 #include <QVector>
 #include <QtGlobal>
@@ -115,5 +116,46 @@ struct ChildInput {
 // Called by the session when a press on a child's caption should drag it.
 void dragChild(quint64 hwnd, void* nsEvent);
 void releaseChildInput(ChildInput* input);
+
+// ---------------------------------------------------------------------------
+// Desk mode: the stream is the client's desk, a private host display that
+// mirrors this screen. Every window on it is a native Mac window of its own
+// (position, size and stacking mirrored from the host's truth, except while
+// the user is moving or resizing one); the SDL window is a hidden key window
+// that only carries the keyboard. Units are host pixels unless noted.
+// ---------------------------------------------------------------------------
+struct DeskWindow {
+    quint64 hwnd = 0, owner = 0;
+    int kind = 0;                    // 0 window, 1 dialog (owned, captioned), 2 popup (caption-less)
+    int x = 0, y = 0, w = 0, h = 0;  // desk-relative outer rect, as the host has it
+    int radius = 0, caption = 0, z = 0;
+    bool focused = false;
+    QString title, state, iconKey;   // state: normal, minimized, maximized
+};
+// Make the SDL window the hidden key window and set the screen mapping:
+// screenPts is the mirrored screen in SDL global points (top-left origin).
+void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHostPx);
+// Mirror the desk (bottom-most first): create, move, resize, stack, minimize
+// and close Mac windows to match. Safe from any thread.
+void syncDesk(const QVector<DeskWindow>& windows);
+// The PNG for windows with this icon key; the Dock shows the front window's.
+void setDeskIcon(const QString& iconKey, const QByteArray& png);
+// Frontmost desk window of ours (0 = none).
+quint64 deskFrontWindow();
+// What the user did to a desk window, pushed as SDL_CODE_APPWINDOW_DESK_EVENT
+// (event.user.data1 = new DeskEvent). kind: move (x, y), resize (w, h),
+// minimize, restore.
+struct DeskEvent {
+    quint64 hwnd = 0;
+    QString kind;
+    int x = 0, y = 0, w = 0, h = 0;
+};
+void deskMinimize(quint64 hwnd);
+// Test hook: set a desk window's frame as if the user had moved/resized it
+// (SDL global points, top-left origin).
+void deskTestSetFrame(quint64 hwnd, int x, int y, int w, int h);
+void deskTitleAction(quint64 hwnd);  // the title-bar double-click / maximize-button action
+bool deskActive();
+void setDeskActive(bool on);
 
 }

@@ -168,7 +168,15 @@ public:
         m_VideoVertexBuffer = nullptr;
         auto bufferOptions = MTLCPUCacheModeWriteCombined | MTLResourceStorageModeManaged;
 
-        if (m_AppWindowMode && !layout.items.isEmpty() && layout.w > 0 && layout.h > 0) {
+        if (m_AppWindowMode && layout.items.isEmpty()) {
+            // Desk mode: the SDL window shows nothing; the desk's windows are
+            // drawn by renderChildWindows.
+            m_VideoVertexCount = 0;
+            if (layout.version != m_LastLayoutVersion) {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Metal app-window layout v%u: empty (desk mode)", layout.version);
+            }
+        }
+        else if (m_AppWindowMode && !layout.items.isEmpty() && layout.w > 0 && layout.h > 0) {
             // App window: the drawable covers layout.w x layout.h host pixels of
             // the canvas starting at (originX, originY); each item is a rounded
             // rectangle of that region, drawn bottom-most first.
@@ -373,7 +381,13 @@ public:
         if (m_AppWindowMode) {
             // Shaped, rounded, premultiplied output over a transparent window
             pipelineDesc.vertexFunction = [[m_ShaderLibrary newFunctionWithName:@"vs_draw_aw"] autorelease];
-            pipelineDesc.fragmentFunction = [[m_ShaderLibrary newFunctionWithName:planes == 2 ? @"ps_draw_biplanar_aw" : @"ps_draw_triplanar_aw"] autorelease];
+            if (AppWindow::deskActive()) {
+                // Desk: plain colour frame, transparent outside it
+                pipelineDesc.fragmentFunction = [[m_ShaderLibrary newFunctionWithName:planes == 2 ? @"ps_draw_biplanar_desk" : @"ps_draw_triplanar_desk"] autorelease];
+            }
+            else {
+                pipelineDesc.fragmentFunction = [[m_ShaderLibrary newFunctionWithName:planes == 2 ? @"ps_draw_biplanar_aw" : @"ps_draw_triplanar_aw"] autorelease];
+            }
             pipelineDesc.colorAttachments[0].blendingEnabled = YES;
             pipelineDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
             pipelineDesc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;

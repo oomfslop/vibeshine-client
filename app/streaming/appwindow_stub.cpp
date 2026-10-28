@@ -18,6 +18,13 @@ QVector<ChildLayer> childLayers() { return {}; }
 void forEachChildLayer(const std::function<void(const ChildLayer&)>&) {}
 void dragChild(quint64, void*) {}
 void releaseChildInput(ChildInput* input) { delete input; }
+void beginDesk(SDL_Window*, const QRect&, double) {}
+void syncDesk(const QVector<DeskWindow>&) {}
+void setDeskIcon(const QString&, const QByteArray&) {}
+quint64 deskFrontWindow() { return 0; }
+void deskMinimize(quint64) {}
+void deskTestSetFrame(quint64, int, int, int, int) {}
+void deskTitleAction(quint64) {}
 }
 #endif
 
@@ -29,6 +36,7 @@ namespace {
 QMutex g_layoutLock;
 AppWindow::Layout g_layout;
 std::atomic<bool> g_active {false};
+std::atomic<bool> g_desk {false};
 }
 
 namespace AppWindow {
@@ -51,6 +59,19 @@ Layout layout()
 bool active()
 {
     return g_active.load();
+}
+
+void setDeskActive(bool on)
+{
+    g_desk.store(on);
+    if (on) {
+        g_active.store(true);
+    }
+}
+
+bool deskActive()
+{
+    return g_desk.load();
 }
 
 }

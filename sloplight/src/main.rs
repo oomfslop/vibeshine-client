@@ -202,6 +202,9 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         backend::http::NvHttp::new(addr, host.active_https_port, host.server_cert(), !host.is_nvidia_server_software, identity.clone())
     };
     let mut settings = settings;
+    // Desk mode: open the host's desk for a screen like this Mac's, stream it,
+    // and adopt the window onto it.
+    let screen = display::displays().first().map(|d| [0, 0, d.points.0, d.points.1]).unwrap_or([0, 0, 1728, 1117]);
     let window = if let Some(hwnd) = &window_hwnd {
         let windows = match http.get_host_windows() {
             Ok(w) => w,
@@ -214,36 +217,50 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
             eprintln!("Window {hwnd} not found on the host; known: {:?}", windows.iter().map(|w| format!("{} {}", w.hwnd, w.title)).collect::<Vec<_>>());
             return 2;
         };
-        let icon = match http.get_window_icon(&w.hwnd) {
-            Ok(i) => i,
+        let icon = http.get_window_icon(&w.hwnd).unwrap_or_default();
+        let dpi = std::env::var("SLOPLIGHT_DESK_DPI").ok().and_then(|v| v.parse().ok()).unwrap_or(w.dpi.max(48));
+        let k = dpi as f32 / 96.0;
+        let want = ((screen[2] as f32 * k).round() as i32, (screen[3] as f32 * k).round() as i32);
+        let desk = match http.open_desk(want.0, want.1, settings.fps.max(30), dpi) {
+            Ok(d) => d,
             Err(e) => {
-                log::warn!("[stream-cli] window icon: {e}");
-                Vec::new()
+                eprintln!("desk open: {e}");
+                return 1;
             }
         };
-        let hit = http.get_window_hittest(&w.hwnd).unwrap_or_default();
-        log::info!("[stream-cli] hit regions: {:?}", hit);
-        // Fixed canvas (the helper crops to the window): host monitor capped at 2560x1600
-        let host_px = (w.monitor_rect[2] > 0).then_some((w.monitor_rect[2].min(2560), w.monitor_rect[3].min(1600)));
-        let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], host_px.or(Some((2560, 1600))));
-        settings.width = cw;
-        settings.height = stream::app_window_frame_height(ch);
-        let layout = http.get_window_layout(&w.hwnd, (cw, settings.height * 2 / 3), "0", 0).ok();
-        log::info!("[stream-cli] layout: {:?}", layout);
-        let cfg = stream::AppWindowConfig {
-            title: w.title.clone(),
-            icon_png_base64: stream::base64_encode(&icon),
-            rect: layout.as_ref().map(|l| l.rect).unwrap_or(w.rect),
-            caption: w.caption,
-            dpi: w.dpi,
-            hit,
-            anchor: layout.as_ref().map(|l| l.anchor).unwrap_or([0, 0]),
-            radius: layout.as_ref().map(|l| l.radius).unwrap_or(0),
-        };
+        log::info!("[stream-cli] desk {} {:?} @{} {} dpi for screen {:?} (wanted {}x{})", desk.display, desk.rect, desk.fps, desk.dpi, screen, want.0, want.1);
+        settings.width = desk.rect[2];
+        settings.height = desk.rect[3];
+        settings.fps = desk.fps;
         settings.window_mode = settings::WindowMode::Windowed;
         settings.hide_host_cursor = true;
-        log::info!("[stream-cli] app window {} {:?} {}x{} dpi {} caption {} icon {} bytes", w.hwnd, w.title, w.rect[2], w.rect[3], w.dpi, w.caption, icon.len());
-        Some((w.hwnd.clone(), cfg))
+        let cfg = stream::AppWindowConfig {
+            title: String::new(),
+            icon_png_base64: stream::base64_encode(&icon),
+            rect: [0, 0, 0, 0],
+            caption: 0,
+            dpi: desk.dpi,
+            hit: Vec::new(),
+            anchor: [0, 0],
+            radius: 0,
+            desk: true,
+            screen,
+        };
+        let (sw, sh) = ((screen[2] as f32 * k) as i32, (screen[3] as f32 * k) as i32);
+        let kw = dpi as f32 / w.dpi.max(48) as f32;
+        let (ww, wh) = ((w.rect[2] as f32 * kw) as i32, (w.rect[3] as f32 * kw) as i32);
+        let (x, y) = ((w.rect[0] - w.monitor_rect[0]).min((sw - ww).max(0)).max(0), (w.rect[1] - w.monitor_rect[1]).min((sh - wh).max(0)).max(0));
+        if let Err(e) = http.window_action(&w.hwnd, "adopt", x, y, 0, 0) {
+            log::warn!("[stream-cli] adopt: {e}");
+        }
+        for extra in std::env::var("SLOPLIGHT_ADOPT_MORE").ok().unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+            if let Some(o) = windows.iter().find(|w| w.hwnd.eq_ignore_ascii_case(extra)) {
+                let r = http.window_action(&o.hwnd, "adopt", o.rect[0] - o.monitor_rect[0], o.rect[1] - o.monitor_rect[1], 0, 0);
+                log::info!("[stream-cli] adopt {}: {:?}", o.hwnd, r.err());
+            }
+        }
+        log::info!("[stream-cli] app window {} {:?} adopted at {x},{y}; desk {}x{}", w.hwnd, w.title, settings.width, settings.height);
+        Some((appwindows::DESK_STREAM_ID.to_string(), cfg))
     } else {
         None
     };
@@ -256,19 +273,52 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         }
     };
     log::info!("Streaming {} from {} for {}s (helper {})", app.name, host.name, seconds, helper.display());
+    // Test hook: SLOPLIGHT_TEST_CMD_FILE=<path> forwards every new JSON line appended to that file
+    if let Ok(path) = std::env::var("SLOPLIGHT_TEST_CMD_FILE") {
+        let commander = process.clone_commander();
+        std::thread::spawn(move || {
+            let mut sent = 0usize;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+                for line in lines.iter().skip(sent) {
+                    match serde_json::from_str::<serde_json::Value>(line) {
+                        Ok(v) => {
+                            log::info!("[stream-cli] test cmd {v}");
+                            if !commander.send_command(&v) {
+                                return;
+                            }
+                        }
+                        Err(e) => log::warn!("[stream-cli] bad test cmd {line}: {e}"),
+                    }
+                }
+                sent = lines.len();
+            }
+        });
+    }
+    // Test hook: SLOPLIGHT_TEST_CMDS="<ms>:<json>;<ms>:<json>" sends helper commands at those delays
+    if let Ok(cmds) = std::env::var("SLOPLIGHT_TEST_CMDS") {
+        let commander = process.clone_commander();
+        std::thread::spawn(move || {
+            let start = std::time::Instant::now();
+            for item in cmds.split(';').filter(|s| !s.trim().is_empty()) {
+                let Some((ms, json)) = item.split_once(':') else { continue };
+                let at = std::time::Duration::from_millis(ms.trim().parse().unwrap_or(0));
+                if let Some(wait) = at.checked_sub(start.elapsed()) {
+                    std::thread::sleep(wait);
+                }
+                match serde_json::from_str::<serde_json::Value>(json) {
+                    Ok(v) => {
+                        log::info!("[stream-cli] test cmd {v}");
+                        commander.send_command(&v);
+                    }
+                    Err(e) => log::warn!("[stream-cli] bad test cmd {json}: {e}"),
+                }
+            }
+        });
+    }
     let mut code = 0;
-    // Geometry poller for app windows: forwards host-side changes to the helper.
-    let poller = window_hwnd.as_ref().map(|hwnd| {
-        let http2 = {
-            let addr = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).expect("host address");
-            backend::http::NvHttp::new(addr, host.active_https_port, host.server_cert(), !host.is_nvidia_server_software, identity.clone())
-        };
-        let hwnd = hwnd.clone();
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        appwindows::spawn_geometry_poller(http2, hwnd, (settings.width, settings.height * 2 / 3), process.clone_commander(), stop.clone());
-        let handle = std::thread::spawn(|| {});
-        (stop, handle)
-    });
     futures::executor::block_on(async {
         while let Some(ev) = rx.next().await {
             log::info!("[stream-cli] {:?}", ev.event);
@@ -277,30 +327,23 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
                     code = c.unwrap_or(1);
                     break;
                 }
-                stream::HelperEvent::AppWindow { kind, w, h, hwnd: child } => {
-                    if let Some(hwnd) = child.as_ref().or(window_hwnd.as_ref()) {
-                        let r = match kind.as_str() {
-                            "resize" => http.window_action(hwnd, "resize", 0, 0, *w, *h),
-                            "focus" => http.window_action(hwnd, "activate", 0, 0, 0, 0),
-                            "minimize" => http.window_action(hwnd, "minimize", 0, 0, 0, 0),
-                            "restore" => http.window_action(hwnd, "restore", 0, 0, 0, 0),
-                            "close" => http.window_action(hwnd, "close", 0, 0, 0, 0),
-                            _ => Ok(()),
-                        };
-                        if let Err(e) = r {
-                            log::warn!("[stream-cli] window {kind}: {e}");
-                        }
+                stream::HelperEvent::AppWindow { kind, w, h, hwnd: child, x, y } => {
+                    log::info!("[stream-cli] desk event {kind} {child:?} {x},{y} {w}x{h}");
+                    if kind == "close" && child.is_none() {
+                        process.terminate();
                     }
                 }
                 _ => {}
             }
         }
     });
-    if let Some((stop, handle)) = poller {
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let _ = handle.join();
-    }
     drop(process);
+    if window.is_some() {
+        // Adopted windows go back to where they were; the desk idles out on the host
+        if let Err(e) = http.close_desk() {
+            log::warn!("[stream-cli] desk close: {e}");
+        }
+    }
     code
 }
 

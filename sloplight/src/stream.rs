@@ -54,6 +54,12 @@ pub struct AppWindowConfig {
     pub anchor: [i32; 2],
     /// Corner radius (host px) the OS gives the window and its popups
     pub radius: i32,
+    /// Desk mode: the stream is the client's desk; `screen` is the Mac screen
+    /// it mirrors, in global points (x, y, w, h).
+    #[serde(default)]
+    pub desk: bool,
+    #[serde(default)]
+    pub screen: [i32; 4],
 }
 
 /// Encoder frame for an app window. The helper copies the window into the
@@ -148,6 +154,10 @@ pub enum HelperEvent {
         /// Set when the event is about one of the window's child dialogs
         #[serde(default)]
         hwnd: Option<String>,
+        #[serde(default)]
+        x: i32,
+        #[serde(default)]
+        y: i32,
     },
 }
 

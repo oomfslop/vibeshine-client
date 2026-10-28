@@ -246,6 +246,9 @@ NvHTTP::startApp(QString verb,
     if (launchOptions.hideCursor) {
         apolloParams += "&hideCursor=1";
     }
+    if (launchOptions.desk) {
+        apolloParams += "&desk=1";
+    }
 
     QString response =
             openConnectionToString(m_BaseUrlHttps,
@@ -483,6 +486,58 @@ NvHTTP::hitTestWindow(quint64 windowHandle, int x, int y)
     k += 7;
     int e = body.indexOf('"', k);
     return e > k ? body.mid(k, e - k) : "none";
+}
+
+QString
+NvHTTP::deskLayout(quint64 etag, int waitMs)
+{
+    return openConnectionToString(m_BaseUrlHttps,
+                                  "actions/desk-layout",
+                                  QString("etag=%1&wait=%2").arg(etag).arg(waitMs),
+                                  waitMs + 3000);
+}
+
+bool
+NvHTTP::windowAction(quint64 windowHandle, const QString& op, int x, int y, int w, int h)
+{
+    QByteArray body;
+    try {
+        QNetworkReply* reply = openConnection(m_BaseUrlHttps,
+                                              "actions/window",
+                                              QString("hwnd=0x%1&op=%2&x=%3&y=%4&w=%5&h=%6")
+                                                  .arg(QString::number(windowHandle, 16)).arg(op).arg(x).arg(y).arg(w).arg(h),
+                                              2000,
+                                              NvLogLevel::NVLL_NONE,
+                                              &body,
+                                              "text/plain");
+        delete reply;
+        return true;
+    } catch (const GfeHttpResponseException&) {
+        return false;
+    } catch (const QtNetworkReplyException&) {
+        return false;
+    }
+}
+
+QByteArray
+NvHTTP::windowIcon(quint64 windowHandle)
+{
+    try {
+        QNetworkReply* reply = openConnection(m_BaseUrlHttps,
+                                              "actions/window-icon",
+                                              QString("hwnd=0x%1").arg(QString::number(windowHandle, 16)),
+                                              3000,
+                                              NvLogLevel::NVLL_NONE,
+                                              nullptr,
+                                              QString());
+        QByteArray png = reply->readAll();
+        delete reply;
+        return png;
+    } catch (const GfeHttpResponseException&) {
+        return {};
+    } catch (const QtNetworkReplyException&) {
+        return {};
+    }
 }
 
 void

@@ -216,7 +216,7 @@ fn render_windows_section(root: &mut Root, theme: &Theme, host: &Host, cx: &mut 
     }
     let windows: Vec<crate::backend::http::HostWindow> = if root.windows.host_uuid == uuid { root.windows.windows.clone() } else { Vec::new() };
     for (i, w) in windows.iter().enumerate() {
-        let streaming = root.window_stream(&w.hwnd).is_some();
+        let streaming = root.window_streaming(&w.hwnd);
         let icon_path = root.windows.icons.get(&w.icon).cloned();
         let hwnd = w.hwnd.clone();
         let label = if w.title.chars().count() > 48 { format!("{}…", w.title.chars().take(47).collect::<String>()) } else { w.title.clone() };

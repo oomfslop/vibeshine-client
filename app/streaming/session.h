@@ -2,6 +2,8 @@
 
 #include <QSemaphore>
 #include <QSet>
+#include <atomic>
+#include <memory>
 #include <QAtomicInt>
 #include <QSharedPointer>
 #include <QQuickWindow>
@@ -25,6 +27,7 @@
 #define SDL_CODE_QUICKMENU_TOAST 108
 #define SDL_CODE_APPWINDOW_CMD 109
 #define SDL_CODE_APPWINDOW_CHILD_INPUT 110
+#define SDL_CODE_APPWINDOW_DESK_EVENT 111
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -157,6 +160,11 @@ public:
         int captionPx = 0;
         int dpi = 96;
         QVector<HitRegion> hits;
+        // Desk mode: the stream is the client's desk, a host display that
+        // mirrors this screen (SDL global points); every window on it is a
+        // Mac window of its own.
+        bool desk = false;
+        QRect screenPts;
     };
     static QVector<HitRegion> parseHitRegions(const QJsonArray& arr);
     void setAppWindow(const AppWindowInfo& info) { m_AppWindow = info; m_IsAppWindow = true; }
@@ -395,6 +403,24 @@ private:
     int m_AppWindowRequestedW = 0, m_AppWindowRequestedH = 0;
     qint64 m_AppWindowUserResizeMs = 0;
     void handleAppWindowCommand(const QJsonObject& cmd);
+    // Desk mode
+    struct DeskWin {
+        quint64 hwnd = 0, owner = 0;
+        int kind = 0;          // 0 window, 1 dialog, 2 popup
+        QRect rect;            // desk px, host truth
+        int caption = 0, radius = 0, z = 0;
+        bool focused = false;
+        QString state, title, iconKey;
+    };
+    QVector<DeskWin> m_DeskWindows;
+    QSet<QString> m_DeskIconsRequested;
+    std::shared_ptr<std::atomic<bool>> m_DeskPollStop;
+    void startDeskPoller();
+    void handleDeskLayout(const QJsonObject& layout);
+    void handleDeskEvent(void* event);
+    void handleDeskInput(void* input);
+    void sendWindowAction(quint64 hwnd, const QString& op, int x = 0, int y = 0, int w = 0, int h = 0);
+    bool deskPointCovered(quint64 hwnd, int px, int py) const;
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;

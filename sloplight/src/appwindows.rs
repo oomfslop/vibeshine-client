@@ -1,8 +1,8 @@
 //! App-window streaming on the launcher side: the host's window list for the
-//! selected host, one stream (helper process) per streamed window, a geometry
-//! poller that keeps each Mac window in sync with its host window, and the
-//! forwarding of Mac-side window events (resize, focus, close…) as host
-//! window actions. See DESIGN-APPWINDOWS.md.
+//! selected host and the desk stream. The desk is a private host display that
+//! mirrors this screen; streamed windows are *adopted* onto it and one helper
+//! streams the whole desk, showing every window on it as a Mac window of its
+//! own (the helper follows the desk's layout itself). See DESIGN-APPWINDOWS.md.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,9 +16,9 @@ use gpui::Context;
 use crate::app::Root;
 use crate::ui::ToastKind;
 use crate::backend::Host;
-use crate::backend::http::{HostWindow, NvHttp, WindowLayout, HttpError};
+use crate::backend::http::{DeskInfo, HostWindow};
 use crate::settings;
-use crate::stream::{self, AppWindowConfig, HelperEvent, StreamCommander, StreamEvent, StreamProcess};
+use crate::stream::{self, AppWindowConfig, HelperEvent, StreamEvent, StreamProcess};
 
 /// Window list of one host, as last fetched.
 #[derive(Default)]
@@ -32,27 +32,23 @@ pub struct WindowsState {
     pub fetched_at: Option<Instant>,
 }
 
-/// One streamed host window.
-pub struct WindowStream {
+/// The desk stream of one host: the helper that shows the desk's windows.
+pub struct DeskStream {
     pub host_uuid: String,
-    pub hwnd: String,
-    pub title: String,
-    pub process_name: String,
+    pub desk: DeskInfo,
     pub process: StreamProcess,
     pub connected: bool,
     pub error_lines: Vec<String>,
-    poller_stop: Arc<AtomicBool>,
-    /// Encoder frame size this session was launched with (host pixels)
-    pub canvas: (i32, i32),
-    /// Mac-side resizes go through one worker thread that always sends the latest size
-    resize_tx: std::sync::mpsc::Sender<(i32, i32)>,
+    /// Windows this launcher adopted (lower-case "0x..." handles)
+    pub adopted: Vec<String>,
+    /// Points per host pixel of the desk
+    pub points_per_px: f32,
 }
 
-impl Drop for WindowStream {
-    fn drop(&mut self) {
-        self.poller_stop.store(true, Ordering::Relaxed);
-    }
-}
+/// Stream events of the desk helper carry this in place of a window handle.
+pub const DESK_STREAM_ID: &str = "desk";
+
+pub type WindowsSender = UnboundedSender<WindowsEvent>;
 
 pub enum WindowsEvent {
     List { host_uuid: String, result: Result<(Vec<HostWindow>, HashMap<String, PathBuf>), String> },
@@ -134,7 +130,7 @@ impl Root {
                 }
             }
             WindowsEvent::NewWindow { host_uuid, window } => {
-                if !self.settings.app_window_follow_new || self.window_stream(&window.hwnd).is_some() {
+                if !self.settings.app_window_follow_new || self.window_streaming(&window.hwnd) {
                     return;
                 }
                 if self.windows.host_uuid == host_uuid && !self.windows.windows.iter().any(|w| w.hwnd.eq_ignore_ascii_case(&window.hwnd)) {
@@ -160,6 +156,7 @@ impl Root {
         self.window_watch_stop = Some(stop.clone());
         let tx = self.windows_tx.clone();
         let uuid = host.uuid.clone();
+        let desk_display = self.desk_stream.as_ref().map(|d| d.desk.display.to_ascii_lowercase()).unwrap_or_default();
         std::thread::Builder::new()
             .name("host window watch".into())
             .spawn(move || {
@@ -170,7 +167,8 @@ impl Root {
                             None => known = Some(list.iter().map(|w| w.hwnd.to_ascii_lowercase()).collect()),
                             Some(seen) => {
                                 for w in list {
-                                    if seen.insert(w.hwnd.to_ascii_lowercase()) && w.state != "minimized" {
+                                    let on_desk = !desk_display.is_empty() && w.monitor.eq_ignore_ascii_case(&desk_display);
+                                    if seen.insert(w.hwnd.to_ascii_lowercase()) && w.state != "minimized" && !on_desk {
                                         let _ = tx.unbounded_send(WindowsEvent::NewWindow { host_uuid: uuid.clone(), window: w });
                                     }
                                 }
@@ -189,220 +187,218 @@ impl Root {
         }
     }
 
-    pub fn window_stream(&self, hwnd: &str) -> Option<&WindowStream> {
-        self.window_streams.iter().find(|w| w.hwnd.eq_ignore_ascii_case(hwnd))
+    /// Is this host window streamed (adopted onto the desk)?
+    pub fn window_streaming(&self, hwnd: &str) -> bool {
+        let Some(ds) = &self.desk_stream else { return false };
+        if ds.adopted.iter().any(|h| h.eq_ignore_ascii_case(hwnd)) {
+            return true;
+        }
+        // Windows that opened on the desk by themselves (dialogs, new app windows)
+        self.windows.windows.iter().any(|w| w.hwnd.eq_ignore_ascii_case(hwnd) && w.monitor.eq_ignore_ascii_case(&ds.desk.display))
     }
 
-    /// Streams one host window as its own Mac window.
+    /// Points per host pixel for a desk at this DPI.
+    fn desk_points_per_px(dpi: i32) -> f32 {
+        96.0 / dpi.max(48) as f32
+    }
+
+    /// Streams a host window: opens the host's desk for this screen (first
+    /// window), starts the desk helper, and adopts the window onto the desk at
+    /// the place it has on its host monitor.
     pub fn launch_window(&mut self, uuid: &str, hwnd: &str, cx: &mut Context<Self>) {
-        if self.window_stream(hwnd).is_some() {
+        if self.window_streaming(hwnd) {
             return;
         }
         let Some(host) = self.host_by_uuid(uuid).cloned() else { return };
         let Some(w) = self.windows.windows.iter().find(|w| w.hwnd.eq_ignore_ascii_case(hwnd)).cloned() else { return };
+        let Some(http) = host.http(self.identity.clone()) else { return };
+        if let Some(ds) = &mut self.desk_stream {
+            if ds.host_uuid != host.uuid {
+                self.toast(ToastKind::Error, "Windows of one host at a time: stop the other host's windows first", cx);
+                return;
+            }
+            // Desk already streaming: adopt where the window is on its monitor
+            let (x, y) = Self::adopt_position(&w, ds.points_per_px, cx);
+            ds.adopted.push(w.hwnd.to_ascii_lowercase());
+            std::thread::spawn(move || {
+                if let Err(e) = http.window_action(&w.hwnd, "adopt", x, y, 0, 0) {
+                    log::warn!("adopt {}: {e}", w.hwnd);
+                }
+            });
+            cx.notify();
+            return;
+        }
         let helper = self.helper_path.clone().or_else(|| stream::find_helper(&self.settings));
         let Some(helper) = helper else {
             self.toast(ToastKind::Error, "Streaming helper not found; set it in Settings", cx);
             return;
         };
         self.helper_path = Some(helper.clone());
-        // The session streams the "Desktop"-style entry: any app id works for a
-        // window session, but the helper needs an app to name the session.
         let app = host.apps.iter().find(|a| a.id == host.current_game_id && a.id != 0).or_else(|| host.apps.first()).cloned();
         let Some(app) = app else {
             self.toast(ToastKind::Error, "The host lists no apps; can't start a window stream", cx);
             return;
         };
+        // The desk mirrors the screen the launcher is on, at the host window's DPI
+        let Some(display) = cx.primary_display() else {
+            self.toast(ToastKind::Error, "No display to mirror", cx);
+            return;
+        };
+        let b = display.bounds();
+        let screen = [f32::from(b.origin.x) as i32, f32::from(b.origin.y) as i32, f32::from(b.size.width) as i32, f32::from(b.size.height) as i32];
+        let dpi = w.dpi.max(48);
+        let k = dpi as f32 / 96.0;
+        let want = ((screen[2] as f32 * k).round() as i32, (screen[3] as f32 * k).round() as i32);
+        let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi) {
+            Ok(d) => d,
+            Err(e) => {
+                self.toast(ToastKind::Error, format!("Couldn't open the desk on the host: {e}"), cx);
+                return;
+            }
+        };
+        log::info!("desk {} {:?} @{} {} dpi for a {}x{} pt screen ({}x{} px wanted)", desk.display, desk.rect, desk.fps, desk.dpi, screen[2], screen[3], want.0, want.1);
         let icon_png = self.windows.icons.get(&w.icon).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
-        let hit = host.http(self.identity.clone()).and_then(|h| h.get_window_hittest(&w.hwnd).ok()).unwrap_or_default();
         let mut settings = self.settings.clone();
-        // Fixed canvas: the smaller of the host monitor and the Mac screen (in
-        // host pixels), so maximize and free resizing never need a relaunch.
-        let mac_px = cx.primary_display().map(|d| {
-            let b = d.bounds();
-            let k = w.dpi.max(48) as f32 / 96.0;
-            ((f32::from(b.size.width) * k) as i32, (f32::from(b.size.height) * k) as i32)
-        });
-        let host_px = (w.monitor_rect[2] > 0 && w.monitor_rect[3] > 0).then_some((w.monitor_rect[2], w.monitor_rect[3]));
-        let max = match (mac_px, host_px) {
-            (Some(a), Some(b)) => Some((a.0.min(b.0), a.1.min(b.1))),
-            (a, b) => a.or(b),
-        };
-        let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], max);
-        // Encoder frame: window band + popup band, plus the half-res alpha band below.
-        settings.width = cw;
-        settings.height = stream::app_window_frame_height(ch);
-        let canvas_h = settings.height * 2 / 3;
-        let layout = host.http(self.identity.clone()).and_then(|h| h.get_window_layout(&w.hwnd, (cw, canvas_h), "0", 0).ok());
-        let cfg = AppWindowConfig {
-            title: w.title.clone(),
-            icon_png_base64: stream::base64_encode(&icon_png),
-            rect: layout.as_ref().map(|l| l.rect).unwrap_or(w.rect),
-            caption: w.caption,
-            dpi: w.dpi,
-            hit,
-            anchor: layout.as_ref().map(|l| l.anchor).unwrap_or([0, 0]),
-            radius: layout.as_ref().map(|l| l.radius).unwrap_or(0),
-        };
+        settings.width = desk.rect[2];
+        settings.height = desk.rect[3];
+        settings.fps = desk.fps;
         settings.window_mode = settings::WindowMode::Windowed;
-        settings.hide_host_cursor = true;  // app windows always draw the Mac cursor
+        settings.hide_host_cursor = true;
         settings.enable_vsync = false;
         settings.frame_pacing = false;
-        match stream::start_with_window(&helper, &self.identity, &host, &app, &settings, None, self.stream_tx.clone(), Some((w.hwnd.clone(), cfg))) {
+        let cfg = AppWindowConfig {
+            title: String::new(),
+            icon_png_base64: stream::base64_encode(&icon_png),
+            rect: [0, 0, 0, 0],
+            caption: 0,
+            dpi: desk.dpi,
+            hit: Vec::new(),
+            anchor: [0, 0],
+            radius: 0,
+            desk: true,
+            screen,
+        };
+        match stream::start_with_window(&helper, &self.identity, &host, &app, &settings, None, self.stream_tx.clone(), Some((DESK_STREAM_ID.to_string(), cfg))) {
             Ok(process) => {
-                let poller_stop = Arc::new(AtomicBool::new(false));
-                if let Some(http) = host.http(self.identity.clone()) {
-                    spawn_geometry_poller(http, w.hwnd.clone(), (cw, canvas_h), process.clone_commander(), poller_stop.clone());
-                }
-                self.window_streams.push(WindowStream {
+                let points_per_px = Self::desk_points_per_px(desk.dpi);
+                let (x, y) = Self::adopt_position(&w, points_per_px, cx);
+                let adopt_http = http.clone();
+                let hwnd_s = w.hwnd.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = adopt_http.window_action(&hwnd_s, "adopt", x, y, 0, 0) {
+                        log::warn!("adopt {hwnd_s}: {e}");
+                    }
+                });
+                self.desk_stream = Some(DeskStream {
                     host_uuid: host.uuid.clone(),
-                    hwnd: w.hwnd.clone(),
-                    title: w.title.clone(),
-                    process_name: w.process.clone(),
+                    desk,
                     process,
                     connected: false,
                     error_lines: Vec::new(),
-                    poller_stop,
-                    canvas: (cw, ch),
-                    resize_tx: spawn_resize_worker(host.http(self.identity.clone()), w.hwnd.clone(), self.settings.app_window_live_resize),
+                    adopted: vec![w.hwnd.to_ascii_lowercase()],
+                    points_per_px,
                 });
                 self.ensure_window_watch(&host);
             }
-            Err(e) => self.toast(ToastKind::Error, format!("Couldn't stream {}: {e}", w.title), cx),
+            Err(e) => {
+                let _ = http.close_desk();
+                self.toast(ToastKind::Error, format!("Couldn't stream {}: {e}", w.title), cx);
+            }
         }
         cx.notify();
     }
 
+    /// Where a newly adopted window goes on the desk: its place on its host
+    /// monitor, so the layout comes over as it was (the host clamps it in).
+    fn adopt_position(w: &HostWindow, points_per_px: f32, cx: &Context<Self>) -> (i32, i32) {
+        let (x, y) = (w.rect[0] - w.monitor_rect[0], w.rect[1] - w.monitor_rect[1]);
+        // Inside the mirrored screen (desk px), not just inside the desk
+        let Some(d) = cx.primary_display() else { return (x, y) };
+        let b = d.bounds();
+        let (sw, sh) = ((f32::from(b.size.width) / points_per_px) as i32, (f32::from(b.size.height) / points_per_px) as i32);
+        // The window rescales to the desk's DPI when it lands there
+        let k = (96.0 / points_per_px) / w.dpi.max(48) as f32;
+        let (ww, wh) = ((w.rect[2] as f32 * k) as i32, (w.rect[3] as f32 * k) as i32);
+        (x.min((sw - ww).max(0)).max(0), y.min((sh - wh).max(0)).max(0))
+    }
+
+    /// Stops streaming one window: it goes back to where it was on the host.
+    /// The desk stream ends with its last window.
     pub fn close_window_stream(&mut self, hwnd: &str, cx: &mut Context<Self>) {
-        if let Some(w) = self.window_stream(hwnd) {
-            w.process.send_command(&serde_json::json!({"cmd": "close"}));
-            w.process.terminate();
+        let Some(ds) = &mut self.desk_stream else { return };
+        let host_uuid = ds.host_uuid.clone();
+        let desk_display = ds.desk.display.clone();
+        ds.adopted.retain(|h| !h.eq_ignore_ascii_case(hwnd));
+        let adopted_left = ds.adopted.len();
+        let others_on_desk = self.windows.windows.iter().any(|w| {
+            !w.hwnd.eq_ignore_ascii_case(hwnd) && w.monitor.eq_ignore_ascii_case(&desk_display) && w.state != "minimized"
+        });
+        let last = adopted_left == 0 && !others_on_desk;
+        let Some(host) = self.host_by_uuid(&host_uuid).cloned() else { return };
+        let Some(ds) = &mut self.desk_stream else { return };
+        if let Some(http) = host.http(self.identity.clone()) {
+            let hwnd = hwnd.to_string();
+            std::thread::spawn(move || {
+                if let Err(e) = http.window_action(&hwnd, "release", 0, 0, 0, 0) {
+                    log::warn!("release {hwnd}: {e}");
+                }
+                if last {
+                    let _ = http.close_desk();
+                }
+            });
+        }
+        if last {
+            ds.process.terminate();
         }
         cx.notify();
     }
 
-    /// Events from a window-session helper (routed here by `on_stream_event`).
-    pub fn on_window_stream_event(&mut self, hwnd: &str, event: StreamEvent, cx: &mut Context<Self>) {
-        let Some(idx) = self.window_streams.iter().position(|w| w.hwnd.eq_ignore_ascii_case(hwnd)) else { return };
-        let host = self.host_by_uuid(&event.host_uuid).cloned();
-        let ws = &mut self.window_streams[idx];
+    /// Ends the desk stream: every adopted window goes back to the host's own display.
+    pub fn close_desk_stream(&mut self, cx: &mut Context<Self>) {
+        let Some(ds) = &self.desk_stream else { return };
+        if let Some(http) = self.host_by_uuid(&ds.host_uuid).and_then(|h| h.http(self.identity.clone())) {
+            std::thread::spawn(move || {
+                let _ = http.close_desk();
+            });
+        }
+        ds.process.terminate();
+        cx.notify();
+    }
+
+    /// Events from the desk helper (routed here by `on_stream_event`).
+    pub fn on_desk_stream_event(&mut self, event: StreamEvent, cx: &mut Context<Self>) {
+        let Some(ds) = &mut self.desk_stream else { return };
         match event.event {
-            HelperEvent::ConnectionStarted => ws.connected = true,
-            HelperEvent::StageFailed { stage, error_code, .. } => ws.error_lines.push(format!("Starting {stage} failed: Error {error_code}")),
-            HelperEvent::LaunchError { text } => ws.error_lines.push(text),
-            HelperEvent::AppWindow { kind, w, h, hwnd: child } => {
-                // Mac-side window change -> host window action, off the UI thread.
-                // Minimize/restore stay on the Mac: the host window keeps running
-                // (and its capture alive) while the Mac window is in the Dock.
-                // Events about a child dialog carry its own handle.
-                let Some(http) = host.and_then(|h| h.http(self.identity.clone())) else { return };
-                let hwnd = child.clone().unwrap_or_else(|| ws.hwnd.clone());
-                match kind.as_str() {
-                    "resize" => {
-                        if w > ws.canvas.0 || h > ws.canvas.1 {
-                            log::info!("app window {hwnd} grew past its {}x{} canvas", ws.canvas.0, ws.canvas.1);
-                        }
-                        let _ = ws.resize_tx.send((w, h));
+            HelperEvent::ConnectionStarted => ds.connected = true,
+            HelperEvent::StageFailed { stage, error_code, .. } => ds.error_lines.push(format!("Starting {stage} failed: Error {error_code}")),
+            HelperEvent::LaunchError { text } => ds.error_lines.push(text),
+            HelperEvent::AppWindow { kind, hwnd, .. } => {
+                // The helper talks to the host itself; this is bookkeeping.
+                if kind == "close" {
+                    if let Some(h) = hwnd {
+                        ds.adopted.retain(|a| !a.eq_ignore_ascii_case(&h));
+                    } else {
+                        // The hidden key window was closed: end the desk
+                        self.close_desk_stream(cx);
+                        return;
                     }
-                    "focus" | "close" => {
-                        let op = if kind == "focus" { "activate" } else { "close" };
-                        std::thread::spawn(move || {
-                            if let Err(e) = http.window_action(&hwnd, op, 0, 0, 0, 0) {
-                                log::warn!("window {op} on {hwnd}: {e}");
-                            }
-                        });
-                    }
-                    _ => {}
                 }
             }
             HelperEvent::Exited { code, .. } => {
-                let ws = self.window_streams.remove(idx);
-                if !ws.connected && code != Some(0) {
-                    let why = if ws.error_lines.is_empty() { format!("helper exited with code {code:?}") } else { ws.error_lines.join(" ") };
-                    self.toast(ToastKind::Error, format!("Couldn't stream {}: {why}", ws.title), cx);
+                let ds = self.desk_stream.take().unwrap();
+                if !ds.connected && code != Some(0) {
+                    let why = if ds.error_lines.is_empty() { format!("helper exited with code {code:?}") } else { ds.error_lines.join(" ") };
+                    self.toast(ToastKind::Error, format!("Couldn't stream the desk: {why}"), cx);
                 }
-                if self.window_streams.is_empty() {
-                    self.stop_window_watch();
+                if let Some(http) = self.host_by_uuid(&ds.host_uuid).and_then(|h| h.http(self.identity.clone())) {
+                    std::thread::spawn(move || {
+                        let _ = http.close_desk();
+                    });
                 }
+                self.stop_window_watch();
             }
             _ => {}
         }
         cx.notify();
     }
-}
-
-/// Follows one streamed window on the host (rect, canvas anchor, popups,
-/// title, state) with long-polls and forwards every change to its helper;
-/// closes the helper when the window disappears.
-pub fn spawn_geometry_poller(http: NvHttp, hwnd: String, canvas: (i32, i32), commander: StreamCommander, stop: Arc<AtomicBool>) {
-    std::thread::Builder::new()
-        .name(format!("window poller {hwnd}"))
-        .spawn(move || {
-            let mut etag = String::from("0");
-            let mut last: Option<WindowLayout> = None;
-            let mut misses = 0;
-            while !stop.load(Ordering::Relaxed) {
-                match http.get_window_layout(&hwnd, canvas, &etag, 1000) {
-                    Ok(l) => {
-                        misses = 0;
-                        if l.etag == etag && last.is_some() {
-                            continue;
-                        }
-                        etag = l.etag.clone();
-                        let size_changed = last.as_ref().map(|p| p.rect[2] != l.rect[2] || p.rect[3] != l.rect[3]).unwrap_or(false);
-                        let mut cmd = serde_json::json!({
-                            "cmd": "geometry", "rect": l.rect, "anchor": l.anchor, "popups": l.popups, "radius": l.radius,
-                            "dpi": l.dpi, "caption": l.caption, "title": l.title, "state": l.state
-                        });
-                        if size_changed && l.state != "minimized" {
-                            // The caption buttons move with the width: refresh the hit map.
-                            if let Ok(hit) = http.get_window_hittest(&hwnd) {
-                                cmd["hit"] = serde_json::to_value(hit).unwrap_or_default();
-                            }
-                        }
-                        commander.send_command(&cmd);
-                        last = Some(l);
-                    }
-                    Err(e) => {
-                        let gone = matches!(&e, HttpError::Network(m) if m.contains("404"));
-                        misses += 1;
-                        if gone || misses >= 3 {
-                            log::info!("window poller {hwnd}: window gone ({e}); closing");
-                            commander.send_command(&serde_json::json!({"cmd": "close"}));
-                            break;
-                        }
-                        log::debug!("window poller {hwnd}: {e}");
-                        std::thread::sleep(Duration::from_millis(300));
-                    }
-                }
-            }
-        })
-        .ok();
-}
-
-pub type WindowsSender = UnboundedSender<WindowsEvent>;
-
-/// One thread per window stream sends host resizes in order, always the
-/// latest size: immediately when live, or after a 120 ms pause otherwise.
-fn spawn_resize_worker(http: Option<NvHttp>, hwnd: String, live: bool) -> std::sync::mpsc::Sender<(i32, i32)> {
-    let (tx, rx) = std::sync::mpsc::channel::<(i32, i32)>();
-    std::thread::Builder::new()
-        .name(format!("window resize {hwnd}"))
-        .spawn(move || {
-            let Some(http) = http else { return };
-            while let Ok(mut size) = rx.recv() {
-                if !live {
-                    std::thread::sleep(Duration::from_millis(120));
-                }
-                // Collapse everything queued meanwhile into the newest size.
-                while let Ok(newer) = rx.try_recv() {
-                    size = newer;
-                }
-                if let Err(e) = http.window_action(&hwnd, "resize", 0, 0, size.0, size.1) {
-                    log::warn!("window resize on {hwnd}: {e}");
-                }
-            }
-        })
-        .ok();
-    tx
 }

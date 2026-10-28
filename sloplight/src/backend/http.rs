@@ -319,7 +319,30 @@ impl NvHttp {
         serde_json::from_str(&body).map_err(|e| HttpError::Network(format!("window layout: {e}")))
     }
 
-    /// Act on a host window: activate, move (x,y), resize (w,h), minimize, restore, maximize, close.
+    /// The client's desk: a private host display mirroring this screen. `open`
+    /// creates (or retunes) it, host px / Hz / DPI; the reply carries the size
+    /// the driver could give (its mode catalog is fixed), which the stream uses.
+    pub fn open_desk(&self, w: i32, h: i32, fps: i32, dpi: i32) -> Result<DeskInfo, HttpError> {
+        let resp = self.request(true, "actions/desk", &format!("op=open&w={w}&h={h}&fps={fps}&dpi={dpi}"), Duration::from_secs(40), Some(("text/plain", b"")))?;
+        serde_json::from_slice(&resp.body).map_err(|e| HttpError::Network(format!("desk: {e}")))
+    }
+
+    pub fn get_desk(&self) -> Result<Option<DeskInfo>, HttpError> {
+        match self.request(true, "actions/desk", "op=get", REQUEST_TIMEOUT, Some(("text/plain", b""))) {
+            Ok(resp) => Ok(serde_json::from_slice(&resp.body).ok()),
+            Err(HttpError::Status { code: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Puts every adopted window back and lets the desk display idle out.
+    pub fn close_desk(&self) -> Result<(), HttpError> {
+        self.request(true, "actions/desk", "op=close", REQUEST_TIMEOUT, Some(("text/plain", b"")))?;
+        Ok(())
+    }
+
+    /// Act on a host window: activate, move (x,y), resize (w,h), minimize, restore, maximize, close,
+    /// adopt (onto the desk at desk-relative x,y; moves it when already there), release.
     pub fn window_action(&self, hwnd: &str, op: &str, x: i32, y: i32, w: i32, h: i32) -> Result<(), HttpError> {
         self.request(true, "actions/window", &format!("hwnd={hwnd}&op={op}&x={x}&y={y}&w={w}&h={h}"), REQUEST_TIMEOUT, Some(("text/plain", b"")))?;
         Ok(())
@@ -620,6 +643,17 @@ mod tests {
             Err(e) => println!("ERR {e:?}"),
         }
     }
+}
+
+/// The client's desk as the host reports it (`POST /actions/desk`).
+#[derive(Clone, Debug, serde::Deserialize, PartialEq)]
+pub struct DeskInfo {
+    /// GDI display name the stream captures
+    pub display: String,
+    /// Where the desk sits on the host's virtual screen: x, y, w, h (host px)
+    pub rect: [i32; 4],
+    pub fps: i32,
+    pub dpi: i32,
 }
 
 /// One entry of `GET /actions/windows` (Vibeshine fork, app-window streaming).

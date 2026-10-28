@@ -123,6 +123,9 @@ public:
     // App-window streaming (Vibeshine fork): capture only this host window
     quint64 windowHandle = 0;
     bool hideCursor = false;  // the client draws its own cursor; leave the host cursor out of the capture
+    // Desk session (Vibeshine fork): capture this client's desk, the private
+    // host display that mirrors the client's screen (opened beforehand).
+    bool desk = false;
 };
 
 class NvHTTP : public QObject
@@ -215,6 +218,19 @@ public:
     // pixel ("drag", "min", "max", "close", "border", "client", "none").
     QString
     hitTestWindow(quint64 windowHandle, int x, int y);
+
+    // Desk streaming. deskLayout long-polls everything on the desk (JSON,
+    // see the server's /actions/desk-layout); windowAction runs an op on a
+    // host window (move onto the desk = "adopt" with desk-relative x, y);
+    // windowIcon is the window's icon as PNG (empty when none).
+    QString
+    deskLayout(quint64 etag, int waitMs);
+
+    bool
+    windowAction(quint64 windowHandle, const QString& op, int x = 0, int y = 0, int w = 0, int h = 0);
+
+    QByteArray
+    windowIcon(quint64 windowHandle);
 
     void
     setClipboardText(const QString& text);

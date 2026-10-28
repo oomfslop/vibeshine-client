@@ -260,7 +260,18 @@ impl Root {
             // App-window streaming: a "Windows" picker next to the host name
             // (opens the host popover, whose Windows section lists them).
             let windows_button = if host.is_paired() && host.is_online() && Self::host_supports_windows(&host) {
-                let n = self.window_streams.iter().filter(|w| w.host_uuid == host.uuid).count();
+                let n = match &self.desk_stream {
+                    Some(ds) if ds.host_uuid == host.uuid => {
+                        let desk = ds.desk.display.to_ascii_lowercase();
+                        let on_desk = if self.windows.host_uuid == host.uuid {
+                            self.windows.windows.iter().filter(|w| w.monitor.eq_ignore_ascii_case(&desk) && w.state != "minimized").count()
+                        } else {
+                            0
+                        };
+                        on_desk.max(ds.adopted.len())
+                    }
+                    _ => 0,
+                };
                 let label = if n > 0 { format!("Windows · {n} streaming") } else { "Windows".to_string() };
                 Some(
                     button("host-windows", label)
