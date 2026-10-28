@@ -61,6 +61,20 @@ pub struct AppWindowConfig {
 /// largest size the window can take without a relaunch: the smaller of the
 /// host monitor and the Mac screen (in host pixels), rounded to 64, and never
 /// smaller than the window itself.
+/// Encoder frame height for a window band of `ch`: the colour canvas is the
+/// window band plus a popup band (a third of the canvas, where menus and
+/// dialogs get slots of their own); below it sits the canvas' alpha at half
+/// resolution. Frame = 3/2 * canvas. Must match the host's `frame_bands`.
+pub fn app_window_frame_height(ch: i32) -> i32 {
+    let round64 = |v: i32| ((v.max(64) + 63) / 64) * 64;
+    // canvas = window band + popup band with popup band = (canvas / 3) & !63
+    let mut canvas = round64(ch + ch / 2);
+    while canvas - ((canvas / 3) & !63) < ch {
+        canvas += 64;
+    }
+    canvas * 3 / 2
+}
+
 pub fn app_window_canvas(w: i32, h: i32, max: Option<(i32, i32)>) -> (i32, i32) {
     let round64 = |v: i32| ((v.max(64) + 63) / 64) * 64;
     let (mut cw, mut ch) = match max {

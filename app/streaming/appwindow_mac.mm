@@ -448,11 +448,19 @@ void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, do
             if (!st) {
                 st = new ChildState;
                 st->info = c;
-                // Centred over the main window (on the host it is parked beside
-                // the parent so their pictures don't overlap on the canvas).
+                // Dialogs open centred over the main window and are then the
+                // user's to move; menus and tooltips sit exactly where they are
+                // on the host relative to the window.
                 const NSRect mainFrame = ns.frame;
-                const CGFloat x = NSMidX(mainFrame) - w / 2;
-                const CGFloat top = NSMidY(mainFrame) + h / 2;
+                CGFloat x, top;
+                if (c.dialog) {
+                    x = NSMidX(mainFrame) - w / 2;
+                    top = NSMidY(mainFrame) + h / 2;
+                }
+                else {
+                    x = mainFrame.origin.x + c.offsetX * pointsPerHostPx;
+                    top = NSMaxY(mainFrame) - c.offsetY * pointsPerHostPx;
+                }
                 NSRect frame = NSMakeRect(x, top - h, w, h);
                 st->window = [[AWChildWindow alloc] initWithContentRect:frame
                                                               styleMask:NSWindowStyleMaskBorderless
@@ -482,9 +490,16 @@ void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, do
                 st->info = c;
                 st->view.pointsPerPx = pointsPerHostPx;
                 NSRect frame = st->window.frame;
-                if (fabs(frame.size.width - w) >= 1.0 || fabs(frame.size.height - h) >= 1.0) {
-                    // Keep the top-left where it is
-                    frame.origin.y = NSMaxY(frame) - h;
+                if (!c.dialog) {
+                    // Menus follow their host offset from the parent
+                    const NSRect mainFrame = ns.frame;
+                    frame.origin.x = mainFrame.origin.x + c.offsetX * pointsPerHostPx;
+                    frame.origin.y = NSMaxY(mainFrame) - c.offsetY * pointsPerHostPx - h;
+                }
+                if (fabs(frame.size.width - w) >= 1.0 || fabs(frame.size.height - h) >= 1.0 || !NSEqualRects(frame, st->window.frame)) {
+                    if (c.dialog) {
+                        frame.origin.y = NSMaxY(frame) - h;  // keep the top-left where it is
+                    }
                     frame.size = NSMakeSize(w, h);
                     [st->window setFrame:frame display:YES animate:NO];
                 }

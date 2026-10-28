@@ -1839,32 +1839,26 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
             m_AppWindow.anchorY = anchor.at(1).toInt();
         }
         if (cmd.contains("popups")) {
-            m_AppWindow.popups.clear();
-            for (const QJsonValue& v : cmd.value("popups").toArray()) {
-                const QJsonArray r = v.toArray();
-                if (r.size() == 4 && r.at(2).toInt() > 0 && r.at(3).toInt() > 0) {
-                    m_AppWindow.popups.append(QRect(r.at(0).toInt(), r.at(1).toInt(), r.at(2).toInt(), r.at(3).toInt()));
-                }
-            }
-        }
-        if (cmd.contains("children")) {
             m_AppWindow.children.clear();
-            for (const QJsonValue& v : cmd.value("children").toArray()) {
+            for (const QJsonValue& v : cmd.value("popups").toArray()) {
                 const QJsonObject c = v.toObject();
                 const QJsonArray r = c.value("rect").toArray();
-                if (r.size() != 4 || r.at(2).toInt() <= 0 || r.at(3).toInt() <= 0) {
+                const QJsonArray cv = c.value("canvas").toArray();
+                if (r.size() != 4 || cv.size() != 4 || cv.at(2).toInt() <= 0 || cv.at(3).toInt() <= 0) {
                     continue;
                 }
                 AppWindowInfo::Child child;
                 child.hwnd = c.value("hwnd").toString().toULongLong(nullptr, 0);
                 child.rect = QRect(r.at(0).toInt(), r.at(1).toInt(), r.at(2).toInt(), r.at(3).toInt());
+                child.canvas = QRect(cv.at(0).toInt(), cv.at(1).toInt(), cv.at(2).toInt(), cv.at(3).toInt());
+                child.dialog = c.value("dialog").toBool(false);
                 child.title = c.value("title").toString();
                 child.caption = c.value("caption").toInt();
                 if (child.hwnd) {
                     m_AppWindow.children.append(child);
                 }
             }
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "App window children: %d", (int)m_AppWindow.children.size());
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "App window popups: %d", (int)m_AppWindow.children.size());
         }
         if (cmd.contains("radius")) {
             m_AppWindow.radius = cmd.value("radius").toInt();
@@ -1878,7 +1872,7 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
             m_AppWindow.dpi = dpi;
             SDL_SetWindowMaximumSize(m_Window,
                                      qMax(64, (int)qFloor(m_StreamConfig.width * appWindowScale())),
-                                     qMax(48, (int)qFloor(m_StreamConfig.height / 2 * appWindowScale())));
+                                     qMax(48, (int)qFloor(appWindowBandHeight() * appWindowScale())));
         }
         applyAppWindowLayout(true);
         if (cmd.contains("caption")) {
@@ -1929,15 +1923,15 @@ void Session::handleChildInput(void* raw)
     }
     if (child && m_IsAppWindow) {
         const int canvasW = m_StreamConfig.width, canvasH = m_StreamConfig.height;
-        const int px = qBound(0, m_AppWindow.anchorX + (child->rect.x() - m_AppWindow.x) + in->hostX, canvasW);
-        const int py = qBound(0, m_AppWindow.anchorY + (child->rect.y() - m_AppWindow.y) + in->hostY, canvasH);
+        const int px = qBound(0, child->canvas.x() + in->hostX, canvasW);
+        const int py = qBound(0, child->canvas.y() + in->hostY, canvasH);
         switch (in->kind) {
         case 0:
             LiSendMousePositionEvent((short)px, (short)py, canvasW, canvasH);
             break;
         case 1: {
             QString hit = "client";
-            if (in->button == 1 && in->hostY < qMax(96, child->caption) && m_WindowHandle != 0) {
+            if (child->dialog && in->button == 1 && in->hostY < qMax(96, child->caption) && m_WindowHandle != 0) {
                 NvHTTP http(m_Computer);
                 hit = http.hitTestWindow(in->hwnd, in->hostX, in->hostY);
             }
@@ -1997,86 +1991,58 @@ void Session::applyAppWindowLayout(bool placeWindow)
     }
     const double s = appWindowScale();  // points per host pixel
     const QRect win(m_AppWindow.x, m_AppWindow.y, qMax(1, m_AppWindow.widthPx), qMax(1, m_AppWindow.heightPx));
-    // Only what the canvas actually holds can be shown
-    // The stream is two bands: the picture on top, its alpha below
-    const QRect canvas(win.x() - m_AppWindow.anchorX, win.y() - m_AppWindow.anchorY, m_StreamConfig.width, m_StreamConfig.height / 2);
-    QVector<QRect> popups;
-    QRect ext = win;
-    for (const QRect& p : m_AppWindow.popups) {
-        const QRect c = p & canvas;
-        if (c.isValid() && !c.isEmpty()) {
-            popups.append(c);
-            ext |= c;
-        }
-    }
+    // The Mac window is exactly the host window; every popup is a window of
+    // its own drawn from its slot in the canvas' popup band.
     const QPoint prevInset = m_AppWindowInset;
-    m_AppWindowExt = ext;
-    m_AppWindowInset = QPoint(win.x() - ext.x(), win.y() - ext.y());
+    m_AppWindowExt = win;
+    m_AppWindowInset = QPoint(0, 0);
 
     AppWindow::Layout layout;
-    layout.originX = m_AppWindow.anchorX - m_AppWindowInset.x();
-    layout.originY = m_AppWindow.anchorY - m_AppWindowInset.y();
-    layout.w = ext.width();
-    layout.h = ext.height();
+    layout.originX = 0;
+    layout.originY = 0;
+    layout.w = win.width();
+    layout.h = win.height();
+    AppWindow::LayoutItem item;
+    item.x = 0;
+    item.y = 0;
+    item.w = win.width();
+    item.h = win.height();
+    item.radius = m_AppWindow.radius;
+    layout.items.append(item);
     QVector<QRect> shape;
-    auto add = [&](const QRect& r) {
-        AppWindow::LayoutItem item;
-        item.x = r.x() - ext.x();
-        item.y = r.y() - ext.y();
-        item.w = r.width();
-        item.h = r.height();
-        item.radius = m_AppWindow.radius;
-        layout.items.append(item);
-        shape.append(QRect((int)qFloor(item.x * s), (int)qFloor(item.y * s),
-                           (int)qCeil(item.w * s), (int)qCeil(item.h * s)));
-    };
-    add(win);
-    for (const QRect& p : popups) {
-        add(p);
-    }
+    shape.append(QRect(0, 0, (int)qCeil(item.w * s), (int)qCeil(item.h * s)));
     AppWindow::setLayout(layout);
-    m_InputHandler->setAppWindowMapping(1.0 / s, m_StreamConfig.width, m_StreamConfig.height,
-                                        layout.originX, layout.originY, shape);
+    m_InputHandler->setAppWindowMapping(1.0 / s, m_StreamConfig.width, m_StreamConfig.height, 0, 0, shape);
 
-    // Owned dialogs: windows of their own, cut from the same canvas
     QVector<AppWindow::ChildInfo> children;
     for (const AppWindowInfo::Child& c : m_AppWindow.children) {
         AppWindow::ChildInfo info;
         info.hwnd = c.hwnd;
         info.offsetX = c.rect.x() - win.x();
         info.offsetY = c.rect.y() - win.y();
-        info.w = c.rect.width();
-        info.h = c.rect.height();
-        info.canvasX = m_AppWindow.anchorX + info.offsetX;
-        info.canvasY = m_AppWindow.anchorY + info.offsetY;
+        info.w = c.canvas.width();
+        info.h = c.canvas.height();
+        info.canvasX = c.canvas.x();
+        info.canvasY = c.canvas.y();
         info.radius = m_AppWindow.radius;
         info.caption = c.caption;
+        info.dialog = c.dialog;
         info.title = c.title;
         children.append(info);
     }
     AppWindow::syncChildren(m_Window, children, s);
 
     if (placeWindow) {
-        int curX = 0, curY = 0, curW = 0, curH = 0;
-        SDL_GetWindowPosition(m_Window, &curX, &curY);
+        int curW = 0, curH = 0;
         SDL_GetWindowSize(m_Window, &curW, &curH);
-        // Where the host window's top-left is on screen right now
-        const int winMacX = curX + (int)qRound(prevInset.x() * s);
-        const int winMacY = curY + (int)qRound(prevInset.y() * s);
-        const int newX = winMacX - (int)qRound(m_AppWindowInset.x() * s);
-        const int newY = winMacY - (int)qRound(m_AppWindowInset.y() * s);
-        const int newW = qMax(64, (int)qRound(ext.width() * s));
-        const int newH = qMax(48, (int)qRound(ext.height() * s));
-        if (newW != curW || newH != curH || newX != curX || newY != curY) {
+        const int newW = qMax(64, (int)qRound(win.width() * s));
+        const int newH = qMax(48, (int)qRound(win.height() * s));
+        if (newW != curW || newH != curH) {
             m_AppWindowHostW = newW;
             m_AppWindowHostH = newH;
-            // One atomic frame change: size and position together, so the
-            // window content never jumps between the two.
-            if (!AppWindow::setFrame(m_Window, newX, newY, newW, newH)) {
-                SDL_SetWindowSize(m_Window, newW, newH);
-                SDL_SetWindowPosition(m_Window, newX, newY);
-            }
+            SDL_SetWindowSize(m_Window, newW, newH);
         }
+        Q_UNUSED(prevInset);
     }
     else {
         int curW = 0, curH = 0;
@@ -2382,7 +2348,7 @@ void Session::exec()
         // The window can't outgrow the canvas it is cut from.
         SDL_SetWindowMaximumSize(m_Window,
                                  qMax(64, (int)qFloor(m_StreamConfig.width * appWindowScale())),
-                                 qMax(48, (int)qFloor(m_StreamConfig.height / 2 * appWindowScale())));
+                                 qMax(48, (int)qFloor(appWindowBandHeight() * appWindowScale())));
         SDL_SetWindowMinimumSize(m_Window, 120, 60);
     }
 
@@ -2870,13 +2836,7 @@ void Session::exec()
                     // WM_NCHITTEST), so tabs, custom title bars and caption
                     // buttons behave exactly as the app defines them.
                     const QPoint px = appWindowHostPoint(event.button.x, event.button.y);
-                    bool onPopup = false;
-                    for (const QRect& p : m_AppWindow.popups) {
-                        if (p.translated(-m_AppWindow.x, -m_AppWindow.y).contains(px)) {
-                            onPopup = true;  // a menu over the title bar is the menu's
-                        }
-                    }
-                    const bool inWindow = px.x() >= 0 && px.y() >= 0 && px.x() < m_AppWindow.widthPx && px.y() < m_AppWindow.heightPx && !onPopup;
+                    const bool inWindow = px.x() >= 0 && px.y() >= 0 && px.x() < m_AppWindow.widthPx && px.y() < m_AppWindow.heightPx;
                     QString hit = "client";
                     if (cmdHeld && inWindow) {
                         hit = "drag";

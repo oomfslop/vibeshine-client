@@ -227,8 +227,8 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         let host_px = (w.monitor_rect[2] > 0).then_some((w.monitor_rect[2].min(2560), w.monitor_rect[3].min(1600)));
         let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], host_px.or(Some((2560, 1600))));
         settings.width = cw;
-        settings.height = ch * 2;  // picture band + alpha band
-        let layout = http.get_window_layout(&w.hwnd, (cw, ch), "0", 0).ok();
+        settings.height = stream::app_window_frame_height(ch);
+        let layout = http.get_window_layout(&w.hwnd, (cw, settings.height * 2 / 3), "0", 0).ok();
         log::info!("[stream-cli] layout: {:?}", layout);
         let cfg = stream::AppWindowConfig {
             title: w.title.clone(),
@@ -265,7 +265,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         };
         let hwnd = hwnd.clone();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        appwindows::spawn_geometry_poller(http2, hwnd, (settings.width, settings.height / 2), process.clone_commander(), stop.clone());
+        appwindows::spawn_geometry_poller(http2, hwnd, (settings.width, settings.height * 2 / 3), process.clone_commander(), stop.clone());
         let handle = std::thread::spawn(|| {});
         (stop, handle)
     });

@@ -98,8 +98,9 @@ fragment half4 ps_draw_biplanar_aw(VertexAW v [[ stage_in ]],
                       chrominancePlane.sample(s, v.texCoords + chromaOffset).rg);
     yuv *= cscParams.bitnessScaleFactor;
     yuv -= cscParams.offsets;
-    // The lower half of the frame holds the picture's alpha as grey
-    float2 alphaCoords = v.texCoords + float2(0.0, 0.5);
+    // Below the colour canvas (the top two thirds of the frame) sits its alpha
+    // as grey at half resolution
+    float2 alphaCoords = v.texCoords * 0.5 + float2(0.0, 2.0 / 3.0);
     half3 ayuv = half3(luminancePlane.sample(s, alphaCoords).r,
                        chrominancePlane.sample(s, alphaCoords + chromaOffset).rg);
     ayuv *= cscParams.bitnessScaleFactor;
@@ -122,7 +123,7 @@ fragment half4 ps_draw_triplanar_aw(VertexAW v [[ stage_in ]],
                       chrominancePlaneV.sample(s, v.texCoords + chromaOffset).r);
     yuv *= cscParams.bitnessScaleFactor;
     yuv -= cscParams.offsets;
-    float2 alphaCoords = v.texCoords + float2(0.0, 0.5);
+    float2 alphaCoords = v.texCoords * 0.5 + float2(0.0, 2.0 / 3.0);
     half3 ayuv = half3(luminancePlane.sample(s, alphaCoords).r,
                        chrominancePlaneU.sample(s, alphaCoords + chromaOffset).r,
                        chrominancePlaneV.sample(s, alphaCoords + chromaOffset).r);

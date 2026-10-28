@@ -145,10 +145,11 @@ public:
         int heightPx = 0;
         int anchorX = 0, anchorY = 0;  // canvas pixel of the window's top-left
         int radius = 0;           // corner radius the host OS applies
-        QVector<QRect> popups;    // host screen pixels, bottom-most first
-        struct Child {             // owned dialogs: windows of their own on the Mac
+        struct Child {             // every popup (menu, tooltip, dialog): a window of its own on the Mac
             quint64 hwnd = 0;
             QRect rect;            // host screen pixels
+            QRect canvas;          // its slot on the canvas
+            bool dialog = false;   // movable (dialog) vs pinned to the parent (menu)
             QString title;
             int caption = 0;
         };
@@ -162,6 +163,13 @@ public:
     bool isAppWindow() const { return m_IsAppWindow; }
     // Points per host pixel for the app window (logical-size parity with the host)
     double appWindowScale() const { return 96.0 / qMax(48, m_AppWindow.dpi); }
+    // Window band of the canvas (host px): the stream is 3/2 x canvas, the
+    // canvas is the window band plus a popup band of (canvas / 3) & ~63.
+    int appWindowBandHeight() const
+    {
+        const int canvas = m_StreamConfig.height * 2 / 3;
+        return canvas - ((canvas / 3) & ~63);
+    }
 
     void setTestWindow(int x, int y, int w, int h)
     {

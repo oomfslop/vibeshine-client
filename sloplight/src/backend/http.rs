@@ -665,10 +665,15 @@ struct HostWindowList {
 }
 
 /// One region of a host window's non-client hit-test map.
+/// A popup of a streamed window (menu, tooltip, dialog): shown as a Mac window of
+/// its own, drawn from its slot on the canvas
 #[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct ChildWindow {
+pub struct PopupWindow {
     pub hwnd: String,
     pub rect: [i32; 4],
+    pub canvas: [i32; 4],
+    #[serde(default)]
+    pub dialog: bool,
     #[serde(default)]
     pub title: String,
     #[serde(default)]
@@ -680,10 +685,7 @@ pub struct WindowLayout {
     pub rect: [i32; 4],
     pub anchor: [i32; 2],
     #[serde(default)]
-    pub popups: Vec<[i32; 4]>,
-    /// Owned windows with a caption (dialogs): shown as Mac windows of their own
-    #[serde(default)]
-    pub children: Vec<ChildWindow>,
+    pub popups: Vec<PopupWindow>,
     #[serde(default)]
     pub radius: i32,
     #[serde(default)]

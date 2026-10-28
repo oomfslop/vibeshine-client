@@ -229,10 +229,11 @@ impl Root {
             (a, b) => a.or(b),
         };
         let (cw, ch) = stream::app_window_canvas(w.rect[2], w.rect[3], max);
-        // The encoder frame is two bands: the picture and, below it, its alpha.
+        // Encoder frame: window band + popup band, plus the half-res alpha band below.
         settings.width = cw;
-        settings.height = ch * 2;
-        let layout = host.http(self.identity.clone()).and_then(|h| h.get_window_layout(&w.hwnd, (cw, ch), "0", 0).ok());
+        settings.height = stream::app_window_frame_height(ch);
+        let canvas_h = settings.height * 2 / 3;
+        let layout = host.http(self.identity.clone()).and_then(|h| h.get_window_layout(&w.hwnd, (cw, canvas_h), "0", 0).ok());
         let cfg = AppWindowConfig {
             title: w.title.clone(),
             icon_png_base64: stream::base64_encode(&icon_png),
@@ -251,7 +252,7 @@ impl Root {
             Ok(process) => {
                 let poller_stop = Arc::new(AtomicBool::new(false));
                 if let Some(http) = host.http(self.identity.clone()) {
-                    spawn_geometry_poller(http, w.hwnd.clone(), (cw, ch), process.clone_commander(), poller_stop.clone());
+                    spawn_geometry_poller(http, w.hwnd.clone(), (cw, canvas_h), process.clone_commander(), poller_stop.clone());
                 }
                 self.window_streams.push(WindowStream {
                     host_uuid: host.uuid.clone(),
@@ -350,7 +351,7 @@ pub fn spawn_geometry_poller(http: NvHttp, hwnd: String, canvas: (i32, i32), com
                         etag = l.etag.clone();
                         let size_changed = last.as_ref().map(|p| p.rect[2] != l.rect[2] || p.rect[3] != l.rect[3]).unwrap_or(false);
                         let mut cmd = serde_json::json!({
-                            "cmd": "geometry", "rect": l.rect, "anchor": l.anchor, "popups": l.popups, "children": l.children, "radius": l.radius,
+                            "cmd": "geometry", "rect": l.rect, "anchor": l.anchor, "popups": l.popups, "radius": l.radius,
                             "dpi": l.dpi, "caption": l.caption, "title": l.title, "state": l.state
                         });
                         if size_changed && l.state != "minimized" {

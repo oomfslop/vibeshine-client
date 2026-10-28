@@ -78,6 +78,7 @@ struct ChildInfo {
     int canvasX = 0, canvasY = 0;  // where its picture sits on the canvas
     int radius = 0;
     int caption = 0;               // caption height in host px (0 = unknown)
+    bool dialog = false;           // movable window of its own; otherwise placed at its host offset from the parent
     QString title;
 };
 // Create/resize/remove child windows to match (main thread; safe from any thread).
