@@ -13,6 +13,7 @@ void invalidateShadow(SDL_Window*) {}
 bool setFrame(SDL_Window*, int, int, int, int) { return false; }
 void syncChildren(SDL_Window*, const QVector<ChildInfo>&, double) {}
 void closeChildren() {}
+void raiseChildren(SDL_Window*) {}
 QVector<ChildLayer> childLayers() { return {}; }
 void forEachChildLayer(const std::function<void(const ChildLayer&)>&) {}
 void dragChild(quint64, void*) {}

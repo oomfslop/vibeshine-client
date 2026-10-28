@@ -2579,6 +2579,7 @@ void Session::exec()
                     }
                     break;
                 case SDL_WINDOWEVENT_FOCUS_GAINED:
+                    AppWindow::raiseChildren(m_Window);
                     emit appWindowEvent({{"kind", "focus"}});
                     break;
                 case SDL_WINDOWEVENT_FOCUS_LOST:

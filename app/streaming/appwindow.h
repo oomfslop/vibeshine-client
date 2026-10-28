@@ -84,6 +84,9 @@ struct ChildInfo {
 // Create/resize/remove child windows to match (main thread; safe from any thread).
 void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, double pointsPerHostPx);
 void closeChildren();
+// Bring the dialogs back above the main window (they are siblings, not
+// AppKit children, so they don't move with it); call when it gains focus.
+void raiseChildren(SDL_Window* mainWindow);
 
 // What the renderer draws into: one Metal layer per child (retained CAMetalLayer*).
 struct ChildLayer {

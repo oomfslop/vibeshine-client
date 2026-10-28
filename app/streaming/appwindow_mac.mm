@@ -481,8 +481,16 @@ void syncChildren(SDL_Window* mainWindow, const QVector<ChildInfo>& children, do
                 [st->view updateTrackingAreas];
                 g_childWindows[key] = [NSValue valueWithPointer:st];
                 replaceChildLayer(*st);
-                [ns addChildWindow:st->window ordered:NSWindowAbove];
-                [st->window orderFront:nil];
+                if (c.dialog) {
+                    // A sibling kept above the main window: it must not move
+                    // with it (that is the user's call), only stay on top.
+                    st->window.level = ns.level;
+                    [st->window orderWindow:NSWindowAbove relativeTo:ns.windowNumber];
+                }
+                else {
+                    [ns addChildWindow:st->window ordered:NSWindowAbove];
+                    [st->window orderFront:nil];
+                }
                 SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "AppWindow child 0x%llx created: %dx%d pt at %d,%d (canvas %d,%d)",
                             (unsigned long long)c.hwnd, (int)w, (int)h, (int)frame.origin.x, (int)frame.origin.y, c.canvasX, c.canvasY);
             }
@@ -523,6 +531,25 @@ void closeChildren()
             closeChild((ChildState*)g_childWindows[key].pointerValue);
         }
         [g_childWindows removeAllObjects];
+    });
+}
+
+void raiseChildren(SDL_Window* mainWindow)
+{
+    NSWindow* ns = nsWindowFor(mainWindow);
+    if (!ns) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_childWindows) {
+            return;
+        }
+        for (NSNumber* key in g_childWindows) {
+            auto* st = (ChildState*)g_childWindows[key].pointerValue;
+            if (st->info.dialog && st->window) {
+                [st->window orderWindow:NSWindowAbove relativeTo:ns.windowNumber];
+            }
+        }
     });
 }
 
