@@ -10,6 +10,7 @@ double backingScale(SDL_Window*) { return 1.0; }
 void toggleZoom(SDL_Window*) {}
 void performTitleAction(SDL_Window*) {}
 void invalidateShadow(SDL_Window*) {}
+bool setFrame(SDL_Window*, int, int, int, int) { return false; }
 }
 #endif
 

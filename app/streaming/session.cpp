@@ -1947,13 +1947,15 @@ void Session::applyAppWindowLayout(bool placeWindow)
         const int newY = winMacY - (int)qRound(m_AppWindowInset.y() * s);
         const int newW = qMax(64, (int)qRound(ext.width() * s));
         const int newH = qMax(48, (int)qRound(ext.height() * s));
-        if (newW != curW || newH != curH) {
+        if (newW != curW || newH != curH || newX != curX || newY != curY) {
             m_AppWindowHostW = newW;
             m_AppWindowHostH = newH;
-            SDL_SetWindowSize(m_Window, newW, newH);
-        }
-        if (newX != curX || newY != curY) {
-            SDL_SetWindowPosition(m_Window, newX, newY);
+            // One atomic frame change: size and position together, so the
+            // window content never jumps between the two.
+            if (!AppWindow::setFrame(m_Window, newX, newY, newW, newH)) {
+                SDL_SetWindowSize(m_Window, newW, newH);
+                SDL_SetWindowPosition(m_Window, newX, newY);
+            }
         }
     }
     else {

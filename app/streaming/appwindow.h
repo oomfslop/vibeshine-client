@@ -42,6 +42,11 @@ void performTitleAction(SDL_Window* window);
 // thread; cheap enough to call whenever the shape changes.
 void invalidateShadow(SDL_Window* window);
 
+// Move and resize the window in one step (SDL points, top-left origin), so
+// the picture never shows an intermediate frame when popups extend it.
+// Returns false when unsupported (callers fall back to SDL's two calls).
+bool setFrame(SDL_Window* window, int x, int y, int w, int h);
+
 // What the renderer shows. The stream is a canvas larger than the host
 // window; the Mac window covers the union of the host window and its popups
 // (menus, drop-downs, tooltips, dialogs) and draws each of them as its own

@@ -68,6 +68,22 @@ void configureWindow(SDL_Window* window, const QString& title)
     [ns invalidateShadow];
 }
 
+bool setFrame(SDL_Window* window, int x, int y, int w, int h)
+{
+    NSWindow* ns = nsWindowFor(window);
+    if (!ns) {
+        return false;
+    }
+    // SDL's global points have a top-left origin at the primary display's
+    // corner; Cocoa's have a bottom-left origin there (SDL flips with the
+    // primary display's height, so do the same).
+    NSScreen* primary = [NSScreen screens].count ? [NSScreen screens][0] : [NSScreen mainScreen];
+    const CGFloat screenTop = NSMaxY(primary.frame);
+    NSRect frame = NSMakeRect(x, screenTop - y - h, w, h);
+    [ns setFrame:frame display:YES animate:NO];
+    return true;
+}
+
 void invalidateShadow(SDL_Window* window)
 {
     NSWindow* ns = nsWindowFor(window);
