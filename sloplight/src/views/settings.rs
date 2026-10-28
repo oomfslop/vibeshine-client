@@ -757,18 +757,25 @@ fn render_row(theme: &Theme, row: Row, index: usize, last: bool, cx: &mut Contex
                                 .gap(px(4.))
                                 .child(div().text_color(label_color).child(row.label))
                                 .when_some(row.badge, |d, (text, _)| d.child(badge(theme, text, theme.warning, theme.warning_subtle)))
-                                .when(modified && reset.is_some(), |d| {
-                                    d.child(
-                                        icon_button(gpui::ElementId::NamedInteger("reset".into(), index as u64), icon::ROTATE_CCW)
-                                            .size(20., 12.)
-                                            .tooltip("Reset to default", None)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if let Some(r) = &reset {
-                                                    r(&mut this.settings);
-                                                }
-                                                this.after_settings_change(cx);
-                                            })),
-                                    )
+                                // The reset button's slot is always reserved so the
+                                // label line doesn't shift when a setting becomes
+                                // modified (or is reset back to its default).
+                                .when(reset.is_some(), |d| {
+                                    if modified {
+                                        d.child(
+                                            icon_button(gpui::ElementId::NamedInteger("reset".into(), index as u64), icon::ROTATE_CCW)
+                                                .size(20., 12.)
+                                                .tooltip("Reset to default", None)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    if let Some(r) = &reset {
+                                                        r(&mut this.settings);
+                                                    }
+                                                    this.after_settings_change(cx);
+                                                })),
+                                        )
+                                    } else {
+                                        d.child(div().flex_none().w(px(20.)).h(px(20.)))
+                                    }
                                 }),
                         )
                         .when(!help.is_empty(), |d| d.child(text_sm(theme, help).w_full().when(disabled, |t| t.text_color(theme.text_disabled)))),
