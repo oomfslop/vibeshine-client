@@ -243,6 +243,9 @@ NvHTTP::startApp(QString verb,
     if (launchOptions.windowHandle != 0) {
         apolloParams += "&windowHandle=0x" + QString::number(launchOptions.windowHandle, 16);
     }
+    if (launchOptions.hideCursor) {
+        apolloParams += "&hideCursor=1";
+    }
 
     QString response =
             openConnectionToString(m_BaseUrlHttps,

@@ -241,6 +241,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
             radius: layout.as_ref().map(|l| l.radius).unwrap_or(0),
         };
         settings.window_mode = settings::WindowMode::Windowed;
+        settings.hide_host_cursor = true;
         log::info!("[stream-cli] app window {} {:?} {}x{} dpi {} caption {} icon {} bytes", w.hwnd, w.title, w.rect[2], w.rect[3], w.dpi, w.caption, icon.len());
         Some((w.hwnd.clone(), cfg))
     } else {

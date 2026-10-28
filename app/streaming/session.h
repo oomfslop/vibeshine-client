@@ -124,6 +124,9 @@ public:
     // automated windowed stream stays visible (and un-throttled) while the
     // user works in other apps.
     void setWindowHandle(quint64 handle) { m_WindowHandle = handle; }
+    // Draw only the local cursor: the host leaves its cursor out of the capture.
+    // Always on for app windows.
+    void setHideHostCursor(bool hide) { m_HideHostCursor = hide; }
 
     // App-window streaming: present the stream as a borderless window that
     // mirrors one host window (size in host pixels, caption height, title,
@@ -355,6 +358,7 @@ private:
     bool m_HasTestWindow = false;
     // App-window streaming: host window handle to capture (0 = whole display)
     quint64 m_WindowHandle = 0;
+    bool m_HideHostCursor = false;
     AppWindowInfo m_AppWindow;
     bool m_IsAppWindow = false;
     bool m_AppWindowDragging = false;

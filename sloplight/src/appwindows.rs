@@ -190,6 +190,7 @@ impl Root {
             radius: layout.as_ref().map(|l| l.radius).unwrap_or(0),
         };
         settings.window_mode = settings::WindowMode::Windowed;
+        settings.hide_host_cursor = true;  // app windows always draw the Mac cursor
         settings.enable_vsync = false;
         settings.frame_pacing = false;
         match stream::start_with_window(&helper, &self.identity, &host, &app, &settings, None, self.stream_tx.clone(), Some((w.hwnd.clone(), cfg))) {

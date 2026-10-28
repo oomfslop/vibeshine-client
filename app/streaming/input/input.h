@@ -98,6 +98,12 @@ public:
     // App window: a point (x, y) in the window maps to canvas pixel
     // (originX + x * pxPerPoint, originY + y * pxPerPoint); only the given
     // rects (in points) show the picture, the rest of the window is see-through.
+    void setLocalCursorAlwaysVisible()
+    {
+        m_MouseCursorCapturedVisibilityState = SDL_ENABLE;
+        SDL_ShowCursor(SDL_ENABLE);
+    }
+
     void setAppWindowMapping(double pxPerPoint, int canvasW, int canvasH, int originX, int originY, const QVector<QRect>& shape)
     {
         m_AppWindowPxPerPoint = pxPerPoint;

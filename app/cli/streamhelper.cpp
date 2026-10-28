@@ -231,6 +231,7 @@ void Launcher::execute()
     if (origin.size() == 2) {
         m_Session->setPreferredDisplayOrigin(origin.at(0).toInt(), origin.at(1).toInt());
     }
+    m_Session->setHideHostCursor(m_Config.value("settings").toObject().value("hide_host_cursor").toBool(false));
     if (m_Config.contains("window_handle")) {
         // Accept a number or a "0x..." string (JSON numbers lose precision above 2^53).
         const QJsonValue wh = m_Config.value("window_handle");

@@ -1634,6 +1634,7 @@ bool Session::startConnectionAsync()
         launchOptions.scaleFactor = m_Preferences->resolutionScaleFactor;
         launchOptions.clientVrrRequested = m_Preferences->vrrCapture;
         launchOptions.windowHandle = m_WindowHandle;
+        launchOptions.hideCursor = m_HideHostCursor || m_IsAppWindow;
 
         NvHTTP http(m_Computer);
         http.startApp(m_Computer->currentGameId != 0 ? "resume" : "launch",
@@ -2235,6 +2236,10 @@ void Session::exec()
     }
 
     m_InputHandler->setWindow(m_Window);
+    if (m_HideHostCursor || m_IsAppWindow) {
+        // The host leaves its cursor out of the picture; ours stays visible.
+        m_InputHandler->setLocalCursorAlwaysVisible();
+    }
 
     if (m_IsAppWindow) {
         AppWindow::configureWindow(m_Window, m_AppWindow.title);

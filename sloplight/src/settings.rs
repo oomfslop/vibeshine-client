@@ -103,6 +103,10 @@ pub struct Settings {
     pub app_window_live_resize: bool,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
+    /// Draw only the Mac cursor; the host leaves its cursor out of the
+    /// capture. Always on for app windows.
+    #[serde(default)]
+    pub hide_host_cursor: bool,
     // Audio
     pub audio_config: AudioConfig,
     pub play_audio_on_host: bool,
@@ -172,6 +176,7 @@ impl Default for Settings {
             app_window_live_resize: true,
             resolution_scale_factor: 100,
             clipboard_sync: false,
+            hide_host_cursor: false,
             audio_config: AudioConfig::Stereo,
             play_audio_on_host: false,
             mute_on_focus_loss: false,
