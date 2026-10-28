@@ -1242,7 +1242,10 @@ void syncDesk(const QVector<DeskWindow>& windows)
                     }
                     st->applying = false;
                 }
-                const bool userBusy = st->userMoving || st->pendingMove || st->pendingResize || st->window.inLiveResize || st->inResize || st->settling;
+                // A dragged window is parked on the host: that position must
+                // never reach the Mac window
+                const bool userBusy = st->userMoving || st->pendingMove || st->pendingResize || st->window.inLiveResize || st->inResize ||
+                                      st->settling || st->dragging || st->frozen;
                 if (!userBusy && !minimized) {
                     const NSRect cur = st->window.frame;
                     if (st->userPlaced && isDeskPane(w)) {
