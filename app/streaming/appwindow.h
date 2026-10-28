@@ -118,6 +118,9 @@ void deskTestDrag(quint64 hwnd, int dx, int dy);
 // Test hook: a live resize as AppKit runs it (dw, dh points over ~0.5 s;
 // fromLeft drags the left edge instead of the right).
 void deskTestLiveResize(quint64 hwnd, int dw, int dh, bool fromLeft);
+// Test hook: a tile as macOS does it: a live resize that sets the frame
+// without asking the window (x, y, w, h in points, top-left origin).
+void deskTestTile(quint64 hwnd, int x, int y, int w, int h);
 // Points per host pixel of the desk: 1 / the mirrored screen's backing scale,
 // so one desk pixel is one device pixel (valid after beginDesk).
 double deskPointsPerPx();

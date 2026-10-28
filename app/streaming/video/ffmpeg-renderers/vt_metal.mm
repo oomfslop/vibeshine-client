@@ -686,18 +686,41 @@ public:
         for (const AppWindow::ChildLayer& p : popups) {
             const int x0 = qMax(0, p.hostX), y0 = qMax(0, p.hostY);
             const int x1 = qMin(frameW, p.hostX + p.hostW), y1 = qMin(frameH, p.hostY + p.hostH);
+            // A menu's window holds the menu and, around it, its shadow drawn
+            // over whatever is beneath on the host. The menu is the area of
+            // its background colour, the most common one in the window.
+            int hist[256] = {0};
+            int samples = 0;
+            for (int y = y0; y < y1; y += 2) {
+                const uint8_t* row = base + (size_t)y * stride;
+                for (int x = x0; x < x1; x += 2) {
+                    hist[wide ? (((const uint16_t*)row)[x] >> 8) : row[x]]++;
+                    samples++;
+                }
+            }
+            int mode = 0;
+            for (int v = 1; v < 256; v++) {
+                if (hist[v] > hist[mode]) {
+                    mode = v;
+                }
+            }
+            const bool body = samples > 0 && hist[mode] * 4 >= samples;  // a clear background: cut to it
             int minX = x1, minY = y1, maxX = x0 - 1, maxY = y0 - 1;
             for (int y = y0; y < y1; y++) {
                 const uint8_t* row = base + (size_t)y * stride;
-                int first = -1, last = -1;
+                int first = -1, last = -1, count = 0;
                 for (int x = x0; x < x1; x++) {
                     const int v = wide ? (((const uint16_t*)row)[x] >> 8) : row[x];
-                    if (v > threshold) {
+                    if (body ? qAbs(v - mode) <= 3 : v > threshold) {
                         if (first < 0) {
                             first = x;
                         }
                         last = x;
+                        count++;
                     }
+                }
+                if (body && count < 8) {
+                    first = -1;  // a stray pixel of that colour in the shadow
                 }
                 if (first >= 0) {
                     minX = qMin(minX, first);
@@ -708,6 +731,13 @@ public:
             }
             QRect trim;
             if (maxX >= minX && maxY >= minY) {
+                if (body) {
+                    // The menu's 1 px border sits just outside its background
+                    minX = qMax(x0, minX - 1);
+                    minY = qMax(y0, minY - 1);
+                    maxX = qMin(x1 - 1, maxX + 1);
+                    maxY = qMin(y1 - 1, maxY + 1);
+                }
                 trim = QRect(minX - p.hostX, minY - p.hostY, maxX - minX + 1, maxY - minY + 1);
                 if (trim == QRect(0, 0, p.hostW, p.hostH)) {
                     trim = QRect();

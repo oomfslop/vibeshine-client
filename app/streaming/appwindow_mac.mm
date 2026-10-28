@@ -429,6 +429,7 @@ struct DeskState {
     NSRect liveStart = NSZeroRect;  // the frame when it began
     NSSize proposed = NSZeroSize;   // the size the user asks for (points); the host gets it
     bool anchorRight = false, anchorBottom = false;  // the edges the picture hugs (the ones not being dragged)
+    bool askedSize = false;      // windowWillResize ran for the current change (the user's drag)
     bool settling = false;       // after a resize: the frame snaps to the picture once the host is done
     double settleDeadline = 0;
     int sentX = INT_MIN, sentY = INT_MIN;  // the last position we asked the host for
@@ -665,12 +666,15 @@ void deskSyncOrder()
         g_lastOrder = host;
         return;
     }
-    if (macCommon != g_lastOrder && !g_forceOrderPush && (!NSApp.isActive || now - g_activationChangedAt < 1.0)) {
-        // Not the user: the app switcher or (de)activation reshuffled our
-        // windows. Put them back as agreed; never send that to the host.
+    // Only the user's own acts reorder the host: a press that brought a
+    // window to the front, or a drop. Everything else that reshuffles our
+    // windows (the app switcher, key-window changes, (de)activation) is put
+    // back as agreed.
+    const bool pressed = g_deskPressed != 0 && now - g_deskPressedAt < 1.0 && macCommon.last() == g_deskPressed;
+    if (macCommon != g_lastOrder && !g_forceOrderPush && !pressed) {
         if (now - s_lastReport > 2.0) {
             s_lastReport = now;
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: ignoring a reorder while %s", NSApp.isActive ? "activating" : "inactive");
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: not the user's [%s]; restoring [%s]", qPrintable(orderString(macCommon)), qPrintable(orderString(g_lastOrder)));
         }
         applyHostOrder(g_lastOrder);
         return;
@@ -739,8 +743,19 @@ void settleResize(quint64 hwnd, bool deadline)
     const double s = g_deskPointsPerPx;
     const int sw = (int)(shown >> 32), sh = (int)(shown & 0xffffffff);
     const int wantW = (int)lround(st->proposed.width / s), wantH = (int)lround(st->proposed.height / s);
+    // Done when the picture shows the size asked for, or the size the host
+    // settled on instead (minimum sizes) once the deadline has passed
     const bool done = abs(sw - wantW) <= 2 && abs(sh - wantH) <= 2;
-    if (!done && !deadline && CACurrentMediaTime() < st->settleDeadline) {
+    const bool hostSettled = abs(sw - st->info.w) <= 2 && abs(sh - st->info.h) <= 2 && !st->pendingResize;
+    if (!done && !(hostSettled && (deadline || CACurrentMediaTime() >= st->settleDeadline))) {
+        if (deadline) {
+            // Not there yet: look again shortly
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                DESK_TRY
+                settleResize(hwnd, true);
+                DESK_CATCH("settleResize")
+            });
+        }
         return;
     }
     if (sw > 0 && sh > 0) {
@@ -855,16 +870,17 @@ void closeDesk(DeskState* st)
         return size;
     }
     st->proposed = size;
+    st->askedSize = true;
     const quint64 shown = shownSize(self.hwnd);
     const double s = g_deskPointsPerPx;
     const CGFloat sw = (CGFloat)(shown >> 32) * s, sh = (CGFloat)(shown & 0xffffffff) * s;
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(resizeSettled) object:nil];
     const double now = CACurrentMediaTime();
-    if (now - st->lastResizeSent >= 0.033) {
+    if (now - st->lastResizeSent >= 0.016) {
         [self performSelector:@selector(resizeSettled) withObject:nil afterDelay:0.0];
     }
     else {
-        [self performSelector:@selector(resizeSettled) withObject:nil afterDelay:0.033];
+        [self performSelector:@selector(resizeSettled) withObject:nil afterDelay:0.016];
     }
     return NSMakeSize(MAX(size.width, sw), MAX(size.height, sh));
     DESK_CATCH("windowWillResize")
@@ -878,6 +894,14 @@ void closeDesk(DeskState* st)
     if (!st || st->applying) {
         return;
     }
+    if (st->inResize && !st->askedSize) {
+        // macOS sized it by itself (tiling into a half or corner, Fill):
+        // that size is the one to get from the host
+        st->proposed = st->window.frame.size;
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(resizeSettled) object:nil];
+        [self performSelector:@selector(resizeSettled) withObject:nil afterDelay:0.016];
+    }
+    st->askedSize = false;
     if (st->inResize) {
         // The edges being dragged move; the picture hugs the others
         const NSRect f = st->window.frame, a = st->liveStart;
@@ -944,9 +968,9 @@ void closeDesk(DeskState* st)
     st->inResize = false;
     // The frame snaps to the picture once the host has drawn the final size
     st->settling = true;
-    st->settleDeadline = CACurrentMediaTime() + 1.5;
+    st->settleDeadline = CACurrentMediaTime() + 3.0;
     const quint64 hwnd = self.hwnd;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         DESK_TRY
         settleResize(hwnd, true);
         DESK_CATCH("settleResize")
@@ -1569,6 +1593,21 @@ void deskTestLiveResize(quint64 hwnd, int dw, int dh, bool fromLeft)
             [del windowDidEndLiveResize:[NSNotification notificationWithName:NSWindowDidEndLiveResizeNotification object:win]];
             DESK_CATCH("test live resize end")
         });
+    });
+}
+
+void deskTestTile(quint64 hwnd, int x, int y, int w, int h)
+{
+    deskOnMain("deskTestTile", ^{
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->window) {
+            return;
+        }
+        NSWindow* win = st->window;
+        id<NSWindowDelegate> del = win.delegate;
+        [del windowWillStartLiveResize:[NSNotification notificationWithName:NSWindowWillStartLiveResizeNotification object:win]];
+        [win setFrame:NSMakeRect(x, primaryTop() - y - h, w, h) display:YES animate:NO];
+        [del windowDidEndLiveResize:[NSNotification notificationWithName:NSWindowDidEndLiveResizeNotification object:win]];
     });
 }
 
