@@ -525,7 +525,7 @@ public:
     {
         AppWindow::forEachChildLayer([&](const AppWindow::ChildLayer& child) {
             CAMetalLayer* layer = (__bridge CAMetalLayer*)child.metalLayer;
-            if (!layer || child.w <= 0 || child.h <= 0) {
+            if (!layer || child.w <= 0 || child.h <= 0 || !child.visible) {
                 return;
             }
             if (layer.device != m_MetalLayer.device || layer.pixelFormat != m_MetalLayer.pixelFormat) {
@@ -582,6 +582,33 @@ public:
     }
 
     // Caller frees frame after we return
+    // Desk mode: nothing is drawn in the (hidden) SDL window, so no drawable
+    // of its layer is needed; the desk windows' layers get the frame.
+    void renderDeskFrame(AVFrame* frame)
+    { @autoreleasepool {
+        std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures;
+        size_t planes = getFramePlaneCount(frame);
+        SDL_assert(planes <= MAX_VIDEO_PLANES);
+        if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+            if (!createTexturesFromFrame(frame, cvMetalTextures)) {
+                return;
+            }
+        }
+        auto commandBuffer = [m_CommandQueue commandBuffer];
+        if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+            CVPixelBufferRef pixBuf = reinterpret_cast<CVPixelBufferRef>(frame->data[3]);
+            CVPixelBufferRetain(pixBuf);
+            [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+                for (size_t i = 0; i < planes; i++) {
+                    CFRelease(cvMetalTextures[i]);
+                }
+                CVPixelBufferRelease(pixBuf);
+            }];
+        }
+        renderChildWindows(frame, commandBuffer, planes, cvMetalTextures);
+        [commandBuffer commit];
+    }}
+
     virtual void renderFrameIntoDrawable(AVFrame* frame, id<CAMetalDrawable> drawable)
     { @autoreleasepool {
         std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures;
@@ -740,6 +767,9 @@ public:
             SDL_CondSignal(m_FrameReady);
 
             av_frame_free(&oldFrame);
+        }
+        else if (m_AppWindowMode) {
+            renderDeskFrame(frame);
         }
         else {
             // Render to the next drawable right now when CAMetalDisplayLink is not in use
@@ -1080,7 +1110,12 @@ public:
 
         // Render a frame if we got one in time
         if (frame != nullptr) {
-            renderFrameIntoDrawable(frame, drawable);
+            if (m_AppWindowMode) {
+                renderDeskFrame(frame);
+            }
+            else {
+                renderFrameIntoDrawable(frame, drawable);
+            }
             av_frame_free(&frame);
         }
     }

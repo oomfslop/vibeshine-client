@@ -102,6 +102,18 @@ pub struct Settings {
     /// processes) are streamed too.
     #[serde(default = "default_true")]
     pub app_window_follow_new: bool,
+    /// App windows: size of host windows on this screen, percent of the Mac's
+    /// own logical size (100 = the host renders at 200%, one host pixel per
+    /// screen pixel, so a window is as many points wide as it is 100%-pixels). Pixels
+    /// stay 1:1 with the screen at every setting; the host renders at the
+    /// matching DPI.
+    #[serde(default = "default_app_window_scale")]
+    pub app_window_scale: i32,
+    /// App windows: bitrate of the desk stream (kbps). Windows are mostly
+    /// still, so far less than a game needs; too much only invites packet
+    /// loss, and every lost frame freezes the picture until it recovers.
+    #[serde(default = "default_app_window_bitrate")]
+    pub app_window_bitrate_kbps: i32,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
     /// Draw only the Mac cursor; the host leaves its cursor out of the
@@ -175,6 +187,8 @@ impl Default for Settings {
             use_virtual_display: false,
             vrr_capture: false,
             app_window_follow_new: true,
+            app_window_scale: 100,
+            app_window_bitrate_kbps: 40000,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             hide_host_cursor: false,
@@ -360,6 +374,14 @@ impl Settings {
 pub fn format_mbps(kbps: i32) -> String {
     let mbps = kbps as f64 / 1000.0;
     if (mbps - mbps.round()).abs() < 0.001 { format!("{}", mbps.round() as i64) } else { format!("{mbps:.1}") }
+}
+
+fn default_app_window_scale() -> i32 {
+    100
+}
+
+fn default_app_window_bitrate() -> i32 {
+    40000
 }
 
 fn default_true() -> bool {

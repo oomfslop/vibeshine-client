@@ -350,6 +350,19 @@ void updateDeskCrop(DeskState* st)
     setChildLayer(st->info.hwnd, st->view.layer, st->info.x, st->info.y, MAX(1, w), MAX(1, h), st->info.radius);
 }
 
+// A window nobody can see (minimized, fully covered, off screen) has no
+// drawables to give: rendering into it would stall every other window.
+void updateDeskVisible(DeskState* st)
+{
+    const bool visible = st->window.visible && !st->window.miniaturized && (st->window.occlusionState & NSWindowOcclusionStateVisible);
+    std::lock_guard<std::mutex> lock(g_childMutex);
+    for (auto& l : g_childLayers) {
+        if (l.hwnd == st->info.hwnd) {
+            l.visible = visible;
+        }
+    }
+}
+
 bool isDeskPane(const AppWindow::DeskWindow& w)  // a window or dialog, as opposed to a popup
 {
     return w.kind != 2;
@@ -481,10 +494,21 @@ void closeDesk(DeskState* st)
     [self resizeSettled];
 }
 
+- (void)windowDidChangeOcclusionState:(NSNotification*)notification
+{
+    if (DeskState* st = deskState(self.hwnd)) {
+        updateDeskVisible(st);
+    }
+}
+
 - (void)windowDidMiniaturize:(NSNotification*)notification
 {
     DeskState* st = deskState(self.hwnd);
-    if (!st || st->applying) {
+    if (!st) {
+        return;
+    }
+    updateDeskVisible(st);
+    if (st->applying) {
         return;
     }
     st->pendingMinimize = true;
@@ -495,7 +519,11 @@ void closeDesk(DeskState* st)
 - (void)windowDidDeminiaturize:(NSNotification*)notification
 {
     DeskState* st = deskState(self.hwnd);
-    if (!st || st->applying) {
+    if (!st) {
+        return;
+    }
+    updateDeskVisible(st);
+    if (st->applying) {
         return;
     }
     st->pendingRestore = true;
@@ -525,7 +553,16 @@ void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHo
     }
     g_deskKeyWindow = ns;
     g_deskScreen = NSMakeRect(screenPts.x(), screenPts.y(), screenPts.width(), screenPts.height());
+    // One desk pixel per device pixel: the mirrored screen's backing scale
     g_deskPointsPerPx = pointsPerHostPx > 0 ? pointsPerHostPx : 1.0;
+    {
+        const NSPoint corner = NSMakePoint(screenPts.x() + 1, primaryTop() - screenPts.y() - 1);
+        for (NSScreen* screen in [NSScreen screens]) {
+            if (NSPointInRect(corner, screen.frame) && screen.backingScaleFactor > 0) {
+                g_deskPointsPerPx = 1.0 / screen.backingScaleFactor;
+            }
+        }
+    }
     setDeskActive(true);
     // The key window carries the keyboard and nothing else: invisible, out of
     // the way of the mouse, absent from Mission Control and window cycling.
@@ -603,6 +640,7 @@ void syncDesk(const QVector<DeskWindow>& windows)
                 [st->view updateTrackingAreas];
                 g_desk[@(w.hwnd)] = [NSValue valueWithPointer:st];
                 updateDeskCrop(st);
+                updateDeskVisible(st);
                 st->applying = true;
                 DeskState* owner = deskState(w.owner);
                 if (!isDeskPane(w) && owner && owner->window) {
@@ -683,6 +721,7 @@ void syncDesk(const QVector<DeskWindow>& windows)
                     }
                 }
                 updateDeskCrop(st);
+                updateDeskVisible(st);
                 if (before.radius != w.radius) {
                     [st->window invalidateShadow];
                 }
@@ -748,6 +787,11 @@ void setDeskIcon(const QString& iconKey, const QByteArray& png)
 quint64 deskFrontWindow()
 {
     return g_deskFront.load();
+}
+
+double deskPointsPerPx()
+{
+    return g_deskPointsPerPx;
 }
 
 void dragChild(quint64 hwnd, void* nsEvent)

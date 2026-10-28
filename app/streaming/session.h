@@ -142,7 +142,7 @@ public:
     void setAppWindow(const AppWindowInfo& info) { m_AppWindow = info; m_IsAppWindow = true; }
     bool isAppWindow() const { return m_IsAppWindow; }
     // Points per host pixel for the desk (logical-size parity with the host)
-    double appWindowScale() const { return 96.0 / qMax(48, m_AppWindow.dpi); }
+    double appWindowScale() const;  // points per host pixel (the screen's backing scale)
 
     void setTestWindow(int x, int y, int w, int h)
     {

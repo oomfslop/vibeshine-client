@@ -198,8 +198,17 @@ impl Root {
     }
 
     /// Points per host pixel for a desk at this DPI.
-    fn desk_points_per_px(dpi: i32) -> f32 {
-        96.0 / dpi.max(48) as f32
+    /// Device pixels per point of the primary screen (2 on Retina).
+    pub fn screen_backing_scale() -> f32 {
+        crate::display::displays()
+            .first()
+            .filter(|d| d.points.0 > 0 && d.current.0 > 0)
+            .map(|d| d.current.0 as f32 / d.points.0 as f32)
+            .unwrap_or(2.0)
+    }
+
+    fn desk_points_per_px(_dpi: i32) -> f32 {
+        1.0 / Self::screen_backing_scale()
     }
 
     /// Streams a host window: opens the host's desk for this screen (first
@@ -246,9 +255,11 @@ impl Root {
         };
         let b = display.bounds();
         let screen = [f32::from(b.origin.x) as i32, f32::from(b.origin.y) as i32, f32::from(b.size.width) as i32, f32::from(b.size.height) as i32];
-        let dpi = w.dpi.max(48);
-        let k = dpi as f32 / 96.0;
-        let want = ((screen[2] as f32 * k).round() as i32, (screen[3] as f32 * k).round() as i32);
+        // The desk is the screen in device pixels; the host renders at the DPI
+        // that makes windows the chosen fraction of the Mac's logical size.
+        let backing = Self::screen_backing_scale();
+        let dpi = (96.0 * backing * self.settings.app_window_scale.clamp(25, 400) as f32 / 100.0).round() as i32;
+        let want = ((screen[2] as f32 * backing).round() as i32, (screen[3] as f32 * backing).round() as i32);
         let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi) {
             Ok(d) => d,
             Err(e) => {
@@ -259,6 +270,7 @@ impl Root {
         log::info!("desk {} {:?} @{} {} dpi for a {}x{} pt screen ({}x{} px wanted)", desk.display, desk.rect, desk.fps, desk.dpi, screen[2], screen[3], want.0, want.1);
         let icon_png = self.windows.icons.get(&w.icon).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
         let mut settings = self.settings.clone();
+        settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(5000, 150000);
         settings.width = desk.rect[2];
         settings.height = desk.rect[3];
         settings.fps = desk.fps;

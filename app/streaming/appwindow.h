@@ -32,6 +32,7 @@ struct ChildLayer {
     void* metalLayer = nullptr;    // CAMetalLayer*, retained while in this list
     int canvasX = 0, canvasY = 0, w = 0, h = 0;
     int radius = 0;
+    bool visible = true;           // false while the window is minimized or fully covered: nothing to draw
 };
 QVector<ChildLayer> childLayers();
 // Runs fn for each child layer while holding the lock that keeps the layers
@@ -82,6 +83,9 @@ struct DeskEvent {
     int x = 0, y = 0, w = 0, h = 0;
 };
 void deskMinimize(quint64 hwnd);
+// Points per host pixel of the desk: 1 / the mirrored screen's backing scale,
+// so one desk pixel is one device pixel (valid after beginDesk).
+double deskPointsPerPx();
 // Test hook: set a desk window's frame as if the user had moved/resized it
 // (SDL global points, top-left origin).
 void deskTestSetFrame(quint64 hwnd, int x, int y, int w, int h);

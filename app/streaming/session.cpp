@@ -1957,6 +1957,12 @@ bool Session::deskPointCovered(quint64 hwnd, int px, int py) const
     return false;
 }
 
+double Session::appWindowScale() const
+{
+    const double s = AppWindow::deskPointsPerPx();
+    return s > 0 ? s : 96.0 / qMax(48, m_AppWindow.dpi);
+}
+
 void Session::handleDeskEvent(void* raw)
 {
     auto* ev = static_cast<AppWindow::DeskEvent*>(raw);
