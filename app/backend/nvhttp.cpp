@@ -516,6 +516,20 @@ NvHTTP::windowAction(quint64 windowHandle, const QString& op, int x, int y, int 
     }
 }
 
+bool
+NvHTTP::deskOrder(const QString& hwnds)
+{
+    QByteArray body;
+    try {
+        QNetworkReply* reply = openConnection(m_BaseUrlHttps, "actions/desk", "op=order&hwnds=" + hwnds, 2000,
+                                              NvLogLevel::NVLL_NONE, &body, "text/plain");
+        delete reply;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 QByteArray
 NvHTTP::windowIcon(quint64 windowHandle)
 {

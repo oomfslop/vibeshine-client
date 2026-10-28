@@ -3,6 +3,8 @@
 #include <SDL_syswm.h>
 #import <AppKit/AppKit.h>
 
+static void deskOnMain(const char* what, dispatch_block_t block);
+
 namespace {
 
 NSWindow* nsWindowFor(SDL_Window* window)
@@ -270,7 +272,7 @@ void closeDeskWindows();
 
 void closeChildren()
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("closeChildren", ^{
         closeDeskWindows();
     });
 }
@@ -310,6 +312,22 @@ void releaseChildInput(ChildInput* input)
 @property (nonatomic) quint64 hwnd;
 @end
 
+
+// Main-queue work for the desk runs inside the session's event pump; an
+// AppKit exception escaping it used to end the session's loop. Contain it
+// and say what it was.
+static void deskOnMain(const char* what, dispatch_block_t block)
+{
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @try {
+            block();
+        }
+        @catch (NSException* e) {
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "AppWindow %s: %s: %s", what, e.name.UTF8String, e.reason.UTF8String);
+        }
+    });
+}
+
 namespace {
 
 struct DeskState {
@@ -333,7 +351,8 @@ struct DeskState {
     QRect trim;                  // popups: the visible part of the host rect (empty = all of it)
 };
 
-NSMutableDictionary<NSNumber*, NSValue*>* g_desk = nil;  // hwnd -> DeskState*
+NSMutableDictionary<NSNumber*, NSValue*>* g_desk = nil;
+bool g_forceOrderPush = false;  // a drag ended: the Mac's order goes to the host, whatever the host did meanwhile  // hwnd -> DeskState*
 NSWindow* g_deskKeyWindow = nil;
 NSRect g_deskScreen = NSZeroRect;   // SDL global points, top-left origin
 double g_deskPointsPerPx = 1.0;
@@ -409,7 +428,10 @@ void updateDeskCrop(DeskState* st)
     const bool popup = st->info.kind == 2;
     const bool trimmed = popup && st->trim.width() > 0;
     const int cx = st->info.x + (trimmed ? st->trim.x() : 0), cy = st->info.y + (trimmed ? st->trim.y() : 0);
-    const int cw = trimmed ? st->trim.width() : st->info.w, ch = trimmed ? st->trim.height() : st->info.h;
+    // The picture is the host's size, cut to the Mac window when that is
+    // smaller (mid-resize): never scaled.
+    const int cw = MIN(trimmed ? st->trim.width() : st->info.w, MAX(1, vw));
+    const int ch = MIN(trimmed ? st->trim.height() : st->info.h, MAX(1, vh));
     setChildLayer(st->info.hwnd, st->view.layer, cx, cy, MAX(1, cw), MAX(1, ch), st->info.radius,
                   popup, st->info.x, st->info.y, st->info.w, st->info.h, MAX(1, vw), MAX(1, vh));
 }
@@ -466,8 +488,123 @@ void scheduleUnfreeze(quint64 hwnd)
             st->frozen = false;
             setChildLayerFrozen(hwnd, false);
             updateDeskCrop(st);
+            g_forceOrderPush = true;
         }
     });
+}
+
+// Window order, two ways. The Mac is the truth for what the user does
+// (clicks, Cmd-Tab, Mission Control): that order goes to the host, so the
+// picture of every window shows itself where it overlaps others. The host is
+// the truth for what happens there on its own (a new dialog on top, an app
+// raising a window): that order comes to the Mac. g_lastOrder is the order
+// both last agreed on.
+QVector<quint64> g_hostOrder;  // panes, bottom-most first, from the last layout
+QVector<quint64> g_lastOrder;
+double g_orderPushedAt = 0;
+
+void applyHostOrder(const QVector<quint64>& order)
+{
+    for (int i = 1; i < order.size(); i++) {
+        DeskState* below = deskState(order[i - 1]);
+        DeskState* st = deskState(order[i]);
+        if (below && st && below->window && st->window) {
+            [st->window orderWindow:NSWindowAbove relativeTo:below->window.windowNumber];
+        }
+    }
+}
+
+QString orderString(const QVector<quint64>& order)
+{
+    QStringList parts;
+    for (quint64 h : order) {
+        parts.append(QString::number(h, 16));
+    }
+    return parts.join(' ');
+}
+
+void deskSyncOrder()
+{
+    if (!g_desk) {
+        return;
+    }
+    static double s_lastReport = 0;
+    QVector<quint64> mac;  // bottom-most first
+    for (NSWindow* w in [[NSApp orderedWindows] reverseObjectEnumerator]) {
+        if (![w isKindOfClass:[AWChildWindow class]] || ![w.contentView isKindOfClass:[AWChildView class]]) {
+            continue;
+        }
+        const quint64 hwnd = ((AWChildView*)w.contentView).hwnd;
+        DeskState* st = deskState(hwnd);
+        if (!st || !isDeskPane(st->info) || st->goneSince != 0 || w.miniaturized || !w.visible) {
+            continue;
+        }
+        if (st->dragging || st->frozen) {
+            return;  // a drag and its drop: hands off until it settles
+        }
+        mac.append(hwnd);
+    }
+    QVector<quint64> host;
+    for (quint64 h : g_hostOrder) {
+        if (mac.contains(h)) {
+            host.append(h);
+        }
+    }
+    QVector<quint64> macCommon;
+    for (quint64 h : mac) {
+        if (host.contains(h)) {
+            macCommon.append(h);
+        }
+    }
+    if (macCommon.size() < 2) {
+        g_lastOrder = macCommon;
+        return;
+    }
+    const double now = CACurrentMediaTime();
+    bool sameSet = macCommon.size() == g_lastOrder.size();
+    for (quint64 h : macCommon) {
+        sameSet = sameSet && g_lastOrder.contains(h);
+    }
+    if (now - s_lastReport > 2.0 && (macCommon != host || host != g_lastOrder)) {
+        s_lastReport = now;
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: mac [%s] host [%s] agreed [%s]",
+                    qPrintable(orderString(macCommon)), qPrintable(orderString(host)), qPrintable(orderString(g_lastOrder)));
+    }
+    if (!sameSet) {
+        // Windows came or went: the host decided where they are
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: windows changed, host order [%s]", qPrintable(orderString(host)));
+        applyHostOrder(host);
+        g_lastOrder = host;
+        return;
+    }
+    if (macCommon != g_lastOrder || g_forceOrderPush) {
+        g_forceOrderPush = false;
+        // Reordered here: tell the host, top-most first
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: reordered here [%s] (was [%s])", qPrintable(orderString(macCommon)), qPrintable(orderString(g_lastOrder)));
+        const quint64 oldTop = g_lastOrder.isEmpty() ? 0 : g_lastOrder.last();
+        g_lastOrder = macCommon;
+        g_orderPushedAt = now;
+        auto* ev = new AppWindow::DeskEvent;
+        ev->kind = QStringLiteral("order");
+        for (int i = macCommon.size() - 1; i >= 0; i--) {
+            ev->order.append(macCommon[i]);
+        }
+        SDL_Event e = {};
+        e.type = SDL_USEREVENT;
+        e.user.code = SDL_CODE_APPWINDOW_DESK_EVENT;
+        e.user.data1 = ev;
+        SDL_PushEvent(&e);
+        if (macCommon.last() != oldTop && NSApp.isActive) {
+            pushDeskEvent(macCommon.last(), "activate", 0, 0, 0, 0);  // the keyboard follows the front window
+        }
+        return;
+    }
+    if (host != g_lastOrder && now - g_orderPushedAt > 1.0) {
+        // Reordered on the host by itself
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: reordered on the host [%s] (was [%s])", qPrintable(orderString(host)), qPrintable(orderString(g_lastOrder)));
+        applyHostOrder(host);
+        g_lastOrder = host;
+    }
 }
 
 void closeDesk(DeskState* st)
@@ -633,6 +770,36 @@ void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHo
     }
     g_deskKeyWindow = ns;
     g_deskScreen = NSMakeRect(screenPts.x(), screenPts.y(), screenPts.width(), screenPts.height());
+    {
+        static id s_activeObserver = nil;
+        if (!s_activeObserver) {
+            s_activeObserver = [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationDidBecomeActiveNotification
+                                                                                 object:nil queue:[NSOperationQueue mainQueue]
+                                                                             usingBlock:^(NSNotification*) {
+                @try {
+                    applyHostOrder(g_lastOrder);
+                }
+                @catch (NSException* e) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "AppWindow activation: %s: %s", e.name.UTF8String, e.reason.UTF8String);
+                }
+            }];
+        }
+        // Order changes without a layout change (clicks, Cmd-Tab) are caught here
+        static dispatch_source_t s_orderTimer = nullptr;
+        if (!s_orderTimer) {
+            s_orderTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_main_queue());
+            dispatch_source_set_timer(s_orderTimer, dispatch_time(DISPATCH_TIME_NOW, 0), (uint64_t)(0.1 * NSEC_PER_SEC), (uint64_t)(0.02 * NSEC_PER_SEC));
+            dispatch_source_set_event_handler(s_orderTimer, ^{
+                @try {
+                    deskSyncOrder();
+                }
+                @catch (NSException* e) {
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "AppWindow deskSyncOrder: %s: %s", e.name.UTF8String, e.reason.UTF8String);
+                }
+            });
+            dispatch_resume(s_orderTimer);
+        }
+    }
     // One desk pixel per device pixel: the mirrored screen's backing scale
     g_deskPointsPerPx = pointsPerHostPx > 0 ? pointsPerHostPx : 1.0;
     {
@@ -665,7 +832,7 @@ void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHo
 void syncDesk(const QVector<DeskWindow>& windows)
 {
     QVector<DeskWindow> wanted = windows;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("syncDesk", ^{
         if (!g_desk) {
             g_desk = [NSMutableDictionary new];
         }
@@ -712,7 +879,10 @@ void syncDesk(const QVector<DeskWindow>& windows)
                 st->window.releasedWhenClosed = NO;
                 st->window.opaque = NO;
                 st->window.backgroundColor = [NSColor clearColor];
-                st->window.hasShadow = YES;
+                // Popups carry their own (Windows) shadow and a transparent
+                // margin showing what is beneath; a macOS shadow would outline
+                // the whole margin as a box.
+                st->window.hasShadow = isDeskPane(w);
                 st->window.title = w.title.toNSString();
                 st->window.movableByWindowBackground = NO;
                 st->window.level = NSNormalWindowLevel;
@@ -863,43 +1033,14 @@ void syncDesk(const QVector<DeskWindow>& windows)
             }
             (void)prevPane;
         }
-        // Stacking: the host's order, bottom-most first, unless the user just
-        // raised one of ours and the host has not caught up yet.
-        {
-            QVector<NSWindow*> hostOrder;  // bottom-most first, panes only, not minimized
-            for (const DeskWindow& w : wanted) {
-                DeskState* st = deskState(w.hwnd);
-                if (st && isDeskPane(w) && !st->window.miniaturized) {
-                    hostOrder.append(st->window);
-                }
-            }
-            bool pressPending = false;
-            for (const DeskWindow& w : wanted) {
-                DeskState* st = deskState(w.hwnd);
-                if (st && (st->dragging || st->frozen)) {
-                    pressPending = true;  // a drag or its drop is in progress: our order stands
-                }
-            }
-            if (!pressPending && g_deskPressed && now - g_deskPressedAt < 0.6) {
-                pressPending = hostOrder.isEmpty() || deskState(g_deskPressed) == nullptr || hostOrder.last() != deskState(g_deskPressed)->window;
-            }
-            if (!pressPending) {
-                g_deskPressed = 0;
-            }
-            if (!pressPending && hostOrder.size() > 1) {
-                QVector<NSWindow*> macOrder;  // bottom-most first
-                for (NSWindow* w in [[NSApp orderedWindows] reverseObjectEnumerator]) {
-                    if (hostOrder.contains(w)) {
-                        macOrder.append(w);
-                    }
-                }
-                if (macOrder != hostOrder) {
-                    for (int i = 1; i < hostOrder.size(); i++) {
-                        [hostOrder[i] orderWindow:NSWindowAbove relativeTo:hostOrder[i - 1].windowNumber];
-                    }
-                }
+        // Stacking: two-way, see deskSyncOrder
+        g_hostOrder.clear();
+        for (const DeskWindow& w : wanted) {
+            if (isDeskPane(w) && w.state != "minimized") {
+                g_hostOrder.append(w.hwnd);
             }
         }
+        deskSyncOrder();
         updateDeskIcon();
     });
 }
@@ -911,7 +1052,7 @@ void setDeskIcon(const QString& iconKey, const QByteArray& png)
     }
     NSData* data = [NSData dataWithBytes:png.constData() length:(NSUInteger)png.size()];
     NSString* key = iconKey.toNSString();  // the block must not keep the caller's reference
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("setDeskIcon", ^{
         NSImage* image = [[NSImage alloc] initWithData:data];
         if (!image) {
             return;
@@ -937,7 +1078,7 @@ double deskPointsPerPx()
 
 void setDeskTrim(quint64 hwnd, int x, int y, int w, int h)
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("setDeskTrim", ^{
         DeskState* st = deskState(hwnd);
         if (!st || !st->window) {
             return;
@@ -958,7 +1099,7 @@ void setDeskTrim(quint64 hwnd, int x, int y, int w, int h)
 void dragChild(quint64 hwnd, void* nsEvent)
 {
     NSEvent* event = (__bridge NSEvent*)nsEvent;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("dragChild", ^{
         DeskState* st = deskState(hwnd);
         if (st && st->window && event) {
             [st->window performWindowDragWithEvent:event];
@@ -968,11 +1109,30 @@ void dragChild(quint64 hwnd, void* nsEvent)
 
 void deskMinimize(quint64 hwnd)
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("deskMinimize", ^{
         DeskState* st = deskState(hwnd);
         if (st && st->window) {
             [st->window miniaturize:nil];  // the delegate tells the host
         }
+    });
+}
+
+void deskEndDrag(quint64 hwnd);
+
+// The window server owns a native drag and swallows its mouse-up: watch the
+// button instead.
+static void pollDragEnd(quint64 hwnd)
+{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->dragging) {
+            return;
+        }
+        if (NSEvent.pressedMouseButtons & 1) {
+            pollDragEnd(hwnd);
+            return;
+        }
+        deskEndDrag(hwnd);
     });
 }
 
@@ -985,22 +1145,44 @@ static void beginDragNow(quint64 hwnd, bool force)
         st->dragging = true;
         st->frozen = true;
         setChildLayerFrozen(hwnd, true);
-        st->view.dragging = YES;
         // Out of the way on the host, so the windows it covered there show
-        // their own content on the Mac while it is dragged around.
-        pushDeskEvent(hwnd, "lower", 0, 0, 0, 0);
+        // their own content on the Mac while it is dragged around. Not for
+        // dialogs or windows with dialogs: Windows keeps owned windows above
+        // their owner and would bury the whole family.
+        bool family = st->info.owner != 0;
+        for (NSNumber* key in g_desk) {
+            DeskState* other = (DeskState*)g_desk[key].pointerValue;
+            family = family || (other->info.owner == hwnd && isDeskPane(other->info));
+        }
+        if (!family) {
+            pushDeskEvent(hwnd, "lower", 0, 0, 0, 0);
+        }
+        if (force) {
+            return;  // test drags move the window themselves
+        }
+        // The system's own window drag: tiling at screen edges and corners,
+        // Mission Control, other screens. It takes the mouse until release.
+        NSWindow* win = st->window;
+        const NSPoint where = [win mouseLocationOutsideOfEventStream];
+        NSEvent* down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:where modifierFlags:0
+                                          timestamp:[[NSProcessInfo processInfo] systemUptime] windowNumber:win.windowNumber
+                                            context:nil eventNumber:0 clickCount:1 pressure:1.0];
+        if (down) {
+            [win performWindowDragWithEvent:down];
+        }
+        pollDragEnd(hwnd);
 }
 
 void deskBeginDrag(quint64 hwnd)
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("deskBeginDrag", ^{
         beginDragNow(hwnd, false);
     });
 }
 
 void deskTestDrag(quint64 hwnd, int dx, int dy)
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("deskTestDrag", ^{
         beginDragNow(hwnd, true);
         DeskState* st = deskState(hwnd);
         if (!st || !st->dragging) {
@@ -1023,12 +1205,13 @@ void deskTestDrag(quint64 hwnd, int dx, int dy)
 
 void deskEndDrag(quint64 hwnd)
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("deskEndDrag", ^{
         DeskState* st = deskState(hwnd);
         if (!st || !st->window) {
             return;
         }
         st->view.dragging = NO;
+        pushDeskEvent(hwnd, "dragend", 0, 0, 0, 0);  // the session forgets the pending press
         if (!st->dragging) {
             return;
         }
@@ -1048,7 +1231,7 @@ void deskEndDrag(quint64 hwnd)
 
 void deskTestSetFrame(quint64 hwnd, int x, int y, int w, int h)
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("deskTestSetFrame", ^{
         DeskState* st = deskState(hwnd);
         if (st && st->window) {
             // Not "applying": the delegate treats it as the user's doing
@@ -1059,7 +1242,7 @@ void deskTestSetFrame(quint64 hwnd, int x, int y, int w, int h)
 
 void deskTitleAction(quint64 hwnd)
 {
-    dispatch_async(dispatch_get_main_queue(), ^{
+    deskOnMain("deskTitleAction", ^{
         DeskState* st = deskState(hwnd);
         if (!st || !st->window) {
             return;

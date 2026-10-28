@@ -365,7 +365,13 @@ private:
         int button = 1;
         bool dragging = false;
     };
-    QHash<quint64, PendingCaption> m_PendingCaption;  // presses that acted on the window itself: swallow the release
+    QHash<quint64, PendingCaption> m_PendingCaption;
+    // A press on a caption button: acts on release, like a click
+    struct PendingControl {
+        QString hit;
+        int x = 0, y = 0;
+    };
+    QHash<quint64, PendingControl> m_PendingControl;  // presses that acted on the window itself: swallow the release
     struct DeskWin {
         quint64 hwnd = 0, owner = 0;
         int kind = 0;          // 0 window, 1 dialog, 2 popup

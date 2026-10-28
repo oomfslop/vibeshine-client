@@ -231,6 +231,10 @@ public:
     QByteArray
     windowIcon(quint64 windowHandle);
 
+    // Stack the desk's windows like this (comma-separated handles, top-most first)
+    bool
+    deskOrder(const QString& hwnds);
+
     void
     setClipboardText(const QString& text);
 

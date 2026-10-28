@@ -2,7 +2,10 @@
 #include "appwindow.h"
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QDateTime>
 #include <thread>
+#include <cxxabi.h>
+#include <typeinfo>
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
 #include "backend/richpresencemanager.h"
@@ -1907,6 +1910,10 @@ void Session::handleChildInput(void* raw)
         LiSendMousePositionEvent((short)px, (short)py, deskW, deskH);
         break;
     case 1: {
+        if (win->kind != 2 && !win->focused && !deskPointCovered(in->hwnd, px, py)) {
+            // Focus follows the press at once, also when it starts a drag
+            sendWindowAction(in->hwnd, "activate");
+        }
         QString hit = "client";
         const bool cmdHeld = (SDL_GetModState() & KMOD_GUI) != 0;
         if (win->kind != 2 && in->button == 1) {
@@ -1938,18 +1945,15 @@ void Session::handleChildInput(void* raw)
                 m_PendingCaption.insert(in->hwnd, pc);
             }
         }
-        else if (hit == "min") {
+        else if (hit == "min" || hit == "max" || hit == "close") {
+            // Like a button: nothing until the release, and only if it is
+            // still on the button
             m_ChildPressSwallowed.insert(in->hwnd);
-            AppWindow::deskMinimize(in->hwnd);
-        }
-        else if (hit == "max") {
-            m_ChildPressSwallowed.insert(in->hwnd);
-            AppWindow::deskTitleAction(in->hwnd);
-        }
-        else if (hit == "close") {
-            m_ChildPressSwallowed.insert(in->hwnd);
-            sendWindowAction(in->hwnd, "close");
-            emit appWindowEvent({{"kind", "close"}, {"hwnd", QString("0x%1").arg(in->hwnd, 0, 16)}});
+            PendingControl pc;
+            pc.hit = hit;
+            pc.x = in->hostX;
+            pc.y = in->hostY;
+            m_PendingControl.insert(in->hwnd, pc);
         }
         else {
             m_ChildPressSwallowed.remove(in->hwnd);
@@ -1966,6 +1970,23 @@ void Session::handleChildInput(void* raw)
         break;
     }
     case 2:
+        if (m_PendingControl.contains(in->hwnd)) {
+            const PendingControl pc = m_PendingControl.take(in->hwnd);
+            m_ChildPressSwallowed.remove(in->hwnd);
+            if (qAbs(in->hostX - pc.x) + qAbs(in->hostY - pc.y) <= 12) {
+                if (pc.hit == "min") {
+                    AppWindow::deskMinimize(in->hwnd);
+                }
+                else if (pc.hit == "max") {
+                    AppWindow::deskTitleAction(in->hwnd);
+                }
+                else {
+                    sendWindowAction(in->hwnd, "close");
+                    emit appWindowEvent({{"kind", "close"}, {"hwnd", QString("0x%1").arg(in->hwnd, 0, 16)}});
+                }
+            }
+            break;
+        }
         if (m_PendingCaption.contains(in->hwnd)) {
             const PendingCaption pc = m_PendingCaption.take(in->hwnd);
             m_ChildPressSwallowed.remove(in->hwnd);
@@ -2039,6 +2060,17 @@ void Session::handleDeskEvent(void* raw)
     else if (ev->kind == "minimize" || ev->kind == "restore" || ev->kind == "lower" || ev->kind == "activate") {
         sendWindowAction(ev->hwnd, ev->kind);
     }
+    else if (ev->kind == "dragend") {
+        m_PendingCaption.remove(ev->hwnd);
+        m_ChildPressSwallowed.remove(ev->hwnd);
+    }
+    else if (ev->kind == "order") {
+        QStringList hwnds;
+        for (quint64 h : ev->order) {
+            hwnds.append(QString("0x%1").arg(h, 0, 16));
+        }
+        sendWindowAction(0, "order:" + hwnds.join(','));
+    }
     emit appWindowEvent({{"kind", ev->kind}, {"hwnd", QString("0x%1").arg(ev->hwnd, 0, 16)}, {"x", ev->x}, {"y", ev->y}, {"w", ev->w}, {"h", ev->h}});
     delete ev;
 }
@@ -2076,6 +2108,10 @@ void Session::sendWindowAction(quint64 hwnd, const QString& op, int x, int y, in
                     http.windowAction(it.key(), "adopt", it.value().x(), it.value().y());
                 }
                 for (const auto& op : ops) {
+                    if (op.second.startsWith("order:")) {
+                        http.deskOrder(op.second.mid(6));
+                        continue;
+                    }
                     if (!http.windowAction(op.first, op.second)) {
                         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Desk: %s of 0x%llx failed", qPrintable(op.second), (unsigned long long)op.first);
                     }
@@ -2113,6 +2149,8 @@ void Session::startDeskPoller()
     QThread* poller = QThread::create([stop, computer]() {
         quint64 etag = 0;
         int failures = 0;
+        bool hadWindows = false;
+        qint64 emptySince = 0;
         NvHTTP http(computer);
         while (!stop->load()) {
             QString body;
@@ -2143,6 +2181,24 @@ void Session::startDeskPoller()
                 continue;
             }
             QJsonObject layout = doc.object();
+            // Every window gone (closed on the host or here): the stream is over
+            if (!layout.value("windows").toArray().isEmpty()) {
+                hadWindows = true;
+                emptySince = 0;
+            }
+            else if (hadWindows) {
+                const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+                if (emptySince == 0) {
+                    emptySince = nowMs;
+                }
+                else if (nowMs - emptySince > 3000) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk: no windows left; ending the stream");
+                    SDL_Event quit = {};
+                    quit.type = SDL_QUIT;
+                    SDL_PushEvent(&quit);
+                    break;
+                }
+            }
             const quint64 newEtag = layout.value("etag").toString().toULongLong();
             if (newEtag == etag) {
                 continue;
@@ -3078,7 +3134,9 @@ void Session::exec()
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: exception while handling an event: %s", ex.what());
         }
         catch (...) {
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: unknown exception while handling an event");
+            const std::type_info* type = abi::__cxa_current_exception_type();
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: exception of type %s while handling event %u/%d",
+                         type ? type->name() : "?", event.type, event.type == SDL_USEREVENT ? event.user.code : -1);
         }
     }
 
