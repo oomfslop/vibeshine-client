@@ -266,18 +266,7 @@ impl Root {
         settings.hide_host_cursor = true;
         settings.enable_vsync = false;
         settings.frame_pacing = false;
-        let cfg = AppWindowConfig {
-            title: String::new(),
-            icon_png_base64: stream::base64_encode(&icon_png),
-            rect: [0, 0, 0, 0],
-            caption: 0,
-            dpi: desk.dpi,
-            hit: Vec::new(),
-            anchor: [0, 0],
-            radius: 0,
-            desk: true,
-            screen,
-        };
+        let cfg = AppWindowConfig { icon_png_base64: stream::base64_encode(&icon_png), dpi: desk.dpi, desk: true, screen };
         match stream::start_with_window(&helper, &self.identity, &host, &app, &settings, None, self.stream_tx.clone(), Some((DESK_STREAM_ID.to_string(), cfg))) {
             Ok(process) => {
                 let points_per_px = Self::desk_points_per_px(desk.dpi);

@@ -60,8 +60,8 @@ fragment half4 ps_draw_rgb(Vertex v [[ stage_in ]],
     return rgbTexture.sample(s, v.texCoords);
 }
 
-// App windows: the stream is a canvas holding the host window and its popups;
-// each is drawn as its own rounded rectangle on a transparent window.
+// Desk windows: each Mac window shows a rounded rectangle of the frame (the
+// client's desk) on a transparent background.
 struct VertexAW
 {
     float4 position [[ position ]];
@@ -87,55 +87,8 @@ static half aw_coverage(float2 local, float4 rect)
     return half(saturate(0.5 - dist));
 }
 
-fragment half4 ps_draw_biplanar_aw(VertexAW v [[ stage_in ]],
-                                   constant CscParams &cscParams [[ buffer(0) ]],
-                                   texture2d<half> luminancePlane [[ texture(0) ]],
-                                   texture2d<half> chrominancePlane [[ texture(1) ]])
-{
-    float2 chromaOffset = float2(cscParams.chromaOffset) / float2(luminancePlane.get_width(),
-                                                                  luminancePlane.get_height());
-    half3 yuv = half3(luminancePlane.sample(s, v.texCoords).r,
-                      chrominancePlane.sample(s, v.texCoords + chromaOffset).rg);
-    yuv *= cscParams.bitnessScaleFactor;
-    yuv -= cscParams.offsets;
-    // Below the colour canvas (the top two thirds of the frame) sits its alpha
-    // as grey at half resolution
-    float2 alphaCoords = v.texCoords * 0.5 + float2(0.0, 2.0 / 3.0);
-    half3 ayuv = half3(luminancePlane.sample(s, alphaCoords).r,
-                       chrominancePlane.sample(s, alphaCoords + chromaOffset).rg);
-    ayuv *= cscParams.bitnessScaleFactor;
-    ayuv -= cscParams.offsets;
-    half alpha = clamp((ayuv * cscParams.matrix).g, 0.0h, 1.0h);
-    half cov = aw_coverage(v.local, v.rect);
-    return half4((yuv * cscParams.matrix) * cov, alpha * cov);
-}
-
-fragment half4 ps_draw_triplanar_aw(VertexAW v [[ stage_in ]],
-                                    constant CscParams &cscParams [[ buffer(0) ]],
-                                    texture2d<half> luminancePlane [[ texture(0) ]],
-                                    texture2d<half> chrominancePlaneU [[ texture(1) ]],
-                                    texture2d<half> chrominancePlaneV [[ texture(2) ]])
-{
-    float2 chromaOffset = float2(cscParams.chromaOffset) / float2(luminancePlane.get_width(),
-                                                                  luminancePlane.get_height());
-    half3 yuv = half3(luminancePlane.sample(s, v.texCoords).r,
-                      chrominancePlaneU.sample(s, v.texCoords + chromaOffset).r,
-                      chrominancePlaneV.sample(s, v.texCoords + chromaOffset).r);
-    yuv *= cscParams.bitnessScaleFactor;
-    yuv -= cscParams.offsets;
-    float2 alphaCoords = v.texCoords * 0.5 + float2(0.0, 2.0 / 3.0);
-    half3 ayuv = half3(luminancePlane.sample(s, alphaCoords).r,
-                       chrominancePlaneU.sample(s, alphaCoords + chromaOffset).r,
-                       chrominancePlaneV.sample(s, alphaCoords + chromaOffset).r);
-    ayuv *= cscParams.bitnessScaleFactor;
-    ayuv -= cscParams.offsets;
-    half alpha = clamp((ayuv * cscParams.matrix).g, 0.0h, 1.0h);
-    half cov = aw_coverage(v.local, v.rect);
-    return half4((yuv * cscParams.matrix) * cov, alpha * cov);
-}
-
-// Desk mode: the whole frame is picture (no alpha band); anything sampled
-// outside the frame (a window hanging off the desk) is transparent.
+// The whole frame is picture; anything sampled outside the frame (a window
+// hanging off the desk) is transparent.
 static half desk_coverage(float2 texCoords, float2 local, float4 rect)
 {
     half cov = aw_coverage(local, rect);

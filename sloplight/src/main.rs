@@ -193,9 +193,9 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         // SAFETY: set before the helper is spawned, single-threaded at this point.
         unsafe { std::env::set_var("SLOPLIGHT_MAX_STREAM_MS", (seconds * 1000).to_string()) };
     }
-    // App-window test mode: SLOPLIGHT_WINDOW_HANDLE=0x... streams that host
-    // window as a native-looking window; the launcher polls the host window
-    // list for geometry and forwards the helper's window events as actions.
+    // App-window test mode: SLOPLIGHT_WINDOW_HANDLE=0x... opens the host's desk,
+    // streams it and adopts that window onto it (the helper follows the desk's
+    // layout itself; SLOPLIGHT_ADOPT_MORE=0x..,0x.. adopts more windows).
     let window_hwnd = std::env::var("SLOPLIGHT_WINDOW_HANDLE").ok().filter(|v| !v.is_empty());
     let http = {
         let addr = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).expect("host address");
@@ -234,18 +234,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         settings.fps = desk.fps;
         settings.window_mode = settings::WindowMode::Windowed;
         settings.hide_host_cursor = true;
-        let cfg = stream::AppWindowConfig {
-            title: String::new(),
-            icon_png_base64: stream::base64_encode(&icon),
-            rect: [0, 0, 0, 0],
-            caption: 0,
-            dpi: desk.dpi,
-            hit: Vec::new(),
-            anchor: [0, 0],
-            radius: 0,
-            desk: true,
-            screen,
-        };
+        let cfg = stream::AppWindowConfig { icon_png_base64: stream::base64_encode(&icon), dpi: desk.dpi, desk: true, screen };
         let (sw, sh) = ((screen[2] as f32 * k) as i32, (screen[3] as f32 * k) as i32);
         let kw = dpi as f32 / w.dpi.max(48) as f32;
         let (ww, wh) = ((w.rect[2] as f32 * kw) as i32, (w.rect[3] as f32 * kw) as i32);

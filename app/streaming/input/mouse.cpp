@@ -119,22 +119,7 @@ void SdlInputHandler::handleMouseMotionEvent(SDL_MouseMotionEvent* event)
     // We should not reference the original event anymore
     event = nullptr;
 
-    if (m_AbsoluteMouseMode && m_AppWindowCanvasW > 0) {
-        // App window: points map 1:1 onto the canvas region under the window.
-        // Inside the picture (window + popups) the host draws the cursor;
-        // over the see-through parts our own cursor shows and nothing is sent.
-        const bool inShape = isMouseInVideoRegion(x, y);
-        if (inShape || m_MouseWasInVideoRegion || SDL_GetMouseState(nullptr, nullptr) != 0) {
-            int px = qBound(0, m_AppWindowOriginX + (int)qRound(x * m_AppWindowPxPerPoint), m_AppWindowCanvasW);
-            int py = qBound(0, m_AppWindowOriginY + (int)qRound(y * m_AppWindowPxPerPoint), m_AppWindowCanvasH);
-            LiSendMousePositionEvent((short)px, (short)py, m_AppWindowCanvasW, m_AppWindowCanvasH);
-        }
-        if (inShape != m_MouseWasInVideoRegion) {
-            SDL_ShowCursor((inShape && m_MouseCursorCapturedVisibilityState == SDL_DISABLE) ? SDL_DISABLE : SDL_ENABLE);
-        }
-        m_MouseWasInVideoRegion = inShape;
-    }
-    else if (m_AbsoluteMouseMode) {
+    if (m_AbsoluteMouseMode) {
         int windowWidth, windowHeight;
         SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);
 
@@ -277,19 +262,6 @@ void SdlInputHandler::handleMouseWheelEvent(SDL_MouseWheelEvent* event)
 bool SdlInputHandler::isMouseInVideoRegion(int mouseX, int mouseY, int windowWidth, int windowHeight)
 {
     SDL_Rect src, dst;
-
-    if (m_AppWindowCanvasW > 0) {
-        // App window: the picture is the host window plus its popups
-        if (m_AppWindowShape.isEmpty()) {
-            return mouseX >= 0 && mouseY >= 0;
-        }
-        for (const QRect& r : m_AppWindowShape) {
-            if (r.contains(mouseX, mouseY)) {
-                return true;
-            }
-        }
-        return false;
-    }
 
     if (windowWidth < 0 || windowHeight < 0) {
         SDL_GetWindowSize(m_Window, &windowWidth, &windowHeight);

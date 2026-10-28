@@ -235,40 +235,21 @@ void Launcher::execute()
         m_Session->setPreferredDisplayOrigin(origin.at(0).toInt(), origin.at(1).toInt());
     }
     m_Session->setHideHostCursor(m_Config.value("settings").toObject().value("hide_host_cursor").toBool(false));
-    if (m_Config.contains("window_handle")) {
-        // Accept a number or a "0x..." string (JSON numbers lose precision above 2^53).
-        const QJsonValue wh = m_Config.value("window_handle");
-        quint64 handle = wh.isString() ? wh.toString().toULongLong(nullptr, 0) : (quint64)wh.toDouble(0);
-        if (handle != 0) {
-            m_Session->setWindowHandle(handle);
-        }
-    }
     QJsonArray tw = m_Config.value("test_window").toArray();
     if (tw.size() == 4) {
         m_Session->setTestWindow(tw.at(0).toInt(), tw.at(1).toInt(), tw.at(2).toInt(), tw.at(3).toInt());
     }
     if (m_Config.contains("app_window")) {
         const QJsonObject aw = m_Config.value("app_window").toObject();
+        // Desk mode: the stream is this client's desk, a host display that
+        // mirrors the screen given in SDL global points.
         Session::AppWindowInfo info;
-        info.title = aw.value("title").toString();
         info.iconPng = QByteArray::fromBase64(aw.value("icon_png_base64").toString().toLatin1());
-        const QJsonArray rect = aw.value("rect").toArray();
-        if (rect.size() == 4) {
-            info.x = rect.at(0).toInt();
-            info.y = rect.at(1).toInt();
-            info.widthPx = rect.at(2).toInt();
-            info.heightPx = rect.at(3).toInt();
-        }
-        const QJsonArray anchor = aw.value("anchor").toArray();
-        if (anchor.size() == 2) {
-            info.anchorX = anchor.at(0).toInt();
-            info.anchorY = anchor.at(1).toInt();
-        }
-        info.radius = aw.value("radius").toInt(0);
-        info.captionPx = aw.value("caption").toInt(0);
         info.dpi = aw.value("dpi").toInt(96);
-        info.hits = Session::parseHitRegions(aw.value("hit").toArray());
-        info.desk = aw.value("desk").toBool(false);
+        info.desk = aw.value("desk").toBool(true);
+        if (!info.desk) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "app_window.desk=false is no longer supported; app windows are desk sessions");
+        }
         const QJsonArray screen = aw.value("screen").toArray();
         if (screen.size() == 4) {
             info.screenPts = QRect(screen.at(0).toInt(), screen.at(1).toInt(), screen.at(2).toInt(), screen.at(3).toInt());

@@ -125,59 +125,24 @@ public:
     Q_INVOKABLE void start();
     Q_INVOKABLE void interrupt();
 
-    // Test harness: fixed window geometry and always-on-top so an
-    // automated windowed stream stays visible (and un-throttled) while the
-    // user works in other apps.
-    void setWindowHandle(quint64 handle) { m_WindowHandle = handle; }
     // Draw only the local cursor: the host leaves its cursor out of the capture.
     // Always on for app windows.
     void setHideHostCursor(bool hide) { m_HideHostCursor = hide; }
 
-    // App-window streaming: present the stream as a borderless window that
-    // mirrors one host window (size in host pixels, caption height, title,
-    // icon PNG). Implies windowed mode.
-    struct HitRegion {
-        QString kind;  // "drag", "min", "max", "close"
-        QRect rect;    // host pixels relative to the window's frame
-    };
+    // App-window streaming (desk mode): the stream is the client's desk, a
+    // host display that mirrors this screen (SDL global points); every window
+    // on it is a Mac window of its own and the SDL window is a hidden key
+    // window. Implies windowed mode.
     struct AppWindowInfo {
-        QString title;
-        QByteArray iconPng;
-        int x = 0, y = 0;         // host window position (host screen pixels)
-        int widthPx = 0;
-        int heightPx = 0;
-        int anchorX = 0, anchorY = 0;  // canvas pixel of the window's top-left
-        int radius = 0;           // corner radius the host OS applies
-        struct Child {             // every popup (menu, tooltip, dialog): a window of its own on the Mac
-            quint64 hwnd = 0;
-            QRect rect;            // host screen pixels
-            QRect canvas;          // its slot on the canvas
-            bool dialog = false;   // movable (dialog) vs pinned to the parent (menu)
-            QString title;
-            int caption = 0;
-        };
-        QVector<Child> children;
-        int captionPx = 0;
-        int dpi = 96;
-        QVector<HitRegion> hits;
-        // Desk mode: the stream is the client's desk, a host display that
-        // mirrors this screen (SDL global points); every window on it is a
-        // Mac window of its own.
-        bool desk = false;
+        QByteArray iconPng;       // process icon until the first desk window has one
+        int dpi = 96;             // host DPI of the desk (points per host pixel)
+        bool desk = true;         // accepted from the config; app windows are always desk sessions
         QRect screenPts;
     };
-    static QVector<HitRegion> parseHitRegions(const QJsonArray& arr);
     void setAppWindow(const AppWindowInfo& info) { m_AppWindow = info; m_IsAppWindow = true; }
     bool isAppWindow() const { return m_IsAppWindow; }
-    // Points per host pixel for the app window (logical-size parity with the host)
+    // Points per host pixel for the desk (logical-size parity with the host)
     double appWindowScale() const { return 96.0 / qMax(48, m_AppWindow.dpi); }
-    // Window band of the canvas (host px): the stream is 3/2 x canvas, the
-    // canvas is the window band plus a popup band of (canvas / 3) & ~63.
-    int appWindowBandHeight() const
-    {
-        const int canvas = m_StreamConfig.height * 2 / 3;
-        return canvas - ((canvas / 3) & ~63);
-    }
 
     void setTestWindow(int x, int y, int w, int h)
     {
@@ -381,29 +346,14 @@ private:
 
     QRect m_TestWindow;
     bool m_HasTestWindow = false;
-    // App-window streaming: host window handle to capture (0 = whole display)
-    quint64 m_WindowHandle = 0;
     bool m_HideHostCursor = false;
+    // App-window streaming = desk mode (m_IsAppWindow is the desk-session flag)
     AppWindowInfo m_AppWindow;
     bool m_IsAppWindow = false;
-    bool m_AppWindowDragging = false;
-    // Last window size (points) that came from the host, so its SIZE_CHANGED
-    // echo isn't reported back as a user resize.
-    int m_AppWindowHostW = 0, m_AppWindowHostH = 0;
-    // Region of the host screen the Mac window currently covers: the host
-    // window plus whatever popups stick out of it (host pixels).
-    QRect m_AppWindowExt;
-    QPoint m_AppWindowInset;  // host window top-left relative to the Mac window's (host pixels)
-    void applyAppWindowLayout(bool placeWindow);
-    void handleChildInput(void* input);
-    QSet<quint64> m_ChildPressSwallowed;
-    QPoint appWindowHostPoint(int x, int y) const;
-    // Last size we asked the host for (points) and when the user last resized,
-    // so host geometry echoes don't fight a live resize.
-    int m_AppWindowRequestedW = 0, m_AppWindowRequestedH = 0;
-    qint64 m_AppWindowUserResizeMs = 0;
     void handleAppWindowCommand(const QJsonObject& cmd);
-    // Desk mode
+    // Mouse input from a desk window (releases the ChildInput)
+    void handleChildInput(void* input);
+    QSet<quint64> m_ChildPressSwallowed;  // presses that acted on the window itself: swallow the release
     struct DeskWin {
         quint64 hwnd = 0, owner = 0;
         int kind = 0;          // 0 window, 1 dialog, 2 popup
@@ -418,7 +368,6 @@ private:
     void startDeskPoller();
     void handleDeskLayout(const QJsonObject& layout);
     void handleDeskEvent(void* event);
-    void handleDeskInput(void* input);
     void sendWindowAction(quint64 hwnd, const QString& op, int x = 0, int y = 0, int w = 0, int h = 0);
     bool deskPointCovered(quint64 hwnd, int px, int py) const;
     bool m_UnexpectedTermination;

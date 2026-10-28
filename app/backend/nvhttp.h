@@ -121,7 +121,6 @@ public:
     // the game presents them, instead of on the display's refresh grid.
     bool clientVrrRequested = false;
     // App-window streaming (Vibeshine fork): capture only this host window
-    quint64 windowHandle = 0;
     bool hideCursor = false;  // the client draws its own cursor; leave the host cursor out of the capture
     // Desk session (Vibeshine fork): capture this client's desk, the private
     // host display that mirrors the client's screen (opened beforehand).

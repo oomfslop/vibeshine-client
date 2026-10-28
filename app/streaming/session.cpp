@@ -2,7 +2,6 @@
 #include "appwindow.h"
 #include <QJsonArray>
 #include <QJsonDocument>
-#include <QDateTime>
 #include <thread>
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
@@ -1403,18 +1402,11 @@ void Session::getWindowDimensions(int& x, int& y,
     }
 
     x = y = SDL_WINDOWPOS_CENTERED_DISPLAY(displayIndex);
-    if (m_AppWindow.desk) {
+    if (m_IsAppWindow) {
         // Desk mode: the SDL window is only the hidden key window
         width = height = 64;
         x = m_AppWindow.screenPts.x();
         y = m_AppWindow.screenPts.y();
-    }
-    else if (m_IsAppWindow && m_AppWindow.widthPx > 0 && m_AppWindow.heightPx > 0) {
-        // Logical-size parity with the host window (host pixels -> points).
-        width = qMax(64, (int)qRound(m_AppWindow.widthPx * appWindowScale()));
-        height = qMax(48, (int)qRound(m_AppWindow.heightPx * appWindowScale()));
-        m_AppWindowHostW = width;
-        m_AppWindowHostH = height;
     }
     if (m_HasTestWindow) {
         x = m_TestWindow.x();
@@ -1642,9 +1634,8 @@ bool Session::startConnectionAsync()
         launchOptions.useVirtualDisplay = m_Preferences->useVirtualDisplay;
         launchOptions.scaleFactor = m_Preferences->resolutionScaleFactor;
         launchOptions.clientVrrRequested = m_Preferences->vrrCapture;
-        launchOptions.windowHandle = m_AppWindow.desk ? 0 : m_WindowHandle;
         launchOptions.hideCursor = m_HideHostCursor || m_IsAppWindow;
-        launchOptions.desk = m_AppWindow.desk;
+        launchOptions.desk = m_IsAppWindow;
 
         NvHTTP http(m_Computer);
         // The host admits one launch/resume at a time and answers 503 while
@@ -1808,19 +1799,6 @@ void Session::toggleQuickMenu()
     m_QuickMenu.toggle();
 }
 
-QVector<Session::HitRegion> Session::parseHitRegions(const QJsonArray& arr)
-{
-    QVector<HitRegion> out;
-    for (const QJsonValue& v : arr) {
-        const QJsonObject o = v.toObject();
-        const QJsonArray r = o.value("rect").toArray();
-        if (r.size() == 4) {
-            out.append({o.value("kind").toString(), QRect(r.at(0).toInt(), r.at(1).toInt(), r.at(2).toInt(), r.at(3).toInt())});
-        }
-    }
-    return out;
-}
-
 void Session::handleAppWindowCommand(const QJsonObject& cmd)
 {
     if (!m_Window) {
@@ -1833,12 +1811,12 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
     else if (kind == "icon") {
         AppWindow::setDeskIcon(cmd.value("key").toString(), QByteArray::fromBase64(cmd.value("png_base64").toString().toLatin1()));
     }
-    else if (kind == "frame" && m_AppWindow.desk) {
+    else if (kind == "frame") {
         // Test hook: move/resize a desk window as the user would (points)
         AppWindow::deskTestSetFrame(cmd.value("hwnd").toString().toULongLong(nullptr, 0),
                                     cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
     }
-    else if (kind == "click" && m_AppWindow.desk) {
+    else if (kind == "click") {
         // Test hook: a press and release on a desk window at window-relative host px
         for (int k = 1; k <= 2; k++) {
             auto* in = new AppWindow::ChildInput;
@@ -1848,172 +1826,15 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
             in->hostY = cmd.value("y").toInt();
             in->button = cmd.value("button").toInt(1);
             in->clicks = 1;
-            handleDeskInput(in);
-            AppWindow::releaseChildInput(in);
+            handleChildInput(in);  // releases it
             SDL_Delay(30);
         }
-    }
-    else if (kind == "geometry") {
-        const QJsonArray rect = cmd.value("rect").toArray();
-        if (rect.size() == 4) {
-            const int hw = rect.at(2).toInt(), hh = rect.at(3).toInt();
-            m_AppWindow.x = rect.at(0).toInt();
-            m_AppWindow.y = rect.at(1).toInt();
-            // Host sizes that merely echo our own request (within rounding), or
-            // that arrive while the user is still dragging an edge, are ignored;
-            // a host that clamped our request still wins once the drag settles.
-            const bool echo = qAbs(hw - m_AppWindowRequestedW) <= 2 && qAbs(hh - m_AppWindowRequestedH) <= 2;
-            const bool liveResize = QDateTime::currentMSecsSinceEpoch() - m_AppWindowUserResizeMs < 800;
-            if (hw > 0 && hh > 0 && (hw != m_AppWindow.widthPx || hh != m_AppWindow.heightPx) && !echo && !liveResize) {
-                m_AppWindow.widthPx = hw;
-                m_AppWindow.heightPx = hh;
-            }
-        }
-        const QJsonArray anchor = cmd.value("anchor").toArray();
-        if (anchor.size() == 2) {
-            m_AppWindow.anchorX = anchor.at(0).toInt();
-            m_AppWindow.anchorY = anchor.at(1).toInt();
-        }
-        if (cmd.contains("popups")) {
-            m_AppWindow.children.clear();
-            for (const QJsonValue& v : cmd.value("popups").toArray()) {
-                const QJsonObject c = v.toObject();
-                const QJsonArray r = c.value("rect").toArray();
-                const QJsonArray cv = c.value("canvas").toArray();
-                if (r.size() != 4 || cv.size() != 4 || cv.at(2).toInt() <= 0 || cv.at(3).toInt() <= 0) {
-                    continue;
-                }
-                AppWindowInfo::Child child;
-                child.hwnd = c.value("hwnd").toString().toULongLong(nullptr, 0);
-                child.rect = QRect(r.at(0).toInt(), r.at(1).toInt(), r.at(2).toInt(), r.at(3).toInt());
-                child.canvas = QRect(cv.at(0).toInt(), cv.at(1).toInt(), cv.at(2).toInt(), cv.at(3).toInt());
-                child.dialog = c.value("dialog").toBool(false);
-                child.title = c.value("title").toString();
-                child.caption = c.value("caption").toInt();
-                if (child.hwnd) {
-                    m_AppWindow.children.append(child);
-                }
-            }
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "App window popups: %d", (int)m_AppWindow.children.size());
-        }
-        if (cmd.contains("radius")) {
-            m_AppWindow.radius = cmd.value("radius").toInt();
-        }
-        const int dpi = cmd.value("dpi").toInt(0);
-        if (dpi >= 48 && dpi != m_AppWindow.dpi) {
-            // The window landed on a differently scaled display: points per
-            // host pixel change, and with them the window size and the mouse
-            // mapping. Ignoring this would make the cursor drift.
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "App window DPI %d -> %d", m_AppWindow.dpi, dpi);
-            m_AppWindow.dpi = dpi;
-            SDL_SetWindowMaximumSize(m_Window,
-                                     qMax(64, (int)qFloor(m_StreamConfig.width * appWindowScale())),
-                                     qMax(48, (int)qFloor(appWindowBandHeight() * appWindowScale())));
-        }
-        applyAppWindowLayout(true);
-        if (cmd.contains("caption")) {
-            m_AppWindow.captionPx = cmd.value("caption").toInt();
-        }
-        if (cmd.contains("hit")) {
-            m_AppWindow.hits = parseHitRegions(cmd.value("hit").toArray());
-        }
-        if (cmd.contains("title")) {
-            const QString title = cmd.value("title").toString();
-            if (title != m_AppWindow.title) {
-                m_AppWindow.title = title;
-                AppWindow::setTitle(m_Window, title);
-            }
-        }
-        if (cmd.contains("state")) {
-            const QString state = cmd.value("state").toString();
-            const Uint32 flags = SDL_GetWindowFlags(m_Window);
-            if (state == "minimized" && !(flags & SDL_WINDOW_MINIMIZED)) {
-                SDL_MinimizeWindow(m_Window);
-            }
-            else if (state != "minimized" && (flags & SDL_WINDOW_MINIMIZED)) {
-                SDL_RestoreWindow(m_Window);
-            }
-        }
-    }
-    else if (kind == "activate") {
-        SDL_RaiseWindow(m_Window);
     }
     else if (kind == "close") {
         SDL_Event quit = {};
         quit.type = SDL_QUIT;
         SDL_PushEvent(&quit);
     }
-}
-
-// Mouse input from a child dialog's own Mac window: map it onto the canvas
-// like the main window's, except that a press on the dialog's caption drags
-// the Mac window and its close button closes the host dialog.
-void Session::handleChildInput(void* raw)
-{
-    auto* in = static_cast<AppWindow::ChildInput*>(raw);
-    if (m_AppWindow.desk) {
-        handleDeskInput(in);
-        AppWindow::releaseChildInput(in);
-        return;
-    }
-    const AppWindowInfo::Child* child = nullptr;
-    for (const AppWindowInfo::Child& c : m_AppWindow.children) {
-        if (c.hwnd == in->hwnd) {
-            child = &c;
-        }
-    }
-    if (child && m_IsAppWindow) {
-        const int canvasW = m_StreamConfig.width, canvasH = m_StreamConfig.height;
-        const int px = qBound(0, child->canvas.x() + in->hostX, canvasW);
-        const int py = qBound(0, child->canvas.y() + in->hostY, canvasH);
-        switch (in->kind) {
-        case 0:
-            LiSendMousePositionEvent((short)px, (short)py, canvasW, canvasH);
-            break;
-        case 1: {
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Child 0x%llx press button %d at host %d,%d -> canvas %d,%d (slot %d,%d %dx%d)",
-                        (unsigned long long)in->hwnd, in->button, in->hostX, in->hostY, px, py,
-                        child->canvas.x(), child->canvas.y(), child->canvas.width(), child->canvas.height());
-            QString hit = "client";
-            if (child->dialog && in->button == 1 && in->hostY < qMax(96, child->caption) && m_WindowHandle != 0) {
-                NvHTTP http(m_Computer);
-                hit = http.hitTestWindow(in->hwnd, in->hostX, in->hostY);
-            }
-            if (hit == "drag" && in->clicks < 2) {
-                m_ChildPressSwallowed.insert(in->hwnd);
-                AppWindow::dragChild(in->hwnd, in->nsEvent);
-            }
-            else if (hit == "close") {
-                m_ChildPressSwallowed.insert(in->hwnd);
-                emit appWindowEvent({{"kind", "close"}, {"hwnd", QString("0x%1").arg(in->hwnd, 0, 16)}});
-            }
-            else {
-                m_ChildPressSwallowed.remove(in->hwnd);
-                LiSendMousePositionEvent((short)px, (short)py, canvasW, canvasH);
-                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, in->button);
-            }
-            break;
-        }
-        case 2:
-            if (m_ChildPressSwallowed.remove(in->hwnd)) {
-                break;
-            }
-            LiSendMousePositionEvent((short)px, (short)py, canvasW, canvasH);
-            LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, in->button);
-            break;
-        case 3:
-            if (in->scrollY != 0.0f) {
-                LiSendHighResScrollEvent((short)qBound(-32767.0f, in->scrollY * 12.0f, 32767.0f));
-            }
-            if (in->scrollX != 0.0f) {
-                LiSendHighResHScrollEvent((short)qBound(-32767.0f, in->scrollX * 12.0f, 32767.0f));
-            }
-            break;
-        default:
-            break;
-        }
-    }
-    AppWindow::releaseChildInput(in);
 }
 
 // ---------------------------------------------------------------------------
@@ -2025,7 +1846,7 @@ void Session::handleChildInput(void* raw)
 // Caption presses do what the host says is there (drag, minimize, maximize,
 // close); a press on a part of the window that another of ours covers on the
 // host raises it there first.
-void Session::handleDeskInput(void* raw)
+void Session::handleChildInput(void* raw)
 {
     auto* in = static_cast<AppWindow::ChildInput*>(raw);
     const DeskWin* win = nullptr;
@@ -2035,6 +1856,7 @@ void Session::handleDeskInput(void* raw)
         }
     }
     if (!win) {
+        AppWindow::releaseChildInput(in);
         return;
     }
     const int deskW = m_StreamConfig.width, deskH = m_StreamConfig.height;
@@ -2115,6 +1937,7 @@ void Session::handleDeskInput(void* raw)
     default:
         break;
     }
+    AppWindow::releaseChildInput(in);
 }
 
 // Is desk pixel (px, py) of hwnd covered by one of the desk's other windows
@@ -2316,86 +2139,6 @@ void Session::handleDeskLayout(const QJsonObject& layout)
     }
     m_DeskWindows = windows;
     AppWindow::syncDesk(macWindows);
-}
-
-QPoint Session::appWindowHostPoint(int x, int y) const
-{
-    // Window point -> host pixel relative to the host window's top-left
-    const double s = appWindowScale();
-    return QPoint((int)qRound(x / s) - m_AppWindowInset.x(), (int)qRound(y / s) - m_AppWindowInset.y());
-}
-
-// Lay the picture out: the Mac window covers the host window plus whatever
-// popups stick out of it, each drawn as its own rounded rectangle of the
-// canvas; input maps 1:1 onto the same canvas region. With placeWindow the
-// Mac window is resized/moved so the host window's top-left stays put on
-// screen while popups extend the frame around it.
-void Session::applyAppWindowLayout(bool placeWindow)
-{
-    if (!m_Window || !m_IsAppWindow) {
-        return;
-    }
-    const double s = appWindowScale();  // points per host pixel
-    const QRect win(m_AppWindow.x, m_AppWindow.y, qMax(1, m_AppWindow.widthPx), qMax(1, m_AppWindow.heightPx));
-    // The Mac window is exactly the host window; every popup is a window of
-    // its own drawn from its slot in the canvas' popup band.
-    const QPoint prevInset = m_AppWindowInset;
-    m_AppWindowExt = win;
-    m_AppWindowInset = QPoint(0, 0);
-
-    AppWindow::Layout layout;
-    layout.originX = 0;
-    layout.originY = 0;
-    layout.w = win.width();
-    layout.h = win.height();
-    AppWindow::LayoutItem item;
-    item.x = 0;
-    item.y = 0;
-    item.w = win.width();
-    item.h = win.height();
-    item.radius = m_AppWindow.radius;
-    layout.items.append(item);
-    QVector<QRect> shape;
-    shape.append(QRect(0, 0, (int)qCeil(item.w * s), (int)qCeil(item.h * s)));
-    AppWindow::setLayout(layout);
-    m_InputHandler->setAppWindowMapping(1.0 / s, m_StreamConfig.width, m_StreamConfig.height, 0, 0, shape);
-
-    QVector<AppWindow::ChildInfo> children;
-    for (const AppWindowInfo::Child& c : m_AppWindow.children) {
-        AppWindow::ChildInfo info;
-        info.hwnd = c.hwnd;
-        info.offsetX = c.rect.x() - win.x();
-        info.offsetY = c.rect.y() - win.y();
-        info.w = c.canvas.width();
-        info.h = c.canvas.height();
-        info.canvasX = c.canvas.x();
-        info.canvasY = c.canvas.y();
-        info.radius = m_AppWindow.radius;
-        info.caption = c.caption;
-        info.dialog = c.dialog;
-        info.title = c.title;
-        children.append(info);
-    }
-    AppWindow::syncChildren(m_Window, children, s);
-
-    if (placeWindow) {
-        int curW = 0, curH = 0;
-        SDL_GetWindowSize(m_Window, &curW, &curH);
-        const int newW = qMax(64, (int)qRound(win.width() * s));
-        const int newH = qMax(48, (int)qRound(win.height() * s));
-        if (newW != curW || newH != curH) {
-            m_AppWindowHostW = newW;
-            m_AppWindowHostH = newH;
-            SDL_SetWindowSize(m_Window, newW, newH);
-        }
-        Q_UNUSED(prevInset);
-    }
-    else {
-        int curW = 0, curH = 0;
-        SDL_GetWindowSize(m_Window, &curW, &curH);
-        m_AppWindowHostW = curW;
-        m_AppWindowHostH = curH;
-    }
 }
 
 bool Session::isClipboardSyncAllowed(ClipboardDirection direction)
@@ -2686,24 +2429,12 @@ void Session::exec()
         m_InputHandler->setLocalCursorAlwaysVisible();
     }
 
-    if (m_AppWindow.desk) {
+    if (m_IsAppWindow) {
         // Desk mode: nothing is drawn in the SDL window; every desk window is
         // a Mac window of its own, fed by the layout poller.
-        AppWindow::setLayout(AppWindow::Layout());
         AppWindow::beginDesk(m_Window, m_AppWindow.screenPts, appWindowScale());
         AppWindow::setAppIcon(m_AppWindow.iconPng);
         startDeskPoller();
-    }
-    else if (m_IsAppWindow) {
-        AppWindow::configureWindow(m_Window, m_AppWindow.title);
-        AppWindow::setAppIcon(m_AppWindow.iconPng);
-        // The picture (window + popups), its place on the canvas, input mapping
-        applyAppWindowLayout(false);
-        // The window can't outgrow the canvas it is cut from.
-        SDL_SetWindowMaximumSize(m_Window,
-                                 qMax(64, (int)qFloor(m_StreamConfig.width * appWindowScale())),
-                                 qMax(48, (int)qFloor(appWindowBandHeight() * appWindowScale())));
-        SDL_SetWindowMinimumSize(m_Window, 120, 60);
     }
 
     // Push our clipboard to the host at the start of the stream if enabled
@@ -2909,7 +2640,7 @@ void Session::exec()
             break;
 
         case SDL_WINDOWEVENT:
-            if (m_AppWindow.desk) {
+            if (m_IsAppWindow) {
                 switch (event.window.event) {
                 case SDL_WINDOWEVENT_FOCUS_GAINED:
                     // The app came to the front: the host focuses our front window
@@ -2920,52 +2651,6 @@ void Session::exec()
                 case SDL_WINDOWEVENT_MINIMIZED:
                     // The hidden key window has nothing to minimize
                     SDL_RestoreWindow(m_Window);
-                    break;
-                case SDL_WINDOWEVENT_CLOSE:
-                    emit appWindowEvent({{"kind", "close"}});
-                    break;
-                default:
-                    break;
-                }
-            }
-            else if (m_IsAppWindow) {
-                const double s = appWindowScale();
-                switch (event.window.event) {
-                case SDL_WINDOWEVENT_SIZE_CHANGED:
-                    // Only user-driven resizes go back to the host; sizes we
-                    // set ourselves (initial size, geometry commands, popups)
-                    // echo here first and must not bounce.
-                    if (qAbs(event.window.data1 - m_AppWindowHostW) > 2 || qAbs(event.window.data2 - m_AppWindowHostH) > 2) {
-                        // The Mac window may be wider than the host window by
-                        // the popups sticking out of it; the host gets the rest.
-                        const int extraW = m_AppWindowExt.isValid() ? m_AppWindowExt.width() - m_AppWindow.widthPx : 0;
-                        const int extraH = m_AppWindowExt.isValid() ? m_AppWindowExt.height() - m_AppWindow.heightPx : 0;
-                        const int wPx = qMax(64, (int)qRound(event.window.data1 / s) - extraW);
-                        const int hPx = qMax(48, (int)qRound(event.window.data2 / s) - extraH);
-                        m_AppWindowHostW = event.window.data1;
-                        m_AppWindowHostH = event.window.data2;
-                        m_AppWindowRequestedW = wPx;
-                        m_AppWindowRequestedH = hPx;
-                        m_AppWindowUserResizeMs = QDateTime::currentMSecsSinceEpoch();
-                        m_AppWindow.widthPx = wPx;
-                        m_AppWindow.heightPx = hPx;
-                        // The picture follows the new size right away; the host catches up.
-                        applyAppWindowLayout(false);
-                        emit appWindowEvent({{"kind", "resize"}, {"w", wPx}, {"h", hPx}});
-                    }
-                    break;
-                case SDL_WINDOWEVENT_FOCUS_GAINED:
-                    AppWindow::raiseChildren(m_Window);
-                    emit appWindowEvent({{"kind", "focus"}});
-                    break;
-                case SDL_WINDOWEVENT_FOCUS_LOST:
-                    emit appWindowEvent({{"kind", "blur"}});
-                    break;
-                case SDL_WINDOWEVENT_MINIMIZED:
-                    emit appWindowEvent({{"kind", "minimize"}});
-                    break;
-                case SDL_WINDOWEVENT_RESTORED:
-                    emit appWindowEvent({{"kind", "restore"}});
                     break;
                 case SDL_WINDOWEVENT_CLOSE:
                     emit appWindowEvent({{"kind", "close"}});
@@ -3201,57 +2886,6 @@ void Session::exec()
             presence.runCallbacks();
             if (m_QuickMenu.handleMouseButtonEvent(&event.button)) {
                 break;
-            }
-            if (m_IsAppWindow && !m_AppWindow.desk && event.button.button == SDL_BUTTON_LEFT) {
-                // Move the Mac window instead of clicking through when the
-                // press lands on the host window's caption bar, or anywhere
-                // with Cmd held (apps with custom title bars report caption 0).
-                if (event.type == SDL_MOUSEBUTTONDOWN) {
-                    const bool cmdHeld = (SDL_GetModState() & KMOD_GUI) != 0;
-                    // Host pixel under the cursor. For presses near the top of
-                    // the window ask the host app live what is there (its own
-                    // WM_NCHITTEST), so tabs, custom title bars and caption
-                    // buttons behave exactly as the app defines them.
-                    const QPoint px = appWindowHostPoint(event.button.x, event.button.y);
-                    const bool inWindow = px.x() >= 0 && px.y() >= 0 && px.x() < m_AppWindow.widthPx && px.y() < m_AppWindow.heightPx;
-                    QString hit = "client";
-                    if (cmdHeld && inWindow) {
-                        hit = "drag";
-                    }
-                    else if (inWindow && px.y() < 96 && m_WindowHandle != 0) {
-                        NvHTTP http(m_Computer);
-                        hit = http.hitTestWindow(m_WindowHandle, px.x(), px.y());
-                    }
-                    if (hit == "min") {
-                        m_AppWindowDragging = true;  // swallow the matching button-up
-                        SDL_MinimizeWindow(m_Window);
-                        break;
-                    }
-                    if (hit == "max") {
-                        m_AppWindowDragging = true;
-                        AppWindow::performTitleAction(m_Window);
-                        break;
-                    }
-                    if (hit == "close") {
-                        m_AppWindowDragging = true;
-                        emit appWindowEvent({{"kind", "close"}});
-                        break;
-                    }
-                    if (hit == "drag") {
-                        m_AppWindowDragging = true;
-                        if (event.button.clicks >= 2) {
-                            AppWindow::performTitleAction(m_Window);
-                        }
-                        else {
-                            AppWindow::beginDrag(m_Window);
-                        }
-                        break;
-                    }
-                }
-                else if (m_AppWindowDragging) {
-                    m_AppWindowDragging = false;
-                    break;
-                }
             }
             m_InputHandler->handleMouseButtonEvent(&event.button);
             break;

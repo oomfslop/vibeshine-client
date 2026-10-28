@@ -32,64 +32,24 @@ struct HelperConfig<'a> {
     /// Fixed always-on-top window `[x, y, w, h]` (test runs; `SLOPLIGHT_TEST_WINDOW=x,y,w,h`).
     #[serde(skip_serializing_if = "Option::is_none")]
     test_window: Option<[i32; 4]>,
-    /// App-window streaming: host window handle as a "0x..." string
-    window_handle: Option<String>,
-    /// App-window streaming: how the helper should present the window
+    /// Desk streaming: how the helper should present the desk's windows
     #[serde(skip_serializing_if = "Option::is_none")]
     app_window: Option<AppWindowConfig>,
 }
 
-/// App-window presentation passed to the helper (`app_window` in the config).
+/// Desk presentation passed to the helper (`app_window` in the config).
 #[derive(Serialize, Clone, Debug)]
 pub struct AppWindowConfig {
-    pub title: String,
+    /// Icon of the first streamed window (PNG), for the helper's Mac windows
     pub icon_png_base64: String,
-    /// Host window frame rect x, y, w, h in host pixels
-    pub rect: [i32; 4],
-    pub caption: i32,
+    /// DPI of the desk
     pub dpi: i32,
-    /// Host hit-test map: where the caption (drag) and the caption buttons are
-    pub hit: Vec<crate::backend::http::HitRegion>,
-    /// Canvas position of the window's top-left (host layout rule)
-    pub anchor: [i32; 2],
-    /// Corner radius (host px) the OS gives the window and its popups
-    pub radius: i32,
     /// Desk mode: the stream is the client's desk; `screen` is the Mac screen
     /// it mirrors, in global points (x, y, w, h).
     #[serde(default)]
     pub desk: bool,
     #[serde(default)]
     pub screen: [i32; 4],
-}
-
-/// Encoder frame for an app window. The helper copies the window into the
-/// top-left of this fixed canvas and the client crops, so the canvas is the
-/// largest size the window can take without a relaunch: the smaller of the
-/// host monitor and the Mac screen (in host pixels), rounded to 64, and never
-/// smaller than the window itself.
-/// Encoder frame height for a window band of `ch`: the colour canvas is the
-/// window band plus a popup band (a third of the canvas, where menus and
-/// dialogs get slots of their own); below it sits the canvas' alpha at half
-/// resolution. Frame = 3/2 * canvas. Must match the host's `frame_bands`.
-pub fn app_window_frame_height(ch: i32) -> i32 {
-    let round64 = |v: i32| ((v.max(64) + 63) / 64) * 64;
-    // canvas = window band + popup band with popup band = (canvas / 3) & !63
-    let mut canvas = round64(ch + ch / 2);
-    while canvas - ((canvas / 3) & !63) < ch {
-        canvas += 64;
-    }
-    canvas * 3 / 2
-}
-
-pub fn app_window_canvas(w: i32, h: i32, max: Option<(i32, i32)>) -> (i32, i32) {
-    let round64 = |v: i32| ((v.max(64) + 63) / 64) * 64;
-    let (mut cw, mut ch) = match max {
-        Some((mw, mh)) if mw > 0 && mh > 0 => (round64(mw), round64(mh)),
-        _ => (round64(w + 512), round64(h + 512)),
-    };
-    cw = cw.max((w + 1) & !1).min(4096);
-    ch = ch.max((h + 1) & !1).min(2048);  // the alpha band below doubles the frame height
-    (cw, ch)
 }
 
 #[derive(Serialize)]
@@ -143,7 +103,7 @@ pub enum HelperEvent {
     Exited { code: Option<i32>, stderr_tail: String },
     /// A synthetic test mouse move was sent at this wall-clock time (ms).
     TestInput { t_ms: f64 },
-    /// App-window mode: the Mac window changed (kind = resize|focus|blur|minimize|restore|close;
+    /// Desk mode: a Mac window of the desk changed (kind = resize|focus|blur|minimize|restore|close;
     /// w/h in host pixels for resize)
     AppWindow {
         kind: String,
@@ -151,7 +111,7 @@ pub enum HelperEvent {
         w: i32,
         #[serde(default)]
         h: i32,
-        /// Set when the event is about one of the window's child dialogs
+        /// The host window the event is about; None for the desk's hidden key window
         #[serde(default)]
         hwnd: Option<String>,
         #[serde(default)]
@@ -181,7 +141,7 @@ impl StreamCommander {
 pub struct StreamEvent {
     pub host_uuid: String,
     pub app_id: i32,
-    /// App-window sessions: the host window handle ("0x..."), else None
+    /// Desk sessions: the stream id (`appwindows::DESK_STREAM_ID`), else None
     pub window: Option<String>,
     pub event: HelperEvent,
 }
@@ -196,18 +156,18 @@ pub struct StreamProcess {
     child: Arc<Mutex<Option<Child>>>,
     pub host_uuid: String,
     pub app_id: i32,
-    /// App-window mode: the helper's stdin, kept open for JSON command lines
+    /// Desk mode: the helper's stdin, kept open for JSON command lines
     stdin: Option<Arc<Mutex<std::process::ChildStdin>>>,
 }
 
 impl StreamProcess {
-    /// A handle that can only send commands (for a poller thread).
+    /// A handle that can only send commands (for a thread of its own).
     pub fn clone_commander(&self) -> StreamCommander {
         StreamCommander { stdin: self.stdin.clone() }
     }
 
-    /// App-window mode: send a command line to the helper
-    /// (`{"cmd":"geometry",...}`, `{"cmd":"activate"}`, `{"cmd":"close"}`).
+    /// Desk mode: send a command line to the helper
+    /// (`{"cmd":"activate"}`, `{"cmd":"close"}`, test commands).
     pub fn send_command(&self, cmd: &serde_json::Value) -> bool {
         let Some(stdin) = &self.stdin else { return false };
         let mut line = cmd.to_string();
@@ -329,7 +289,6 @@ pub fn start_with_window(
         display_origin,
         max_duration_ms: std::env::var("SLOPLIGHT_MAX_STREAM_MS").ok().and_then(|v| v.parse().ok()),
         test_input_period_ms: std::env::var("SLOPLIGHT_TEST_INPUT_MS").ok().and_then(|v| v.parse().ok()),
-        window_handle: window.as_ref().map(|(h, _)| h.clone()).or_else(|| std::env::var("SLOPLIGHT_WINDOW_HANDLE").ok().filter(|v| !v.is_empty())),
         app_window: window.as_ref().map(|(_, c)| c.clone()),
         test_window: std::env::var("SLOPLIGHT_TEST_WINDOW").ok().and_then(|v| {
             let n: Vec<i32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
@@ -354,8 +313,8 @@ pub fn start_with_window(
     stdin.write_all(&json).map_err(|e| e.to_string())?;
     stdin.write_all(b"\n").map_err(|e| e.to_string())?;
     stdin.flush().map_err(|e| e.to_string())?;
-    // Normal streams: closing stdin signals the end of the config. App windows
-    // keep it open for commands.
+    // Normal streams: closing stdin signals the end of the config. The desk
+    // keeps it open for commands.
     let kept_stdin = if window.is_some() { Some(Arc::new(Mutex::new(stdin))) } else { drop(stdin); None };
     let stdout = child.stdout.take().ok_or("helper stdout")?;
     let stderr = child.stderr.take().ok_or("helper stderr")?;

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <QRect>
-#include <QVector>
 
 #include "settings/streamingpreferences.h"
 #include "backend/computermanager.h"
@@ -93,25 +91,11 @@ public:
 
     void setWindow(SDL_Window* window);
 
-    // App-window streams: absolute mouse positions are sent 1:1 in host
-    // pixels on the padded canvas (no letterbox math).
-    // App window: a point (x, y) in the window maps to canvas pixel
-    // (originX + x * pxPerPoint, originY + y * pxPerPoint); only the given
-    // rects (in points) show the picture, the rest of the window is see-through.
+    // Draw only the local cursor (the host leaves its cursor out of the capture).
     void setLocalCursorAlwaysVisible()
     {
         m_MouseCursorCapturedVisibilityState = SDL_ENABLE;
         SDL_ShowCursor(SDL_ENABLE);
-    }
-
-    void setAppWindowMapping(double pxPerPoint, int canvasW, int canvasH, int originX, int originY, const QVector<QRect>& shape)
-    {
-        m_AppWindowPxPerPoint = pxPerPoint;
-        m_AppWindowCanvasW = canvasW;
-        m_AppWindowCanvasH = canvasH;
-        m_AppWindowOriginX = originX;
-        m_AppWindowOriginY = originY;
-        m_AppWindowShape = shape;
     }
 
     void handleKeyEvent(SDL_KeyboardEvent* event);
@@ -267,13 +251,6 @@ private:
     SDL_TimerID m_LongPressTimer;
     int m_StreamWidth;
     int m_StreamHeight;
-    // App-window streams: window points -> host pixels on a padded canvas
-    double m_AppWindowPxPerPoint = 0.0;
-    int m_AppWindowCanvasW = 0;
-    int m_AppWindowCanvasH = 0;
-    int m_AppWindowOriginX = 0;
-    int m_AppWindowOriginY = 0;
-    QVector<QRect> m_AppWindowShape;
     bool m_AbsoluteMouseMode;
     bool m_AbsoluteTouchMode;
     bool m_DisabledTouchFeedback;

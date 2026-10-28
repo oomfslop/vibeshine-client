@@ -42,7 +42,7 @@ struct Vertex
     simd_float2 texCoord;
 };
 
-// App-window layout quads: see vt_renderer.metal (VertexAW)
+// Desk window quads: see vt_renderer.metal (VertexAW)
 struct VertexAW
 {
     simd_float4 position;
@@ -151,15 +151,20 @@ public:
 
     bool updateVideoRegionSizeForFrame(AVFrame* frame)
     {
+        if (m_AppWindowMode) {
+            // Desk mode: the SDL window shows nothing; the desk's windows are
+            // drawn by renderChildWindows.
+            m_VideoVertexCount = 0;
+            return true;
+        }
+
         int drawableWidth, drawableHeight;
         SDL_Metal_GetDrawableSize(m_Window, &drawableWidth, &drawableHeight);
-        const AppWindow::Layout layout = m_AppWindowMode ? AppWindow::layout() : AppWindow::Layout();
 
         // Check if anything has changed since the last vertex buffer upload
         if (m_VideoVertexBuffer &&
                 frame->width == m_LastFrameWidth && frame->height == m_LastFrameHeight &&
-                drawableWidth == m_LastDrawableWidth && drawableHeight == m_LastDrawableHeight &&
-                layout.version == m_LastLayoutVersion) {
+                drawableWidth == m_LastDrawableWidth && drawableHeight == m_LastDrawableHeight) {
             // Nothing to do
             return true;
         }
@@ -168,91 +173,38 @@ public:
         m_VideoVertexBuffer = nullptr;
         auto bufferOptions = MTLCPUCacheModeWriteCombined | MTLResourceStorageModeManaged;
 
-        if (m_AppWindowMode && layout.items.isEmpty()) {
-            // Desk mode: the SDL window shows nothing; the desk's windows are
-            // drawn by renderChildWindows.
-            m_VideoVertexCount = 0;
-            if (layout.version != m_LastLayoutVersion) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Metal app-window layout v%u: empty (desk mode)", layout.version);
-            }
-        }
-        else if (m_AppWindowMode && !layout.items.isEmpty() && layout.w > 0 && layout.h > 0) {
-            // App window: the drawable covers layout.w x layout.h host pixels of
-            // the canvas starting at (originX, originY); each item is a rounded
-            // rectangle of that region, drawn bottom-most first.
-            QVector<VertexAW> verts;
-            verts.reserve(layout.items.size() * 6);
-            const float sx = (float)drawableWidth / layout.w;
-            const float sy = (float)drawableHeight / layout.h;
-            for (const AppWindow::LayoutItem& item : layout.items) {
-                if (item.w <= 0 || item.h <= 0) {
-                    continue;
-                }
-                // screenSpaceToNormalizedDeviceCoords measures y from the bottom
-                SDL_Rect dst { (int)lroundf(item.x * sx), drawableHeight - (int)lroundf((item.y + item.h) * sy),
-                               (int)lroundf(item.w * sx), (int)lroundf(item.h * sy) };
-                SDL_FRect r;
-                StreamUtils::screenSpaceToNormalizedDeviceCoords(&dst, &r, drawableWidth, drawableHeight);
-                const float u0 = (float)(layout.originX + item.x) / frame->width;
-                const float v0 = (float)(layout.originY + item.y) / frame->height;
-                const float u1 = (float)(layout.originX + item.x + item.w) / frame->width;
-                const float v1 = (float)(layout.originY + item.y + item.h) / frame->height;
-                const simd_float4 rect = { (float)item.w, (float)item.h, (float)item.radius, 0.0f };
-                // NDC y grows upward: r.y is the bottom edge, which is texture v1 / local y = h
-                const VertexAW bl = { { r.x, r.y, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)item.h }, rect };
-                const VertexAW tl = { { r.x, r.y + r.h, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect };
-                const VertexAW br = { { r.x + r.w, r.y, 0.0f, 1.0f }, { u1, v1 }, { (float)item.w, (float)item.h }, rect };
-                const VertexAW tr = { { r.x + r.w, r.y + r.h, 0.0f, 1.0f }, { u1, v0 }, { (float)item.w, 0.0f }, rect };
-                verts << bl << tl << br << br << tl << tr;
-            }
-            m_VideoVertexCount = verts.size();
-            if (m_VideoVertexCount > 0) {
-                m_VideoVertexBuffer = [m_MetalLayer.device newBufferWithBytes:verts.constData()
-                                                                       length:sizeof(VertexAW) * verts.size()
-                                                                      options:bufferOptions];
-            }
-            if (layout.version != m_LastLayoutVersion) {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "Metal app-window layout v%u: origin (%d,%d) %dx%d host px, %d items, drawable %dx%d",
-                            layout.version, layout.originX, layout.originY, layout.w, layout.h,
-                            (int)layout.items.size(), drawableWidth, drawableHeight);
-                m_ShadowDirty = true;
-            }
-        }
-        else {
-            // Determine the correct scaled size for the video region
-            SDL_Rect src, dst;
-            src.x = src.y = 0;
-            src.w = frame->width;
-            src.h = frame->height;
-            dst.x = dst.y = 0;
-            dst.w = drawableWidth;
-            dst.h = drawableHeight;
-            StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
+        // Determine the correct scaled size for the video region
+        SDL_Rect src, dst;
+        src.x = src.y = 0;
+        src.w = frame->width;
+        src.h = frame->height;
+        dst.x = dst.y = 0;
+        dst.w = drawableWidth;
+        dst.h = drawableHeight;
+        StreamUtils::scaleSourceToDestinationSurface(&src, &dst);
 
-            {
-                int winW = 0, winH = 0;
-                SDL_GetWindowSize(m_Window, &winW, &winH);
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                            "Metal video region: frame %dx%d, drawable %dx%d, window %dx%d, video rect (%d,%d) %dx%d",
-                            frame->width, frame->height, drawableWidth, drawableHeight, winW, winH,
-                            dst.x, dst.y, dst.w, dst.h);
-            }
-
-            // Convert screen space to normalized device coordinates
-            SDL_FRect renderRect;
-            StreamUtils::screenSpaceToNormalizedDeviceCoords(&dst, &renderRect, drawableWidth, drawableHeight);
-
-            Vertex verts[] =
-            {
-                { { renderRect.x, renderRect.y, 0.0f, 1.0f }, { 0.0f, 1.0f } },
-                { { renderRect.x, renderRect.y+renderRect.h, 0.0f, 1.0f }, { 0.0f, 0} },
-                { { renderRect.x+renderRect.w, renderRect.y, 0.0f, 1.0f }, { 1.0f, 1.0f} },
-                { { renderRect.x+renderRect.w, renderRect.y+renderRect.h, 0.0f, 1.0f }, { 1.0f, 0} },
-            };
-            m_VideoVertexCount = 4;
-            m_VideoVertexBuffer = [m_MetalLayer.device newBufferWithBytes:verts length:sizeof(verts) options:bufferOptions];
+        {
+            int winW = 0, winH = 0;
+            SDL_GetWindowSize(m_Window, &winW, &winH);
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "Metal video region: frame %dx%d, drawable %dx%d, window %dx%d, video rect (%d,%d) %dx%d",
+                        frame->width, frame->height, drawableWidth, drawableHeight, winW, winH,
+                        dst.x, dst.y, dst.w, dst.h);
         }
+
+        // Convert screen space to normalized device coordinates
+        SDL_FRect renderRect;
+        StreamUtils::screenSpaceToNormalizedDeviceCoords(&dst, &renderRect, drawableWidth, drawableHeight);
+
+        Vertex verts[] =
+        {
+            { { renderRect.x, renderRect.y, 0.0f, 1.0f }, { 0.0f, 1.0f } },
+            { { renderRect.x, renderRect.y+renderRect.h, 0.0f, 1.0f }, { 0.0f, 0} },
+            { { renderRect.x+renderRect.w, renderRect.y, 0.0f, 1.0f }, { 1.0f, 1.0f} },
+            { { renderRect.x+renderRect.w, renderRect.y+renderRect.h, 0.0f, 1.0f }, { 1.0f, 0} },
+        };
+        m_VideoVertexCount = 4;
+        m_VideoVertexBuffer = [m_MetalLayer.device newBufferWithBytes:verts length:sizeof(verts) options:bufferOptions];
 
         if (!m_VideoVertexBuffer && m_VideoVertexCount > 0) {
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
@@ -264,7 +216,6 @@ public:
         m_LastFrameHeight = frame->height;
         m_LastDrawableWidth = drawableWidth;
         m_LastDrawableHeight = drawableHeight;
-        m_LastLayoutVersion = layout.version;
 
         return true;
     }
@@ -379,15 +330,10 @@ public:
 
         MTLRenderPipelineDescriptor *pipelineDesc = [[MTLRenderPipelineDescriptor new] autorelease];
         if (m_AppWindowMode) {
-            // Shaped, rounded, premultiplied output over a transparent window
+            // Desk windows: rounded, premultiplied output over a transparent
+            // window, transparent outside the frame
             pipelineDesc.vertexFunction = [[m_ShaderLibrary newFunctionWithName:@"vs_draw_aw"] autorelease];
-            if (AppWindow::deskActive()) {
-                // Desk: plain colour frame, transparent outside it
-                pipelineDesc.fragmentFunction = [[m_ShaderLibrary newFunctionWithName:planes == 2 ? @"ps_draw_biplanar_desk" : @"ps_draw_triplanar_desk"] autorelease];
-            }
-            else {
-                pipelineDesc.fragmentFunction = [[m_ShaderLibrary newFunctionWithName:planes == 2 ? @"ps_draw_biplanar_aw" : @"ps_draw_triplanar_aw"] autorelease];
-            }
+            pipelineDesc.fragmentFunction = [[m_ShaderLibrary newFunctionWithName:planes == 2 ? @"ps_draw_biplanar_desk" : @"ps_draw_triplanar_desk"] autorelease];
             pipelineDesc.colorAttachments[0].blendingEnabled = YES;
             pipelineDesc.colorAttachments[0].rgbBlendOperation = MTLBlendOperationAdd;
             pipelineDesc.colorAttachments[0].alphaBlendOperation = MTLBlendOperationAdd;
@@ -682,21 +628,10 @@ public:
         }
         [renderEncoder setFragmentBuffer:m_CscParamsBuffer offset:0 atIndex:0];
         if (m_VideoVertexBuffer && m_VideoVertexCount > 0) {
+            // Nothing in desk mode (m_VideoVertexCount is 0): the picture goes
+            // to the desk windows' layers below.
             [renderEncoder setVertexBuffer:m_VideoVertexBuffer offset:0 atIndex:0];
-            if (m_AppWindowMode) {
-                [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:m_VideoVertexCount];
-            }
-            else {
-                [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
-            }
-        }
-        if (m_ShadowDirty) {
-            // The window's shape just changed (or this is the first picture):
-            // let AppKit recompute the shadow from the new transparent content.
-            m_ShadowDirty = false;
-            [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
-                AppWindow::invalidateShadow(m_Window);
-            }];
+            [renderEncoder drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:m_VideoVertexCount];
         }
 
         // Now draw any overlays that are enabled
@@ -927,11 +862,11 @@ public:
             // Choose a device
             m_MetalLayer.device = device;
 
-            // App windows are shaped: the layer composites with alpha
-            m_AppWindowMode = AppWindow::active();
+            // Desk mode: the SDL window is the hidden key window and shows
+            // nothing; the desk windows' layers composite with alpha
+            m_AppWindowMode = AppWindow::deskActive();
             if (m_AppWindowMode) {
                 m_MetalLayer.opaque = NO;
-                m_ShadowDirty = true;
             }
 
             // Allow EDR content if we're streaming in a 10-bit format
@@ -1175,10 +1110,8 @@ private:
     int m_LastFrameHeight;
     int m_LastDrawableWidth;
     int m_LastDrawableHeight;
-    unsigned m_LastLayoutVersion = 0;
     int m_VideoVertexCount = 0;
-    bool m_AppWindowMode = false;
-    bool m_ShadowDirty = false;
+    bool m_AppWindowMode = false;  // desk session: see AppWindow::deskActive()
 };
 
 @implementation DisplayLinkDelegate {

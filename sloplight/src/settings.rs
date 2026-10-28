@@ -97,10 +97,6 @@ pub struct Settings {
     pub use_virtual_display: bool,
     /// Vibeshine/Vibepollo: capture right after each present (1000 Hz virtual display).
     pub vrr_capture: bool,
-    /// App windows: resize the host window on every Mac resize step (true) or
-    /// only once the drag settles (false).
-    #[serde(default = "default_true")]
-    pub app_window_live_resize: bool,
     /// While any window is streamed, windows that newly appear on the host
     /// (opened from the streamed app, focus-grabbing dialogs of other
     /// processes) are streamed too.
@@ -178,7 +174,6 @@ impl Default for Settings {
             window_mode: recommended_window_mode(),
             use_virtual_display: false,
             vrr_capture: false,
-            app_window_live_resize: true,
             app_window_follow_new: true,
             resolution_scale_factor: 100,
             clipboard_sync: false,

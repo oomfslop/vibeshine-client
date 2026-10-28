@@ -299,26 +299,6 @@ impl NvHttp {
         Ok(resp.body)
     }
 
-    /// The host window's own hit-test map (caption/drag areas and caption buttons), relative to its frame.
-    pub fn get_window_hittest(&self, hwnd: &str) -> Result<Vec<HitRegion>, HttpError> {
-        let body = self.get_string(true, "actions/window-hittest", &format!("hwnd={hwnd}"), REQUEST_TIMEOUT)?;
-        #[derive(serde::Deserialize)]
-        struct R {
-            regions: Vec<HitRegion>,
-        }
-        let r: R = serde_json::from_str(&body).map_err(|e| HttpError::Network(format!("hit-test: {e}")))?;
-        Ok(r.regions)
-    }
-
-    /// One window's layout: rect, canvas anchor, popups. With `etag` (the
-    /// previous reply's) and `wait_ms`, the host holds the reply until
-    /// something changes, so popups show up within milliseconds.
-    pub fn get_window_layout(&self, hwnd: &str, canvas: (i32, i32), etag: &str, wait_ms: u32) -> Result<WindowLayout, HttpError> {
-        let q = format!("hwnd={hwnd}&cw={}&ch={}&etag={etag}&wait={wait_ms}", canvas.0, canvas.1);
-        let body = self.get_string(true, "actions/window-layout", &q, REQUEST_TIMEOUT.max(Duration::from_millis(u64::from(wait_ms) + 3000)))?;
-        serde_json::from_str(&body).map_err(|e| HttpError::Network(format!("window layout: {e}")))
-    }
-
     /// The client's desk: a private host display mirroring this screen. `open`
     /// creates (or retunes) it, host px / Hz / DPI; the reply carries the size
     /// the driver could give (its mode catalog is fixed), which the stream uses.
@@ -696,48 +676,4 @@ fn default_dpi() -> i32 {
 #[derive(serde::Deserialize)]
 struct HostWindowList {
     windows: Vec<HostWindow>,
-}
-
-/// One region of a host window's non-client hit-test map.
-/// A popup of a streamed window (menu, tooltip, dialog): shown as a Mac window of
-/// its own, drawn from its slot on the canvas
-#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct PopupWindow {
-    pub hwnd: String,
-    pub rect: [i32; 4],
-    pub canvas: [i32; 4],
-    #[serde(default)]
-    pub dialog: bool,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub caption: i32,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct WindowLayout {
-    pub rect: [i32; 4],
-    pub anchor: [i32; 2],
-    #[serde(default)]
-    pub popups: Vec<PopupWindow>,
-    #[serde(default)]
-    pub radius: i32,
-    #[serde(default)]
-    pub dpi: i32,
-    #[serde(default)]
-    pub caption: i32,
-    #[serde(default)]
-    pub state: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub focused: bool,
-    #[serde(default)]
-    pub etag: String,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq)]
-pub struct HitRegion {
-    pub kind: String,
-    pub rect: [i32; 4],
 }
