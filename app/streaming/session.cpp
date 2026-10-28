@@ -1637,15 +1637,35 @@ bool Session::startConnectionAsync()
         launchOptions.hideCursor = m_HideHostCursor || m_IsAppWindow;
 
         NvHTTP http(m_Computer);
-        http.startApp(m_Computer->currentGameId != 0 ? "resume" : "launch",
-                      m_Computer->isNvidiaServerSoftware,
-                      m_App.id, &m_StreamConfig,
-                      enableGameOptimizations,
-                      m_Preferences->playAudioOnHost,
-                      m_InputHandler->getAttachedGamepadMask(),
-                      !m_Preferences->multiController,
-                      launchOptions,
-                      rtspSessionUrl);
+        // The host admits one launch/resume at a time and answers 503 while
+        // another is being set up. App-window sessions are routinely started
+        // in bursts (several windows, dialogs), so wait our turn.
+        for (int attempt = 0;; attempt++) {
+            try {
+                http.startApp(m_Computer->currentGameId != 0 ? "resume" : "launch",
+                              m_Computer->isNvidiaServerSoftware,
+                              m_App.id, &m_StreamConfig,
+                              enableGameOptimizations,
+                              m_Preferences->playAudioOnHost,
+                              m_InputHandler->getAttachedGamepadMask(),
+                              !m_Preferences->multiController,
+                              launchOptions,
+                              rtspSessionUrl);
+                break;
+            } catch (const GfeHttpResponseException& e) {
+                if (m_IsAppWindow && attempt < 40 && (e.getStatusCode() == 503 || e.toQString().contains("503"))) {
+                    SDL_Delay(250);
+                    continue;
+                }
+                throw;
+            } catch (const QtNetworkReplyException& e) {
+                if (m_IsAppWindow && attempt < 40 && e.toQString().contains("503")) {
+                    SDL_Delay(250);
+                    continue;
+                }
+                throw;
+            }
+        }
     } catch (const GfeHttpResponseException& e) {
         emit displayLaunchError(tr("Host returned error: %1").arg(e.toQString()));
         return false;

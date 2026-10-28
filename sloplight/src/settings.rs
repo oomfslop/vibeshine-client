@@ -101,6 +101,11 @@ pub struct Settings {
     /// only once the drag settles (false).
     #[serde(default = "default_true")]
     pub app_window_live_resize: bool,
+    /// While any window is streamed, windows that newly appear on the host
+    /// (opened from the streamed app, focus-grabbing dialogs of other
+    /// processes) are streamed too.
+    #[serde(default = "default_true")]
+    pub app_window_follow_new: bool,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
     /// Draw only the Mac cursor; the host leaves its cursor out of the
@@ -174,6 +179,7 @@ impl Default for Settings {
             use_virtual_display: false,
             vrr_capture: false,
             app_window_live_resize: true,
+            app_window_follow_new: true,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             hide_host_cursor: false,

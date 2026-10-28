@@ -56,6 +56,8 @@ impl Drop for WindowStream {
 
 pub enum WindowsEvent {
     List { host_uuid: String, result: Result<(Vec<HostWindow>, HashMap<String, PathBuf>), String> },
+    /// A top-level window appeared on the host while windows were being streamed
+    NewWindow { host_uuid: String, window: HostWindow },
 }
 
 fn icon_dir(cache_dir: &std::path::Path) -> PathBuf {
@@ -131,8 +133,60 @@ impl Root {
                     Err(e) => self.windows.error = Some(e),
                 }
             }
+            WindowsEvent::NewWindow { host_uuid, window } => {
+                if !self.settings.app_window_follow_new || self.window_stream(&window.hwnd).is_some() {
+                    return;
+                }
+                if self.windows.host_uuid == host_uuid && !self.windows.windows.iter().any(|w| w.hwnd.eq_ignore_ascii_case(&window.hwnd)) {
+                    self.windows.windows.push(window.clone());
+                }
+                log::info!("new host window {} {:?} ({}); streaming it", window.hwnd, window.title, window.process);
+                let hwnd = window.hwnd.clone();
+                self.launch_window(&host_uuid, &hwnd, cx);
+            }
         }
         cx.notify();
+    }
+
+    /// While windows of `host` are streamed, watch the host's window list and
+    /// report windows that newly appear (opened from the streamed app, or
+    /// dialogs of other processes grabbing focus) so they get streamed too.
+    fn ensure_window_watch(&mut self, host: &Host) {
+        if self.window_watch_stop.is_some() {
+            return;
+        }
+        let Some(http) = host.http(self.identity.clone()) else { return };
+        let stop = Arc::new(AtomicBool::new(false));
+        self.window_watch_stop = Some(stop.clone());
+        let tx = self.windows_tx.clone();
+        let uuid = host.uuid.clone();
+        std::thread::Builder::new()
+            .name("host window watch".into())
+            .spawn(move || {
+                let mut known: Option<std::collections::HashSet<String>> = None;
+                while !stop.load(Ordering::Relaxed) {
+                    if let Ok(list) = http.get_host_windows() {
+                        match &mut known {
+                            None => known = Some(list.iter().map(|w| w.hwnd.to_ascii_lowercase()).collect()),
+                            Some(seen) => {
+                                for w in list {
+                                    if seen.insert(w.hwnd.to_ascii_lowercase()) && w.state != "minimized" {
+                                        let _ = tx.unbounded_send(WindowsEvent::NewWindow { host_uuid: uuid.clone(), window: w });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(1500));
+                }
+            })
+            .ok();
+    }
+
+    fn stop_window_watch(&mut self) {
+        if let Some(stop) = self.window_watch_stop.take() {
+            stop.store(true, Ordering::Relaxed);
+        }
     }
 
     pub fn window_stream(&self, hwnd: &str) -> Option<&WindowStream> {
@@ -211,6 +265,7 @@ impl Root {
                     canvas: (cw, ch),
                     resize_tx: spawn_resize_worker(host.http(self.identity.clone()), w.hwnd.clone(), self.settings.app_window_live_resize),
                 });
+                self.ensure_window_watch(&host);
             }
             Err(e) => self.toast(ToastKind::Error, format!("Couldn't stream {}: {e}", w.title), cx),
         }
@@ -264,6 +319,9 @@ impl Root {
                 if !ws.connected && code != Some(0) {
                     let why = if ws.error_lines.is_empty() { format!("helper exited with code {code:?}") } else { ws.error_lines.join(" ") };
                     self.toast(ToastKind::Error, format!("Couldn't stream {}: {why}", ws.title), cx);
+                }
+                if self.window_streams.is_empty() {
+                    self.stop_window_watch();
                 }
             }
             _ => {}

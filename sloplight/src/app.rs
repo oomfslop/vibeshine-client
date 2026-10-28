@@ -159,6 +159,8 @@ pub struct Root {
     pub windows: crate::appwindows::WindowsState,
     pub window_streams: Vec<crate::appwindows::WindowStream>,
     pub windows_tx: crate::appwindows::WindowsSender,
+    /// Stops the "new host windows" watcher that runs while windows are streamed
+    pub window_watch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub cache_dir: PathBuf,
     pub pending_launch: Option<PendingLaunch>,
     pub box_art_requested: HashSet<(String, i32)>,
@@ -232,6 +234,7 @@ impl Root {
             windows: Default::default(),
             window_streams: Vec::new(),
             windows_tx,
+            window_watch_stop: None,
             cache_dir: cache_dir_copy,
             helper_path,
             window_active: true,

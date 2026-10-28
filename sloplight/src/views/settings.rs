@@ -588,6 +588,7 @@ fn build_rows(root: &mut Root, theme: &Theme, section: &str, cx: &mut Context<Ro
         "apollo" => {
             rows.push(toggle_row(root, cx, theme, "tg-vd", "Stream from a virtual display", "The host creates a display matching your stream instead of capturing a monitor.", |s| s.use_virtual_display, |s, v| s.use_virtual_display = v, None));
             rows.push(toggle_row(root, cx, theme, "tg-aw-live", "Resize app windows live", "Streamed host windows follow every step of a resize on the Mac. Off sends one resize once the drag settles.", |s| s.app_window_live_resize, |s, v| s.app_window_live_resize = v, None));
+            rows.push(toggle_row(root, cx, theme, "tg-aw-follow", "Stream new windows automatically", "While a window is streamed, windows that newly appear on the host (opened from it, or dialogs grabbing focus) get a Mac window too.", |s| s.app_window_follow_new, |s, v| s.app_window_follow_new = v, None));
             rows.push(toggle_row(root, cx, theme, "tg-vrr", "Capture on present", "Vibeshine/Vibepollo run the virtual display at 1000 Hz and grab each frame right after the game presents it, instead of on the display's refresh grid.", |s| s.vrr_capture, |s, v| s.vrr_capture = v, None));
             rows.push(Row {
                 label: "Host render scale",
