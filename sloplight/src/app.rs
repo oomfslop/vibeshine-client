@@ -155,6 +155,11 @@ pub struct Root {
     pub next_toast_id: u64,
     pub stream: Option<StreamState>,
     pub stream_tx: UnboundedSender<StreamEvent>,
+    /// App-window streaming: window list of the selected host and the streamed windows
+    pub windows: crate::appwindows::WindowsState,
+    pub window_streams: Vec<crate::appwindows::WindowStream>,
+    pub windows_tx: crate::appwindows::WindowsSender,
+    pub cache_dir: PathBuf,
     pub pending_launch: Option<PendingLaunch>,
     pub box_art_requested: HashSet<(String, i32)>,
     pub helper_path: Option<PathBuf>,
@@ -177,8 +182,10 @@ pub struct Root {
 impl Root {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, config_dir: PathBuf, cache_dir: PathBuf, settings: Settings, identity: Arc<Identity>) -> Self {
         let (tx, rx) = unbounded::<ManagerEvent>();
-        let manager = HostManager::new(config_dir.clone(), cache_dir, identity.clone(), tx, settings.enable_mdns);
+        let manager = HostManager::new(config_dir.clone(), cache_dir.clone(), identity.clone(), tx, settings.enable_mdns);
         let (stream_tx, stream_rx) = unbounded::<StreamEvent>();
+        let (windows_tx, windows_rx) = unbounded::<crate::appwindows::WindowsEvent>();
+        let cache_dir_copy = cache_dir.clone();
 
         let filter = cx.new(|cx| TextInput::new(cx, "Filter apps", InputKind::Text));
         cx.subscribe(&filter, Self::on_filter_event).detach();
@@ -222,6 +229,10 @@ impl Root {
             stream_tx,
             pending_launch: None,
             box_art_requested: HashSet::new(),
+            windows: Default::default(),
+            window_streams: Vec::new(),
+            windows_tx,
+            cache_dir: cache_dir_copy,
             helper_path,
             window_active: true,
             polling_paused: false,
@@ -238,6 +249,15 @@ impl Root {
             debug_state_applied: false,
         };
         root.spawn_event_pumps(rx, stream_rx, cx);
+        cx.spawn(async move |this, cx| {
+            let mut windows_rx = windows_rx;
+            while let Some(event) = windows_rx.next().await {
+                if this.update(cx, |root, cx| root.on_windows_event(event, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         root.manager.start_polling();
 
         cx.observe_window_activation(window, |this, window, cx| {
@@ -664,6 +684,10 @@ impl Root {
     }
 
     fn on_stream_event(&mut self, event: StreamEvent, cx: &mut Context<Self>) {
+        if let Some(hwnd) = event.window.clone() {
+            self.on_window_stream_event(&hwnd, event, cx);
+            return;
+        }
         let Some(stream) = &mut self.stream else { return };
         if stream.host_uuid != event.host_uuid || stream.app_id != event.app_id {
             return;

@@ -57,6 +57,12 @@ pub fn render_popover(root: &mut Root, theme: &Theme, host: &Host, max_h: f32, c
     let software = if host.app_version.is_empty() { host.software().label().to_string() } else { format!("{} {}", host.software().label(), host.app_version) };
     let headline = format!("{} · {software}", host_state_sentence(host, streaming, waking));
 
+    // Built before `copy` borrows cx: it needs a mutable context of its own.
+    let windows_section = if host.is_paired() && host.is_online() && Root::host_supports_windows(host) {
+        Some(render_windows_section(root, theme, host, cx))
+    } else {
+        None
+    };
     let copy = |label: &'static str, value: String| -> Option<CopyFn> {
         let f = cx.listener(move |this: &mut Root, _: &ClickEvent, _, cx| this.copy_to_clipboard(label, &value, cx));
         Some(Box::new(f))
@@ -122,6 +128,11 @@ pub fn render_popover(root: &mut Root, theme: &Theme, host: &Host, max_h: f32, c
                 rows.push(fact(theme, "i-missing", "", format!("Missing: {}", missing.join(", ")), false, None));
             }
         }
+        // App-window streaming (Vibeshine fork): list the host's windows and
+        // stream any of them as its own Mac window.
+        if let Some(section) = windows_section {
+            rows.push(section);
+        }
         if !host.server_commands.is_empty() {
             rows.push(fact(theme, "i-cmds", "Commands", host.server_commands.join(", "), false, None));
         }
@@ -167,4 +178,91 @@ pub fn render_popover(root: &mut Root, theme: &Theme, host: &Host, max_h: f32, c
                 })),
         )
         .into_any_element()
+}
+
+/// "Windows" section of the host popover: the host's top-level windows with
+/// their icons; click one to stream it. Streamed windows get a close button.
+fn render_windows_section(root: &mut Root, theme: &Theme, host: &Host, cx: &mut Context<Root>) -> AnyElement {
+    let uuid = host.uuid.clone();
+    let stale = root.windows.host_uuid != uuid || root.windows.fetched_at.map(|t| t.elapsed().as_secs() >= 2).unwrap_or(true);
+    if stale && !root.windows.loading {
+        root.refresh_host_windows(&uuid, cx);
+    }
+    let mut col = div().flex().flex_col().gap(px(4.)).pt(px(6.));
+    col = col.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(div().text_size(type_scale::SM).text_color(theme.text_muted).child("Windows"))
+            .child(
+                icon_button("win-refresh", icon::ROTATE_CCW)
+                    .size(20., 12.)
+                    .tooltip("Refresh", None)
+                    .on_click(cx.listener({
+                        let uuid = uuid.clone();
+                        move |this, _, _, cx| {
+                            this.windows.fetched_at = None;
+                            this.refresh_host_windows(&uuid, cx);
+                        }
+                    })),
+            ),
+    );
+    if let Some(err) = &root.windows.error {
+        col = col.child(div().text_size(type_scale::SM).text_color(theme.warning).child(format!("Couldn't list windows: {err}")));
+    }
+    if root.windows.host_uuid == uuid && root.windows.windows.is_empty() && !root.windows.loading && root.windows.error.is_none() {
+        col = col.child(div().text_size(type_scale::SM).text_color(theme.text_muted).child("No windows open on the host"));
+    }
+    let windows: Vec<crate::backend::http::HostWindow> = if root.windows.host_uuid == uuid { root.windows.windows.clone() } else { Vec::new() };
+    for (i, w) in windows.iter().enumerate() {
+        let streaming = root.window_stream(&w.hwnd).is_some();
+        let icon_path = root.windows.icons.get(&w.icon).cloned();
+        let hwnd = w.hwnd.clone();
+        let label = if w.title.chars().count() > 48 { format!("{}…", w.title.chars().take(47).collect::<String>()) } else { w.title.clone() };
+        let sub = format!("{}{}", w.process, if w.state == "minimized" { " · minimized" } else { "" });
+        let mut row = div()
+            .id(gpui::ElementId::NamedInteger("host-window".into(), i as u64))
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(6.))
+            .py(px(4.))
+            .rounded(px(6.))
+            .cursor_pointer()
+            .hover(|d| d.bg(theme.element_hover))
+            .child(match icon_path {
+                Some(p) => gpui::img(p).size(px(20.)).flex_none().into_any_element(),
+                None => div().size(px(20.)).flex_none().into_any_element(),
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(div().text_size(type_scale::SM).text_color(theme.text).overflow_hidden().text_ellipsis().child(label))
+                    .child(div().text_size(type_scale::XS).text_color(theme.text_muted).child(sub)),
+            );
+        if streaming {
+            row = row.child(
+                icon_button(gpui::ElementId::NamedInteger("win-close".into(), i as u64), icon::X)
+                    .size(20., 12.)
+                    .tooltip("Stop streaming this window", None)
+                    .on_click(cx.listener({
+                        let hwnd = hwnd.clone();
+                        move |this, _, _, cx| this.close_window_stream(&hwnd, cx)
+                    })),
+            );
+            row = row.child(div().text_size(type_scale::XS).text_color(theme.accent).child("streaming"));
+        } else {
+            row = row.on_click(cx.listener({
+                let uuid = uuid.clone();
+                let hwnd = hwnd.clone();
+                move |this, _, _, cx| this.launch_window(&uuid, &hwnd, cx)
+            }));
+        }
+        col = col.child(row);
+    }
+    col.into_any_element()
 }

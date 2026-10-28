@@ -132,6 +132,8 @@ impl StreamCommander {
 pub struct StreamEvent {
     pub host_uuid: String,
     pub app_id: i32,
+    /// App-window sessions: the host window handle ("0x..."), else None
+    pub window: Option<String>,
     pub event: HelperEvent,
 }
 
@@ -331,6 +333,7 @@ pub fn start_with_window(
         let events = events.clone();
         let host_uuid = host.uuid.clone();
         let app_id = app.id;
+        let window_id = window.as_ref().map(|(h, _)| h.clone());
         let child = child.clone();
         thread::Builder::new()
             .name("helper stdout".into())
@@ -342,7 +345,7 @@ pub fn start_with_window(
                     }
                     match serde_json::from_str::<HelperEvent>(line) {
                         Ok(event) => {
-                            let _ = events.unbounded_send(StreamEvent { host_uuid: host_uuid.clone(), app_id, event });
+                            let _ = events.unbounded_send(StreamEvent { host_uuid: host_uuid.clone(), app_id, window: window_id.clone(), event });
                         }
                         Err(_) => log::debug!("[helper] {line}"),
                     }
@@ -360,7 +363,7 @@ pub fn start_with_window(
                     }
                 };
                 let tail = stderr_tail.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n");
-                let _ = events.unbounded_send(StreamEvent { host_uuid, app_id, event: HelperEvent::Exited { code, stderr_tail: tail } });
+                let _ = events.unbounded_send(StreamEvent { host_uuid, app_id, window: window_id, event: HelperEvent::Exited { code, stderr_tail: tail } });
             })
             .ok();
     }
