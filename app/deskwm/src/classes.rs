@@ -200,6 +200,9 @@ impl DeskView {
                 _ => (0.0, 0.0),
             };
             let cmd = e.modifierFlags().contains(objc2_app_kit::NSEventModifierFlags::Command);
+            if matches!(ev, Ev::Down(_) | Ev::Up(_)) && std::env::var_os("DESKWM_DEBUG_INPUT").is_some() {
+                crate::ffi::log(0, &format!("deskwm: {ev:?} on 0x{hwnd:x} at {:.0},{:.0} clicks {clicks} cmd {cmd}", p.x, p.y));
+            }
             input::on_event(hwnd, ev, p, clicks, sx, sy, cmd);
         });
     }

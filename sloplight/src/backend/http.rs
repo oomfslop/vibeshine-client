@@ -634,6 +634,20 @@ pub struct DeskInfo {
     pub rect: [i32; 4],
     pub fps: i32,
     pub dpi: i32,
+    /// The size of what the session streams (the atlas of window pictures);
+    /// older hosts stream the desk itself
+    #[serde(default)]
+    pub capture_size: Option<[i32; 2]>,
+}
+
+impl DeskInfo {
+    /// The stream's resolution
+    pub fn stream_size(&self) -> (i32, i32) {
+        match self.capture_size {
+            Some([w, h]) if w > 0 && h > 0 => (w, h),
+            _ => (self.rect[2], self.rect[3]),
+        }
+    }
 }
 
 /// One entry of `GET /actions/windows` (Vibeshine fork, app-window streaming).

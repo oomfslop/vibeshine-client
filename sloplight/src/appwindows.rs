@@ -271,8 +271,7 @@ impl Root {
         let icon_png = self.windows.icons.get(&w.icon).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
         let mut settings = self.settings.clone();
         settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(5000, 150000);
-        settings.width = desk.rect[2];
-        settings.height = desk.rect[3];
+        (settings.width, settings.height) = desk.stream_size();
         settings.fps = desk.fps;
         settings.window_mode = settings::WindowMode::Windowed;
         settings.hide_host_cursor = true;

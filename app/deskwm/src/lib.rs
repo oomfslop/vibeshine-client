@@ -141,6 +141,7 @@ fn command(text: &str) {
         "liveresize" => desk::test_live_resize(hwnd, num("dw"), num("dh"), v.get("left").and_then(|b| b.as_bool()).unwrap_or(false)),
         "tile" => desk::test_tile(hwnd, num("x"), num("y"), num("w"), num("h")),
         "front" => desk::test_front(hwnd),
+        "nsclick" => desk::test_nsclick(hwnd, num("x") as i32, num("y") as i32, v.get("command").and_then(|b| b.as_bool()).unwrap_or(false)),
         other => ffi::log(1, &format!("deskwm: unknown test command {other}")),
     }
 }

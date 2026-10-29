@@ -230,8 +230,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         };
         log::info!("[stream-cli] desk {} {:?} @{} {} dpi for screen {:?} (wanted {}x{})", desk.display, desk.rect, desk.fps, desk.dpi, screen, want.0, want.1);
         settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(5000, 150000);
-        settings.width = desk.rect[2];
-        settings.height = desk.rect[3];
+        (settings.width, settings.height) = desk.stream_size();
         settings.fps = desk.fps;
         settings.window_mode = settings::WindowMode::Windowed;
         settings.hide_host_cursor = true;
