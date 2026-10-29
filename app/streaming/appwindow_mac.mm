@@ -431,6 +431,7 @@ struct DeskState {
     bool applying = false;       // we are changing the window: its notifications are not the user's
     bool userMoving = false;     // a drag is under way, nothing sent yet
     bool pendingMove = false;    // a move was sent; the host has not shown it yet
+    bool revealing = false;      // a drag began with the window hanging off the desk: brought onto it before freezing
     bool pendingResize = false;
     bool pendingMinimize = false, pendingRestore = false;
     double pendingSince = 0;     // CACurrentMediaTime() of the last change sent
@@ -459,6 +460,7 @@ bool g_forceOrderPush = false;  // a drag ended: the Mac's order goes to the hos
 NSWindow* g_deskKeyWindow = nil;
 NSRect g_deskScreen = NSZeroRect;   // SDL global points, top-left origin
 double g_deskPointsPerPx = 1.0;
+NSSize g_deskSizePx = NSZeroSize;   // the desk (the stream's frame), host px
 NSMutableDictionary<NSString*, NSImage*>* g_deskIcons = nil;
 std::atomic<quint64> g_deskFront {0};
 quint64 g_deskPressed = 0;          // last desk window the user pressed (its raise is pending on the host)
@@ -1216,7 +1218,7 @@ void deskNotePress(quint64 hwnd)
     }
 }
 
-void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHostPx)
+void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHostPx, int deskW, int deskH)
 {
     NSWindow* ns = nsWindowFor(keyWindow);
     if (!ns) {
@@ -1224,6 +1226,7 @@ void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHo
     }
     g_deskKeyWindow = ns;
     g_deskClosed = false;
+    g_deskSizePx = NSMakeSize(deskW, deskH);
     g_deskScreen = NSMakeRect(screenPts.x(), screenPts.y(), screenPts.width(), screenPts.height());
     {
         static id s_activeObserver = nil;
@@ -1681,6 +1684,49 @@ static void pollDragEnd(quint64 hwnd)
     });
 }
 
+// Out of the way on the host while it is dragged (its picture is frozen
+// here): parked past the desk's right edge, it shows inside no other window,
+// dialogs over their parent included. The drop moves it back.
+static void freezeForDrag(quint64 hwnd)
+{
+    DeskState* st = deskState(hwnd);
+    if (!st || !st->dragging) {
+        return;
+    }
+    st->revealing = false;
+    st->frozen = true;
+    setChildLayerFrozen(hwnd, true);
+    pushDeskEvent(hwnd, "park", 0, 0, 0, 0);
+}
+
+// The window is being brought onto the desk for its picture: frozen once the
+// host shows it there and the video has had a few frames to catch up (or at
+// the deadline).
+static void awaitReveal(quint64 hwnd, int rx, int ry, double deadline, double shownAt)
+{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DESK_TRY
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->dragging || !st->revealing) {
+            if (st) {
+                st->revealing = false;
+            }
+            return;
+        }
+        const double now = CACurrentMediaTime();
+        double shown = shownAt;
+        if (shown == 0 && st->info.x == rx && st->info.y == ry) {
+            shown = now;
+        }
+        if ((shown != 0 && now - shown >= 0.12) || now >= deadline) {
+            freezeForDrag(hwnd);
+            return;
+        }
+        awaitReveal(hwnd, rx, ry, deadline, shown);
+        DESK_CATCH("awaitReveal")
+    });
+}
+
 static void beginDragNow(quint64 hwnd, bool force)
 {
         DeskState* st = deskState(hwnd);
@@ -1688,14 +1734,22 @@ static void beginDragNow(quint64 hwnd, bool force)
             return;  // released already: it was a click after all
         }
         st->dragging = true;
-        st->frozen = true;
         dismissDeskMenus(hwnd);
-        setChildLayerFrozen(hwnd, true);
-        // Out of the way on the host while it is dragged (its picture is
-        // frozen here): parked past the desk's right edge, it shows inside
-        // no other window, dialogs over their parent included. The drop
-        // moves it back.
-        pushDeskEvent(hwnd, "park", 0, 0, 0, 0);
+        // The drag shows a frozen picture. A window hanging off the desk was
+        // never captured whole: it is first brought fully onto the desk and
+        // frozen once a frame shows all of it (live until then; the picture
+        // follows the host's position frame by frame).
+        const AppWindow::DeskWindow& i = st->info;
+        const int dw = (int)g_deskSizePx.width, dh = (int)g_deskSizePx.height;
+        if (dw > 0 && dh > 0 && i.w <= dw && i.h <= dh && (i.x < 0 || i.y < 0 || i.x + i.w > dw || i.y + i.h > dh)) {
+            const int rx = qBound(0, i.x, dw - i.w), ry = qBound(0, i.y, dh - i.h);
+            st->revealing = true;
+            pushDeskEvent(hwnd, "move", rx, ry, 0, 0);
+            awaitReveal(hwnd, rx, ry, CACurrentMediaTime() + 0.6, 0);
+        }
+        else {
+            freezeForDrag(hwnd);
+        }
         if (force) {
             return;  // test drags move the window themselves
         }
@@ -1755,6 +1809,7 @@ void deskEndDrag(quint64 hwnd)
             return;
         }
         st->dragging = false;
+        st->revealing = false;
         int x, y, w, h;
         cocoaToDesk(st->window.frame, x, y, w, h);
         const double now = CACurrentMediaTime();

@@ -2633,7 +2633,7 @@ void Session::exec()
     if (m_IsAppWindow) {
         // Desk mode: nothing is drawn in the SDL window; every desk window is
         // a Mac window of its own, fed by the layout poller.
-        AppWindow::beginDesk(m_Window, m_AppWindow.screenPts, appWindowScale());
+        AppWindow::beginDesk(m_Window, m_AppWindow.screenPts, appWindowScale(), m_StreamConfig.width, m_StreamConfig.height);
         AppWindow::setAppIcon(m_AppWindow.iconPng);
         startDeskPoller();
     }

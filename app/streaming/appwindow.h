@@ -90,7 +90,7 @@ struct DeskWindow {
 };
 // Make the SDL window the hidden key window and set the screen mapping:
 // screenPts is the mirrored screen in SDL global points (top-left origin).
-void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHostPx);
+void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHostPx, int deskW, int deskH);
 // Mirror the desk (bottom-most first): create, move, resize, stack, minimize
 // and close Mac windows to match. Safe from any thread.
 void syncDesk(const QVector<DeskWindow>& windows);

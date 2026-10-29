@@ -8,7 +8,7 @@ QVector<ChildLayer> childLayers() { return {}; }
 void forEachChildLayer(const std::function<void(const ChildLayer&)>&) {}
 void dragChild(quint64, void*) {}
 void releaseChildInput(ChildInput* input) { delete input; }
-void beginDesk(SDL_Window*, const QRect&, double) {}
+void beginDesk(SDL_Window*, const QRect&, double, int, int) {}
 void syncDesk(const QVector<DeskWindow>&) {}
 void setDeskIcon(const QString&, const QByteArray&) {}
 quint64 deskFrontWindow() { return 0; }
