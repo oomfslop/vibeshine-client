@@ -1821,6 +1821,10 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         // Test hooks: the desk windows do these as the user would
         deskwm_command(QJsonDocument(cmd).toJson(QJsonDocument::Compact).constData());
     }
+    else if (kind == "clipsync") {
+        // Test hook: the sync a focus change does
+        syncClipboard(cmd.value("to").toString() == "host" ? ClipboardDirection::ToHost : ClipboardDirection::FromHost, false);
+    }
     else if (kind == "close") {
         SDL_Event quit = {};
         quit.type = SDL_QUIT;
