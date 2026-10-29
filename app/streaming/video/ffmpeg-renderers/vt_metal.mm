@@ -616,7 +616,15 @@ public:
             // Opaque windows get their rounded corners here; a picture with
             // alpha carries its own shape
             const simd_float4 rect = { (float)dw, (float)dh, alpha ? 0.0f : (float)child.radius, alpha ? 1.0f : 0.0f };
-            const simd_float2 white = { alpha ? (float)(g.ax - g.x) / frame->width : 0.0f, alpha ? (float)(g.ay - g.y) / frame->height : 0.0f };
+            // The copy on white (alpha_scale times the size): per corner, its
+            // texture coordinates minus the picture's
+            const float ar = g.alpha_scale > 0.0f ? g.alpha_scale : 1.0f;
+            auto whiteAt = [&](float tx, float ty) -> simd_float2 {
+                if (!alpha) {
+                    return simd_float2 { 0.0f, 0.0f };
+                }
+                return simd_float2 { (g.ax + (tx - g.x) * ar - tx) / frame->width, (g.ay + (ty - g.y) * ar - ty) / frame->height };
+            };
             // One quad: drawable px [dx0, dx1) x [dy0, dy1) from frame px at (u0, v0) (u1, v1)
             std::vector<VertexAW> verts;
             auto quad = [&](float dx0, float dy0, float dx1, float dy1, float tx0, float ty0, float tx1, float ty1) {
@@ -625,12 +633,13 @@ public:
                 const float u0 = tx0 / frame->width, u1 = tx1 / frame->width;
                 const float v0 = ty0 / frame->height, v1 = ty1 / frame->height;
                 const float lx0 = dx0 - ox, lx1 = dx1 - ox, ly0 = dy0 - oy, ly1 = dy1 - oy;
-                verts.push_back({ { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { lx0, ly1 }, rect, white });
-                verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, white });
-                verts.push_back({ { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { lx1, ly1 }, rect, white });
-                verts.push_back({ { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { lx1, ly1 }, rect, white });
-                verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, white });
-                verts.push_back({ { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { lx1, ly0 }, rect, white });
+                const simd_float2 w00 = whiteAt(tx0, ty0), w10 = whiteAt(tx1, ty0), w01 = whiteAt(tx0, ty1), w11 = whiteAt(tx1, ty1);
+                verts.push_back({ { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { lx0, ly1 }, rect, w01 });
+                verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, w00 });
+                verts.push_back({ { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { lx1, ly1 }, rect, w11 });
+                verts.push_back({ { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { lx1, ly1 }, rect, w11 });
+                verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, w00 });
+                verts.push_back({ { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { lx1, ly0 }, rect, w10 });
             };
             quad(ox, oy, ox + dw, oy + dh, sx, sy, sx + dw * scale, sy + dh * scale);
             // The parts the user sees, 1:1 over the smaller picture

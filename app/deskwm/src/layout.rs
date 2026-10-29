@@ -32,6 +32,8 @@ pub struct Info {
     pub slot: (i32, i32, i32, i32),
     /// The same picture on white, for exact alpha (-1: opaque)
     pub alpha: (i32, i32),
+    /// That copy's size relative to the picture
+    pub alpha_scale: f32,
     pub scale: f32,
     /// Parts of a picture drawn smaller that are also in the frame 1:1 (the
     /// parts the user sees): x, y, w, h in the picture (host px), ax, ay in
@@ -72,6 +74,8 @@ struct RawWindow {
     slot: Vec<i32>,
     #[serde(default)]
     alpha_slot: Vec<i32>,
+    #[serde(default)]
+    alpha_scale: Option<f64>,
     #[serde(default)]
     scale: Option<f64>,
     #[serde(default)]
@@ -141,6 +145,7 @@ pub fn parse(json: &[u8], desk_w: i32, desk_h: i32) -> Option<Layout> {
             icon_key: w.icon,
             slot,
             alpha,
+            alpha_scale: w.alpha_scale.unwrap_or(1.0) as f32,
             scale: w.scale.unwrap_or(1.0) as f32,
             pieces: w.pieces.iter().filter(|p| p.len() == 6 && p[2] > 0 && p[3] > 0).map(|p| [p[0], p[1], p[2], p[3], p[4], p[5]]).collect(),
             ts,

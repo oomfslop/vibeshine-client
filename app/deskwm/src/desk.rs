@@ -465,6 +465,7 @@ fn geo_of(i: &Info) -> Geo {
         ax: i.alpha.0,
         ay: i.alpha.1,
         scale: i.scale,
+        alpha_scale: i.alpha_scale,
         piece_count: i.pieces.len().min(ffi::PIECE_MAX) as u32,
         pieces,
     }

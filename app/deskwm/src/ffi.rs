@@ -137,6 +137,7 @@ pub struct Geo {
     pub ax: i32,
     pub ay: i32,
     pub scale: f32,
+    pub alpha_scale: f32,
     pub piece_count: u32,
     pub pieces: [Piece; PIECE_MAX],
 }
@@ -158,7 +159,7 @@ pub const PIECE_MAX: usize = 192;
 
 impl Default for Geo {
     fn default() -> Self {
-        Geo { ts: 0, x: 0, y: 0, w: 0, h: 0, ax: 0, ay: 0, scale: 0.0, piece_count: 0, pieces: [Piece::default(); PIECE_MAX] }
+        Geo { ts: 0, x: 0, y: 0, w: 0, h: 0, ax: 0, ay: 0, scale: 0.0, alpha_scale: 1.0, piece_count: 0, pieces: [Piece::default(); PIECE_MAX] }
     }
 }
 

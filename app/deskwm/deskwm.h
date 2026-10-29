@@ -50,6 +50,7 @@ typedef struct DeskwmGeo {
     int32_t x, y, w, h;
     int32_t ax, ay;
     float scale;
+    float alpha_scale;  // the copy on white's size relative to the picture
     uint32_t piece_count;
     DeskwmPiece pieces[DESKWM_PIECE_MAX];
 } DeskwmGeo;
