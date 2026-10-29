@@ -651,7 +651,8 @@ void deskSyncOrder()
     // continuously, so a missed or refused activation is retried. (The
     // "main" window can't be used: the hidden key window stays main.)
     static const bool s_assumeActive = qEnvironmentVariableIntValue("DESK_TEST_ASSUME_ACTIVE") != 0;  // tests run in the background
-    if ((NSApp.isActive || s_assumeActive) && !mac.isEmpty()) {
+    const bool active = NSApp.isActive || s_assumeActive;
+    if (active && !mac.isEmpty()) {
         const quint64 topHwnd = mac.last();
         bool ok = g_hostFocused == topHwnd;
         for (DeskState* f = deskState(g_hostFocused); !ok && f && f->info.owner; f = deskState(f->info.owner)) {
@@ -679,20 +680,27 @@ void deskSyncOrder()
         }
     }
     // The host reordered by itself (an app raised a window, a new one came
-    // up there first): put it back to ours, at most once a second
+    // up there first): put it back to ours, at most once a second and a few
+    // times for the same disagreement (the host may refuse it)
     static double s_hostDiffSince = 0;
+    static int s_retries = 0;
     if (!mac.isEmpty() && mac == g_lastOrder && !g_forceOrderPush) {
         if (host.size() == mac.size() && host != mac) {
             if (s_hostDiffSince == 0) {
                 s_hostDiffSince = now;
             }
-            if (now - s_hostDiffSince > 0.3 && now - g_orderPushedAt > 1.0) {
+            if (now - s_hostDiffSince > 0.3 && now - g_orderPushedAt > 1.0 && s_retries < 3) {
                 g_forceOrderPush = true;
+                s_retries++;
             }
         }
         else {
             s_hostDiffSince = 0;
+            s_retries = 0;
         }
+    }
+    else if (mac != g_lastOrder) {
+        s_retries = 0;
     }
     if (mac.isEmpty() || (mac == g_lastOrder && !g_forceOrderPush)) {
         return;
@@ -704,9 +712,18 @@ void deskSyncOrder()
     if (mac == host) {
         return;  // the host is there already
     }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: mac [%s] -> host (was [%s])", qPrintable(orderString(mac)), qPrintable(orderString(host)));
+    // While we are active, the front window takes the focus in the same
+    // request: the host never shows the new order with the old focus (the
+    // separate activation came a moment later, and in between the host
+    // could restack for the old focus)
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk order: mac [%s] -> host (was [%s])%s", qPrintable(orderString(mac)), qPrintable(orderString(host)), active ? " +focus" : "");
     auto* ev = new AppWindow::DeskEvent;
     ev->kind = QStringLiteral("order");
+    ev->focus = active;
+    if (active) {
+        g_lastFocusPush = now;
+        g_focusMismatchSince = 0;
+    }
     for (int i = mac.size() - 1; i >= 0; i--) {
         ev->order.append(mac[i]);
     }

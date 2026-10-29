@@ -106,6 +106,7 @@ struct DeskEvent {
     QString kind;  // move, resize, minimize, restore, lower, activate, dragend, order
     int x = 0, y = 0, w = 0, h = 0;
     QVector<quint64> order;  // "order": our windows, top-most first
+    bool focus = false;      // "order": also activate the top-most one
 };
 void deskMinimize(quint64 hwnd);
 // A press on a window's caption turned into a drag (the mouse moved): the

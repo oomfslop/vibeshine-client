@@ -2081,7 +2081,7 @@ void Session::handleDeskEvent(void* raw)
         for (quint64 h : ev->order) {
             hwnds.append(QString("0x%1").arg(h, 0, 16));
         }
-        sendWindowAction(0, "order:" + hwnds.join(','));
+        sendWindowAction(0, (ev->focus ? "orderfocus:" : "order:") + hwnds.join(','));
     }
     emit appWindowEvent({{"kind", ev->kind}, {"hwnd", QString("0x%1").arg(ev->hwnd, 0, 16)}, {"x", ev->x}, {"y", ev->y}, {"w", ev->w}, {"h", ev->h}});
     delete ev;
@@ -2120,8 +2120,11 @@ void Session::sendWindowAction(quint64 hwnd, const QString& op, int x, int y, in
                     http.windowAction(it.key(), "adopt", it.value().x(), it.value().y());
                 }
                 for (const auto& op : ops) {
-                    if (op.second.startsWith("order:")) {
-                        http.deskOrder(op.second.mid(6));
+                    if (op.second.startsWith("order:") || op.second.startsWith("orderfocus:")) {
+                        const bool focus = op.second.startsWith("orderfocus:");
+                        if (!http.deskOrder(op.second.mid(op.second.indexOf(':') + 1), focus)) {
+                            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "Desk: order failed");
+                        }
                         continue;
                     }
                     if (!http.windowAction(op.first, op.second)) {

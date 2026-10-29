@@ -517,11 +517,11 @@ NvHTTP::windowAction(quint64 windowHandle, const QString& op, int x, int y, int 
 }
 
 bool
-NvHTTP::deskOrder(const QString& hwnds)
+NvHTTP::deskOrder(const QString& hwnds, bool focus)
 {
     QByteArray body;
     try {
-        QNetworkReply* reply = openConnection(m_BaseUrlHttps, "actions/desk", "op=order&hwnds=" + hwnds, 2000,
+        QNetworkReply* reply = openConnection(m_BaseUrlHttps, "actions/desk", "op=order&hwnds=" + hwnds + (focus ? "&focus=1" : ""), 2000,
                                               NvLogLevel::NVLL_NONE, &body, "text/plain");
         delete reply;
         return true;

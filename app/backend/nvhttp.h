@@ -233,7 +233,7 @@ public:
 
     // Stack the desk's windows like this (comma-separated handles, top-most first)
     bool
-    deskOrder(const QString& hwnds);
+    deskOrder(const QString& hwnds, bool focus);
 
     void
     setClipboardText(const QString& text);
