@@ -490,7 +490,8 @@ NvHTTP::deskLayout(quint64 etag, int waitMs)
 {
     return openConnectionToString(m_BaseUrlHttps,
                                   "actions/desk-layout",
-                                  QString("etag=%1&wait=%2").arg(etag).arg(waitMs),
+                                  QString("etag=%1&wait=%2").arg(etag).arg(waitMs) +
+                                      (qEnvironmentVariableIsSet("DESK_LAYOUT_DELAY") ? "&delay=" + qEnvironmentVariable("DESK_LAYOUT_DELAY") : QString()),
                                   waitMs + 3000);
 }
 

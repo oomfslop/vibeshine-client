@@ -557,15 +557,19 @@ public:
             }
             // The window's picture as it was when this frame was captured: the
             // newest geometry stamped at or before the frame's capture time.
+            // None yet (a window that has just appeared): nothing to draw.
             int pick = (int)child.geo_count - 1;
             if (frame->pts != AV_NOPTS_VALUE) {
                 const quint32 pts = (quint32)frame->pts;
-                pick = 0;
+                pick = -1;
                 for (int i = (int)child.geo_count - 1; i >= 0; i--) {
                     if ((qint32)(pts - child.geo[i].ts) >= 0) {
                         pick = i;
                         break;
                     }
+                }
+                if (pick < 0) {
+                    return;
                 }
             }
             const DeskwmGeo g = child.geo[pick];

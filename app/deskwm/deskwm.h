@@ -43,7 +43,7 @@ typedef struct DeskwmPiece {
     int32_t ax, ay;
 } DeskwmPiece;
 
-#define DESKWM_PIECE_MAX 64
+#define DESKWM_PIECE_MAX 192
 
 typedef struct DeskwmGeo {
     uint32_t ts;

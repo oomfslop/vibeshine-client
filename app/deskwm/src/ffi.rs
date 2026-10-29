@@ -154,7 +154,7 @@ pub struct Piece {
     pub ay: i32,
 }
 
-pub const PIECE_MAX: usize = 64;
+pub const PIECE_MAX: usize = 192;
 
 impl Default for Geo {
     fn default() -> Self {
