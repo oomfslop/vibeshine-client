@@ -432,6 +432,7 @@ struct DeskState {
     bool userMoving = false;     // a drag is under way, nothing sent yet
     bool pendingMove = false;    // a move was sent; the host has not shown it yet
     bool revealing = false;      // a drag began with the window hanging off the desk: brought onto it before freezing
+    QVector<quint64> heldForReveal;  // other windows whose pictures stay as they were meanwhile
     bool pendingResize = false;
     bool pendingMinimize = false, pendingRestore = false;
     double pendingSince = 0;     // CACurrentMediaTime() of the last change sent
@@ -1687,6 +1688,46 @@ static void pollDragEnd(quint64 hwnd)
 // Out of the way on the host while it is dragged (its picture is frozen
 // here): parked past the desk's right edge, it shows inside no other window,
 // dialogs over their parent included. The drop moves it back.
+// The windows a reveal would show through: their pictures are held until
+// the host has parked the dragged window again and the video caught up.
+static void releaseHeld(quint64 hwnd)
+{
+    DeskState* st = deskState(hwnd);
+    if (!st) {
+        return;
+    }
+    for (quint64 other : st->heldForReveal) {
+        DeskState* o = deskState(other);
+        if (o && !o->frozen) {
+            setChildLayerFrozen(other, false);
+        }
+    }
+    st->heldForReveal.clear();
+}
+
+static void awaitParked(quint64 hwnd, double deadline, double shownAt)
+{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        DESK_TRY
+        DeskState* st = deskState(hwnd);
+        if (!st || st->heldForReveal.isEmpty()) {
+            return;
+        }
+        const double now = CACurrentMediaTime();
+        double shown = shownAt;
+        // Parked: past the desk's right edge but for 8 px
+        if (shown == 0 && st->info.x >= (int)g_deskSizePx.width - 16) {
+            shown = now;
+        }
+        if ((shown != 0 && now - shown >= 0.12) || now >= deadline) {
+            releaseHeld(hwnd);
+            return;
+        }
+        awaitParked(hwnd, deadline, shown);
+        DESK_CATCH("awaitParked")
+    });
+}
+
 static void freezeForDrag(quint64 hwnd)
 {
     DeskState* st = deskState(hwnd);
@@ -1697,6 +1738,9 @@ static void freezeForDrag(quint64 hwnd)
     st->frozen = true;
     setChildLayerFrozen(hwnd, true);
     pushDeskEvent(hwnd, "park", 0, 0, 0, 0);
+    if (!st->heldForReveal.isEmpty()) {
+        awaitParked(hwnd, CACurrentMediaTime() + 1.0, 0);
+    }
 }
 
 // The window is being brought onto the desk for its picture: frozen once the
@@ -1744,6 +1788,16 @@ static void beginDragNow(quint64 hwnd, bool force)
         if (dw > 0 && dh > 0 && i.w <= dw && i.h <= dh && (i.x < 0 || i.y < 0 || i.x + i.w > dw || i.y + i.h > dh)) {
             const int rx = qBound(0, i.x, dw - i.w), ry = qBound(0, i.y, dh - i.h);
             st->revealing = true;
+            // Brought onto the desk, it shows inside the windows it then
+            // overlaps there: their pictures are held meanwhile
+            const QRect reveal(rx, ry, i.w, i.h);
+            for (NSNumber* key in g_desk) {
+                DeskState* o = (DeskState*)g_desk[key].pointerValue;
+                if (o && o != st && !o->frozen && reveal.intersects(QRect(o->info.x, o->info.y, o->info.w, o->info.h))) {
+                    setChildLayerFrozen(o->info.hwnd, true);
+                    st->heldForReveal.append(o->info.hwnd);
+                }
+            }
             pushDeskEvent(hwnd, "move", rx, ry, 0, 0);
             awaitReveal(hwnd, rx, ry, CACurrentMediaTime() + 0.6, 0);
         }
@@ -1810,6 +1864,9 @@ void deskEndDrag(quint64 hwnd)
         }
         st->dragging = false;
         st->revealing = false;
+        if (!st->heldForReveal.isEmpty() && !st->frozen) {
+            releaseHeld(hwnd);  // dropped before it was even frozen
+        }
         int x, y, w, h;
         cocoaToDesk(st->window.frame, x, y, w, h);
         const double now = CACurrentMediaTime();
