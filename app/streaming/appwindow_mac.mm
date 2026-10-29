@@ -619,11 +619,63 @@ QString orderString(const QVector<quint64>& order)
     return parts.join(' ');
 }
 
-// The Mac's stacking of our windows is the truth and only travels one way:
-// whenever it changes (clicks, window switchers, Mission Control, new
-// windows), the host gets the same z-order, without any focus change.
-// The Mac windows are never reordered to match the host: that would pull
-// windows sitting behind other apps to the front.
+// The pane a host window belongs to: itself, or the pane owning the
+// focused popup or dialog.
+quint64 rootDeskPane(quint64 hwnd)
+{
+    for (DeskState* st = deskState(hwnd); st; st = deskState(st->info.owner)) {
+        if (isDeskPane(st->info)) {
+            return st->info.hwnd;
+        }
+        if (!st->info.owner) {
+            break;
+        }
+    }
+    return 0;
+}
+
+// Our panes, bottom-most first, as AppKit stacks them
+QVector<quint64> deskMacOrder()
+{
+    QVector<quint64> order;
+    for (NSWindow* w in [[NSApp orderedWindows] reverseObjectEnumerator]) {
+        if (![w isKindOfClass:[AWChildWindow class]] || ![w.contentView isKindOfClass:[AWChildView class]]) {
+            continue;
+        }
+        const quint64 hwnd = ((AWChildView*)w.contentView).hwnd;
+        DeskState* st = deskState(hwnd);
+        if (st && isDeskPane(st->info) && st->goneSince == 0 && !w.miniaturized && w.visible) {
+            order.append(hwnd);
+        }
+    }
+    return order;
+}
+
+// Stack these panes (bottom-most first) on top of our others, each right
+// above our current front-most one. Relative ordering keeps them below other
+// apps' windows that are above ours: the host never pulls us over the app
+// the user is in.
+void raiseDeskPanes(const QVector<quint64>& bottomFirst)
+{
+    const QVector<quint64> now = deskMacOrder();
+    if (now.isEmpty()) {
+        return;
+    }
+    NSWindow* anchor = deskState(now.last()) ? deskState(now.last())->window : nil;
+    for (quint64 hwnd : bottomFirst) {
+        DeskState* st = deskState(hwnd);
+        if (!st || !st->window || st->window == anchor) {
+            continue;
+        }
+        if (anchor) {
+            [st->window orderWindow:NSWindowAbove relativeTo:anchor.windowNumber];
+        }
+        anchor = st->window;
+    }
+}
+
+// Stacking and focus, both ways (see the comment inside). The Mac windows
+// are only ever reordered among themselves, never pulled above other apps.
 void deskSyncOrder()
 {
     if (!g_desk) {
@@ -645,19 +697,94 @@ void deskSyncOrder()
         mac.append(hwnd);
     }
     const double now = CACurrentMediaTime();
-    // Keyboard focus: while we are the active app, the host focuses our
-    // front-most window, the one the user picked last (click, window
-    // switcher, Mission Control all bring it to the front here). Checked
-    // continuously, so a missed or refused activation is retried. (The
-    // "main" window can't be used: the hidden key window stays main.)
     static const bool s_assumeActive = qEnvironmentVariableIntValue("DESK_TEST_ASSUME_ACTIVE") != 0;  // tests run in the background
     const bool active = NSApp.isActive || s_assumeActive;
-    if (active && !mac.isEmpty()) {
-        const quint64 topHwnd = mac.last();
-        bool ok = g_hostFocused == topHwnd;
-        for (DeskState* f = deskState(g_hostFocused); !ok && f && f->info.owner; f = deskState(f->info.owner)) {
-            ok = f->info.owner == topHwnd;  // its dialog or menu has the focus: fine
+    QVector<quint64> host;
+    for (quint64 h : g_hostOrder) {
+        if (mac.contains(h)) {
+            host.append(h);
         }
+    }
+    // Who changed what decides the direction. What the user does here
+    // (clicks, Cmd-Tab, Cmd-`, Mission Control) changes the Mac's order
+    // first: it goes to the host. What happens on the host by itself (an app
+    // brings its window up: a file opened from Explorer lands in a running
+    // Notepad, a dialog takes the focus, a window raises another) changes
+    // the host first: the Mac follows. A host change that only echoes a
+    // request of ours is not the host's; a Mac change not yet sent wins.
+    static quint64 s_prevHostFocused = 0;
+    static QHash<quint64, double> s_requested;  // pane -> when we asked the host to focus it
+    const quint64 hostPane = rootDeskPane(g_hostFocused);
+    const bool hostFocusMoved = g_hostFocused != s_prevHostFocused;
+    s_prevHostFocused = g_hostFocused;
+    const bool ourRequestRecent = now - g_orderPushedAt < 1.0 || now - g_lastFocusPush < 1.0;
+    // Focus that left our windows by itself (a file opened from Explorer
+    // in an app on the host's own display, a host-side window clicked
+    // there) stays where the host put it until the user acts here: picks
+    // another of our windows or comes back to the app.
+    static bool s_hostOwnsFocus = false;
+    static quint64 s_prevTop = 0;
+    static bool s_prevActive = false;
+    const quint64 macTop = mac.isEmpty() ? 0 : mac.last();
+    const bool topChanged = macTop != s_prevTop;
+    if (topChanged || active != s_prevActive || (hostPane && hostPane == macTop)) {
+        s_hostOwnsFocus = false;
+    }
+    s_prevTop = macTop;
+    s_prevActive = active;
+    if (hostFocusMoved && !hostPane && g_hostFocused == 0 && mac == g_lastOrder && !ourRequestRecent) {
+        s_hostOwnsFocus = true;
+    }
+    // The host focused one of our windows by itself: it comes up here. It
+    // may not be up yet (restored from minimized by the host): kept for a
+    // moment, during which our own focus retry stays quiet.
+    static quint64 s_follow = 0;
+    static double s_followAt = 0;
+    if (hostFocusMoved && hostPane && hostPane != macTop && now - s_requested.value(hostPane, -10) > 1.5) {
+        s_follow = hostPane;
+        s_followAt = now;
+    }
+    else if (s_follow && topChanged) {
+        s_follow = 0;  // the user picked a window here meanwhile
+    }
+    if (s_follow && (hostPane != s_follow || s_follow == macTop || now - s_followAt > 2.0)) {
+        s_follow = 0;
+    }
+    if (s_follow && mac.contains(s_follow)) {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk: host focused 0x%llx by itself; bringing it up here", (unsigned long long)s_follow);
+        raiseDeskPanes({s_follow});
+        s_follow = 0;
+        g_focusMismatchSince = 0;
+        g_lastOrder = deskMacOrder();
+        return;  // the next tick pushes the rest of the order, if it differs
+    }
+    // The host restacked by itself without a focus change (a new window on
+    // top, an app raising another): the Mac takes the host's order, among our
+    // own windows only, once nothing of ours is on its way
+    static double s_hostDiffSince = 0;
+    if (!mac.isEmpty() && mac == g_lastOrder && !g_forceOrderPush && !ourRequestRecent &&
+            host.size() == mac.size() && host != mac) {
+        if (s_hostDiffSince == 0) {
+            s_hostDiffSince = now;
+        }
+        else if (now - s_hostDiffSince > 0.3) {
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk: host restacked by itself [%s]; following", qPrintable(orderString(host)));
+            raiseDeskPanes(host);
+            g_lastOrder = deskMacOrder();
+            s_hostDiffSince = 0;
+            return;
+        }
+    }
+    else {
+        s_hostDiffSince = 0;
+    }
+    // Keyboard focus: while we are the active app, the host focuses our
+    // front-most window, the one the user picked last. A refused activation
+    // is retried; one the host replaced by its own choice was handled above.
+    // (The "main" window can't be used: the hidden key window stays main.)
+    if (active && !mac.isEmpty() && !s_hostOwnsFocus && !s_follow) {
+        const quint64 topHwnd = mac.last();
+        const bool ok = hostPane == topHwnd;
         // (Focus on nothing of ours, e.g. a window on the host's own display,
         // is a mismatch too.)
         if (ok) {
@@ -670,37 +797,9 @@ void deskSyncOrder()
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk focus: host has 0x%llx, front here is 0x%llx; activating",
                         (unsigned long long)g_hostFocused, (unsigned long long)topHwnd);
             g_lastFocusPush = now;
+            s_requested[topHwnd] = now;
             pushDeskEvent(topHwnd, "activate", 0, 0, 0, 0);
         }
-    }
-    QVector<quint64> host;
-    for (quint64 h : g_hostOrder) {
-        if (mac.contains(h)) {
-            host.append(h);
-        }
-    }
-    // The host reordered by itself (an app raised a window, a new one came
-    // up there first): put it back to ours, at most once a second and a few
-    // times for the same disagreement (the host may refuse it)
-    static double s_hostDiffSince = 0;
-    static int s_retries = 0;
-    if (!mac.isEmpty() && mac == g_lastOrder && !g_forceOrderPush) {
-        if (host.size() == mac.size() && host != mac) {
-            if (s_hostDiffSince == 0) {
-                s_hostDiffSince = now;
-            }
-            if (now - s_hostDiffSince > 0.3 && now - g_orderPushedAt > 1.0 && s_retries < 3) {
-                g_forceOrderPush = true;
-                s_retries++;
-            }
-        }
-        else {
-            s_hostDiffSince = 0;
-            s_retries = 0;
-        }
-    }
-    else if (mac != g_lastOrder) {
-        s_retries = 0;
     }
     if (mac.isEmpty() || (mac == g_lastOrder && !g_forceOrderPush)) {
         return;
@@ -723,6 +822,7 @@ void deskSyncOrder()
     if (active) {
         g_lastFocusPush = now;
         g_focusMismatchSince = 0;
+        s_requested[mac.last()] = now;
     }
     for (int i = mac.size() - 1; i >= 0; i--) {
         ev->order.append(mac[i]);
