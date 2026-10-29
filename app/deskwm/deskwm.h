@@ -35,12 +35,23 @@ typedef struct DeskwmCallbacks {
 
 // A window's picture in a frame: where it is (x, y, w, h: its slot in the
 // atlas) from the frame stamped ts on, its copy on white (ax, ay; -1 = the
-// picture is opaque) and its scale in the atlas.
+// picture is opaque) and its scale in the atlas. A picture drawn smaller
+// comes with the parts the user sees 1:1 as well (pieces: x, y, w, h in the
+// picture in host px, ax, ay in the frame), to draw over it.
+typedef struct DeskwmPiece {
+    int32_t x, y, w, h;
+    int32_t ax, ay;
+} DeskwmPiece;
+
+#define DESKWM_PIECE_MAX 8
+
 typedef struct DeskwmGeo {
     uint32_t ts;
     int32_t x, y, w, h;
     int32_t ax, ay;
     float scale;
+    uint32_t piece_count;
+    DeskwmPiece pieces[DESKWM_PIECE_MAX];
 } DeskwmGeo;
 
 #define DESKWM_GEO_MAX 12

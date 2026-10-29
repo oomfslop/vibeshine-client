@@ -608,26 +608,40 @@ public:
             const float sx = (float)g.x + (child.anchor_right ? (pw - dw) * scale : 0.0f);
             const float sy = (float)g.y + (child.anchor_bottom ? (ph - dh) * scale : 0.0f);
             const int ox = child.anchor_right ? vw - dw : 0, oy = child.anchor_bottom ? vh - dh : 0;
-            const float xl = -1.0f + 2.0f * ox / vw, xr = -1.0f + 2.0f * (ox + dw) / vw;
-            const float yt = 1.0f - 2.0f * oy / vh, yb = 1.0f - 2.0f * (oy + dh) / vh;
             const bool alpha = g.ax >= 0 && g.ay >= 0;
             // Opaque windows get their rounded corners here; a picture with
             // alpha carries its own shape
             const simd_float4 rect = { (float)dw, (float)dh, alpha ? 0.0f : (float)child.radius, alpha ? 1.0f : 0.0f };
             const simd_float2 white = { alpha ? (float)(g.ax - g.x) / frame->width : 0.0f, alpha ? (float)(g.ay - g.y) / frame->height : 0.0f };
-            const float u0 = sx / frame->width;
-            const float v0 = sy / frame->height;
-            const float u1 = (sx + dw * scale) / frame->width;
-            const float v1 = (sy + dh * scale) / frame->height;
-            const VertexAW verts[] = {
-                { { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)dh }, rect, white },
-                { { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect, white },
-                { { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { (float)dw, (float)dh }, rect, white },
-                { { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { (float)dw, (float)dh }, rect, white },
-                { { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect, white },
-                { { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { (float)dw, 0.0f }, rect, white },
+            // One quad: drawable px [dx0, dx1) x [dy0, dy1) from frame px at (u0, v0) (u1, v1)
+            std::vector<VertexAW> verts;
+            auto quad = [&](float dx0, float dy0, float dx1, float dy1, float tx0, float ty0, float tx1, float ty1) {
+                const float xl = -1.0f + 2.0f * dx0 / vw, xr = -1.0f + 2.0f * dx1 / vw;
+                const float yt = 1.0f - 2.0f * dy0 / vh, yb = 1.0f - 2.0f * dy1 / vh;
+                const float u0 = tx0 / frame->width, u1 = tx1 / frame->width;
+                const float v0 = ty0 / frame->height, v1 = ty1 / frame->height;
+                const float lx0 = dx0 - ox, lx1 = dx1 - ox, ly0 = dy0 - oy, ly1 = dy1 - oy;
+                verts.push_back({ { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { lx0, ly1 }, rect, white });
+                verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, white });
+                verts.push_back({ { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { lx1, ly1 }, rect, white });
+                verts.push_back({ { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { lx1, ly1 }, rect, white });
+                verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, white });
+                verts.push_back({ { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { lx1, ly0 }, rect, white });
             };
-            id<MTLBuffer> vb = [m_MetalLayer.device newBufferWithBytes:verts length:sizeof(verts) options:MTLResourceStorageModeShared];
+            quad(ox, oy, ox + dw, oy + dh, sx, sy, sx + dw * scale, sy + dh * scale);
+            // The parts the user sees, 1:1 over the smaller picture
+            const int px0 = child.anchor_right ? pw - dw : 0, py0 = child.anchor_bottom ? ph - dh : 0;
+            for (uint32_t k = 0; k < g.piece_count && k < DESKWM_PIECE_MAX; k++) {
+                const DeskwmPiece& p = g.pieces[k];
+                const int x0 = qMax(p.x, px0), x1 = qMin(p.x + p.w, px0 + dw);
+                const int y0 = qMax(p.y, py0), y1 = qMin(p.y + p.h, py0 + dh);
+                if (x0 >= x1 || y0 >= y1) {
+                    continue;
+                }
+                quad(ox + x0 - px0, oy + y0 - py0, ox + x1 - px0, oy + y1 - py0,
+                     p.ax + x0 - p.x, p.ay + y0 - p.y, p.ax + x1 - p.x, p.ay + y1 - p.y);
+            }
+            id<MTLBuffer> vb = [m_MetalLayer.device newBufferWithBytes:verts.data() length:verts.size() * sizeof(VertexAW) options:MTLResourceStorageModeShared];
             auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
             pass.colorAttachments[0].texture = drawable.texture;
             pass.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -647,7 +661,7 @@ public:
             }
             [encoder setFragmentBuffer:m_CscParamsBuffer offset:0 atIndex:0];
             [encoder setVertexBuffer:vb offset:0 atIndex:0];
-            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
+            [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:verts.size()];
             [encoder endEncoding];
             [commandBuffer presentDrawable:drawable];
             [vb release];

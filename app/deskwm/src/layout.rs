@@ -33,6 +33,10 @@ pub struct Info {
     /// The same picture on white, for exact alpha (-1: opaque)
     pub alpha: (i32, i32),
     pub scale: f32,
+    /// Parts of a picture drawn smaller that are also in the frame 1:1 (the
+    /// parts the user sees): x, y, w, h in the picture (host px), ax, ay in
+    /// the frame
+    pub pieces: Vec<[i32; 6]>,
     /// When the host saw this, on the video frames' clock
     pub ts: u32,
 }
@@ -70,6 +74,8 @@ struct RawWindow {
     alpha_slot: Vec<i32>,
     #[serde(default)]
     scale: Option<f64>,
+    #[serde(default)]
+    pieces: Vec<Vec<i32>>,
 }
 
 #[derive(Deserialize)]
@@ -136,6 +142,7 @@ pub fn parse(json: &[u8], desk_w: i32, desk_h: i32) -> Option<Layout> {
             slot,
             alpha,
             scale: w.scale.unwrap_or(1.0) as f32,
+            pieces: w.pieces.iter().filter(|p| p.len() == 6 && p[2] > 0 && p[3] > 0).map(|p| [p[0], p[1], p[2], p[3], p[4], p[5]]).collect(),
             ts,
         });
     }
@@ -182,6 +189,17 @@ mod tests {
         assert_eq!(l.windows[0].kind, Kind::Dialog);
         assert!(l.windows[0].minimized);
         assert_eq!(l.windows[0].slot.2, 0);
+    }
+
+    #[test]
+    fn pieces_of_a_picture_drawn_smaller() {
+        let json = br#"{"windows":[
+            {"hwnd":"0x5","kind":"window","rect":[83,105,2941,1763],"slot":[2624,0,736,441],"scale":0.25,
+             "pieces":[[0,0,448,1763,2624,500],[0,0,2941,160,0,1900],[1,2,0,4,5,6],[1,2,3]]}]}"#;
+        let l = parse(json, 3024, 1964).expect("parses");
+        let w = &l.windows[0];
+        assert_eq!(w.scale, 0.25);
+        assert_eq!(w.pieces, vec![[0, 0, 448, 1763, 2624, 500], [0, 0, 2941, 160, 0, 1900]]);
     }
 
     #[test]

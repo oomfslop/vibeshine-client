@@ -137,7 +137,24 @@ pub struct Geo {
     pub ax: i32,
     pub ay: i32,
     pub scale: f32,
+    pub piece_count: u32,
+    pub pieces: [Piece; PIECE_MAX],
 }
+
+/// Part of a picture also in the frame 1:1: x, y, w, h in the picture (host
+/// px), ax, ay where it is in the frame
+#[repr(C)]
+#[derive(Copy, Clone, Default, PartialEq)]
+pub struct Piece {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub ax: i32,
+    pub ay: i32,
+}
+
+pub const PIECE_MAX: usize = 8;
 
 pub const GEO_MAX: usize = 12;
 

@@ -452,6 +452,10 @@ fn close_window(w: &Win) {
 }
 
 fn geo_of(i: &Info) -> Geo {
+    let mut pieces = [ffi::Piece::default(); ffi::PIECE_MAX];
+    for (k, p) in i.pieces.iter().take(ffi::PIECE_MAX).enumerate() {
+        pieces[k] = ffi::Piece { x: p[0], y: p[1], w: p[2], h: p[3], ax: p[4], ay: p[5] };
+    }
     Geo {
         ts: i.ts,
         x: i.slot.0,
@@ -461,6 +465,8 @@ fn geo_of(i: &Info) -> Geo {
         ax: i.alpha.0,
         ay: i.alpha.1,
         scale: i.scale,
+        piece_count: i.pieces.len().min(ffi::PIECE_MAX) as u32,
+        pieces,
     }
 }
 
@@ -900,8 +906,9 @@ pub fn did_miniaturize(hwnd: u64, minimized: bool) {
 // --- Drags -----------------------------------------------------------------------------
 
 /// A caption press turned into a drag: the system's own window drag (tiling at
-/// edges and corners, Mission Control, other screens). The host window stays
-/// where it is until the drop; its picture stays live meanwhile.
+/// edges and corners, Mission Control, other screens). The host window follows
+/// a few times a second (pictures come from the atlas, so where it is does
+/// not change them, but the host then knows what the drag uncovers).
 pub fn begin_drag(hwnd: u64) {
     let Some(w) = win(hwnd) else { return };
     if NSEvent::pressedMouseButtons() & 1 == 0 {
@@ -926,11 +933,20 @@ pub fn begin_drag(hwnd: u64) {
     if let Some(down) = down {
         ns.performWindowDragWithEvent(&down);
     }
-    poll_drag_end(hwnd);
+    poll_drag_end(hwnd, 0);
+}
+
+/// Mid-drag: tell the host where the window is now
+fn drag_follow(hwnd: u64, tick: u32) {
+    if tick % 3 == 2 {
+        if let (Some(d), Some(w)) = (desk(), win(hwnd)) {
+            send_position(&d, &w);
+        }
+    }
 }
 
 /// The window server owns a native drag and swallows its mouse-up: watch the button
-fn poll_drag_end(hwnd: u64) {
+fn poll_drag_end(hwnd: u64, tick: u32) {
     ffi::on_main_after(0.016, move || {
         ffi::guard("drag end", || {
             let Some(w) = win(hwnd) else { return };
@@ -938,7 +954,8 @@ fn poll_drag_end(hwnd: u64) {
                 return;
             }
             if NSEvent::pressedMouseButtons() & 1 != 0 {
-                poll_drag_end(hwnd);
+                drag_follow(hwnd, tick);
+                poll_drag_end(hwnd, tick + 1);
                 return;
             }
             end_drag(hwnd);
@@ -1283,6 +1300,7 @@ pub fn test_drag(hwnd: u64, dx: f64, dy: f64) {
             if let Some(w) = win(hwnd) {
                 if w.dragging.get() {
                     w.ns().setFrameOrigin(NSPoint::new(origin.x + dx * i as f64 / 20.0, origin.y - dy * i as f64 / 20.0));
+                    drag_follow(hwnd, i);
                 }
             }
         });
