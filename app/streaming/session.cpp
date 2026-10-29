@@ -2069,7 +2069,7 @@ void Session::handleDeskEvent(void* raw)
     else if (ev->kind == "resize") {
         sendWindowAction(ev->hwnd, "resize", 0, 0, ev->w, ev->h);
     }
-    else if (ev->kind == "minimize" || ev->kind == "restore" || ev->kind == "lower" || ev->kind == "activate" || ev->kind == "park") {
+    else if (ev->kind == "minimize" || ev->kind == "restore" || ev->kind == "lower" || ev->kind == "activate" || ev->kind == "park" || ev->kind == "dismiss") {
         sendWindowAction(ev->hwnd, ev->kind);
     }
     else if (ev->kind == "dragend") {

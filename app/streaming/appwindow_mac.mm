@@ -674,6 +674,32 @@ void raiseDeskPanes(const QVector<quint64>& bottomFirst)
     }
 }
 
+// The user moves or resizes a window here: on Windows the press on its
+// title bar would have closed its open menus first, and a menu left open
+// stays where it was while the window goes. Hidden here at once, closed on
+// the host (shown again if the host keeps it, e.g. a tooltip).
+void dismissDeskMenus(quint64 pane)
+{
+    bool any = false;
+    for (NSNumber* key in g_desk) {
+        DeskState* st = (DeskState*)g_desk[key].pointerValue;
+        if (!st || !st->window || isDeskPane(st->info) || rootDeskPane(st->info.hwnd) != pane) {
+            continue;
+        }
+        any = true;
+        st->window.alphaValue = 0;
+        const quint64 hwnd = st->info.hwnd;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (DeskState* still = deskState(hwnd); still && still->window) {
+                still->window.alphaValue = 1;
+            }
+        });
+    }
+    if (any) {
+        pushDeskEvent(pane, "dismiss", 0, 0, 0, 0);
+    }
+}
+
 // Stacking and focus, both ways (see the comment inside). The Mac windows
 // are only ever reordered among themselves, never pulled above other apps.
 void deskSyncOrder()
@@ -934,6 +960,9 @@ void closeDesk(DeskState* st)
     if (st->dragging) {
         return;  // our caption drag: deskEndDrag tells the host
     }
+    if (!st->userMoving) {
+        dismissDeskMenus(self.hwnd);  // a move by other means (tiling, snapping)
+    }
     st->userMoving = true;
     [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(moveSettled) object:nil];
     [self performSelector:@selector(moveSettled) withObject:nil afterDelay:0.05];
@@ -976,6 +1005,7 @@ void closeDesk(DeskState* st)
     }
     st->inResize = true;
     st->settling = false;
+    dismissDeskMenus(self.hwnd);
     st->liveStart = st->window.frame;
     st->proposed = st->window.frame.size;
     // The edges being dragged are the ones next to the mouse; the picture
@@ -1654,6 +1684,7 @@ static void beginDragNow(quint64 hwnd, bool force)
         }
         st->dragging = true;
         st->frozen = true;
+        dismissDeskMenus(hwnd);
         setChildLayerFrozen(hwnd, true);
         // Out of the way on the host while it is dragged (its picture is
         // frozen here): parked past the desk's right edge, it shows inside
