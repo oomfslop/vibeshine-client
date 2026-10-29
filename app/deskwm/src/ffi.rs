@@ -127,7 +127,7 @@ pub fn scroll(dy: i16, dx: i16) {
 // --- The renderer's view of the windows --------------------------------------
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, PartialEq)]
+#[derive(Copy, Clone, PartialEq)]
 pub struct Geo {
     pub ts: u32,
     pub x: i32,
@@ -154,7 +154,13 @@ pub struct Piece {
     pub ay: i32,
 }
 
-pub const PIECE_MAX: usize = 8;
+pub const PIECE_MAX: usize = 64;
+
+impl Default for Geo {
+    fn default() -> Self {
+        Geo { ts: 0, x: 0, y: 0, w: 0, h: 0, ax: 0, ay: 0, scale: 0.0, piece_count: 0, pieces: [Piece::default(); PIECE_MAX] }
+    }
+}
 
 pub const GEO_MAX: usize = 12;
 
