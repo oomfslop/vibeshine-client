@@ -140,6 +140,12 @@ void deskNotePress(quint64 hwnd);
 
 - (void)pushUnguarded:(int)kind event:(NSEvent*)event button:(int)button
 {
+    if ((kind == 0 || kind == 3) &&
+            [NSWindow windowNumberAtPoint:[NSEvent mouseLocation] belowWindowWithWindowNumber:0] != self.window.windowNumber) {
+        // Tracking areas report moves even where another window (another
+        // app's included) covers this one: the host must not see a hover there
+        return;
+    }
     const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
     auto* input = new AppWindow::ChildInput;
     input->hwnd = self.hwnd;
@@ -447,6 +453,7 @@ struct DeskState {
 };
 
 NSMutableDictionary<NSNumber*, NSValue*>* g_desk = nil;
+QVector<AppWindow::DeskWindow> g_lastWanted;  // the last layout, re-applied by the timer
 bool g_forceOrderPush = false;  // a drag ended: the Mac's order goes to the host, whatever the host did meanwhile  // hwnd -> DeskState*
 NSWindow* g_deskKeyWindow = nil;
 NSRect g_deskScreen = NSZeroRect;   // SDL global points, top-left origin
@@ -665,15 +672,32 @@ void deskSyncOrder()
             pushDeskEvent(topHwnd, "activate", 0, 0, 0, 0);
         }
     }
-    if (mac.isEmpty() || (mac == g_lastOrder && !g_forceOrderPush)) {
-        return;
-    }
     QVector<quint64> host;
     for (quint64 h : g_hostOrder) {
         if (mac.contains(h)) {
             host.append(h);
         }
     }
+    // The host reordered by itself (an app raised a window, a new one came
+    // up there first): put it back to ours, at most once a second
+    static double s_hostDiffSince = 0;
+    if (!mac.isEmpty() && mac == g_lastOrder && !g_forceOrderPush) {
+        if (host.size() == mac.size() && host != mac) {
+            if (s_hostDiffSince == 0) {
+                s_hostDiffSince = now;
+            }
+            if (now - s_hostDiffSince > 0.3 && now - g_orderPushedAt > 1.0) {
+                g_forceOrderPush = true;
+            }
+        }
+        else {
+            s_hostDiffSince = 0;
+        }
+    }
+    if (mac.isEmpty() || (mac == g_lastOrder && !g_forceOrderPush)) {
+        return;
+    }
+    s_hostDiffSince = 0;
     g_forceOrderPush = false;
     g_lastOrder = mac;
     g_orderPushedAt = now;
@@ -837,7 +861,12 @@ void closeDesk(DeskState* st)
     st->settling = false;
     st->liveStart = st->window.frame;
     st->proposed = st->window.frame.size;
-    st->anchorRight = st->anchorBottom = false;
+    // The edges being dragged are the ones next to the mouse; the picture
+    // hugs the others from the very first step
+    const NSPoint m = [NSEvent mouseLocation];
+    const NSRect f = st->window.frame;
+    st->anchorRight = fabs(m.x - NSMinX(f)) < fabs(m.x - NSMaxX(f)) && fabs(m.x - NSMinX(f)) < 16;
+    st->anchorBottom = fabs(m.y - NSMaxY(f)) < fabs(m.y - NSMinY(f)) && fabs(m.y - NSMaxY(f)) < 16;
     DESK_CATCH("windowWillStartLiveResize")
 }
 
@@ -1074,6 +1103,13 @@ void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHo
             dispatch_source_set_event_handler(s_orderTimer, ^{
                 @try {
                     deskSyncOrder();
+                    // Twice a second the last layout is applied again: frames
+                    // that should follow the host (a size it refused, a resize
+                    // that never matched) catch up without a layout change
+                    static int s_tick = 0;
+                    if (++s_tick % 5 == 0 && !g_lastWanted.isEmpty()) {
+                        syncDesk(g_lastWanted);
+                    }
                 }
                 @catch (NSException* e) {
                     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "AppWindow deskSyncOrder: %s: %s", e.name.UTF8String, e.reason.UTF8String);
@@ -1115,6 +1151,7 @@ void syncDesk(const QVector<DeskWindow>& windows)
 {
     QVector<DeskWindow> wanted = windows;
     deskOnMain("syncDesk", ^{
+        g_lastWanted = wanted;
         if (!g_desk) {
             g_desk = [NSMutableDictionary new];
         }
@@ -1164,8 +1201,8 @@ void syncDesk(const QVector<DeskWindow>& windows)
                 // Popups: their shadow band is keyed out (transparent), so the
                 // macOS shadow follows the menu itself; it is recomputed once
                 // the first pictures are in.
-                st->window.hasShadow = YES;
-                if (!isDeskPane(w)) {
+                st->window.hasShadow = isDeskPane(w);  // menus: none (it went stale when cut to the menu)
+                if (false) {
                     AWChildWindow* popupWindow = st->window;
                     for (double t : {0.15, 0.5}) {
                         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(t * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
