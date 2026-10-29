@@ -352,6 +352,20 @@ pub fn test_click(hwnd: u64, x: i32, y: i32, button: i32) {
     });
 }
 
+/// A press, a drag of (dx, dy) in 20 steps (window-relative host px, may
+/// leave the window) and the release, through the same path as real events
+pub fn test_mouse_drag(hwnd: u64, x: i32, y: i32, dx: i32, dy: i32) {
+    down(hwnd, 1, x, y, 1, false);
+    for k in 1..=20 {
+        ffi::on_main_after(0.1 + k as f64 * 0.03, move || {
+            ffi::guard("test drag", || moved(hwnd, Ev::Drag, x + dx * k / 20, y + dy * k / 20));
+        });
+    }
+    ffi::on_main_after(0.9, move || {
+        ffi::guard("test drag up", || up(hwnd, 1, x + dx, y + dy));
+    });
+}
+
 pub fn test_scroll(hwnd: u64, x: i32, y: i32, dy: f64, n: i32) {
     for k in 0..n.max(1) {
         ffi::on_main_after(k as f64 * 0.016, move || {
