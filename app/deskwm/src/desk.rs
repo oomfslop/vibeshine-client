@@ -907,8 +907,8 @@ pub fn did_miniaturize(hwnd: u64, minimized: bool) {
 
 /// A caption press turned into a drag: the system's own window drag (tiling at
 /// edges and corners, Mission Control, other screens). The host window follows
-/// a few times a second (pictures come from the atlas, so where it is does
-/// not change them, but the host then knows what the drag uncovers).
+/// along (pictures come from the atlas, so where it is does not change them,
+/// but the host then knows what the drag uncovers).
 pub fn begin_drag(hwnd: u64) {
     let Some(w) = win(hwnd) else { return };
     if NSEvent::pressedMouseButtons() & 1 == 0 {
@@ -936,12 +936,12 @@ pub fn begin_drag(hwnd: u64) {
     poll_drag_end(hwnd, 0);
 }
 
-/// Mid-drag: tell the host where the window is now
-fn drag_follow(hwnd: u64, tick: u32) {
-    if tick % 3 == 2 {
-        if let (Some(d), Some(w)) = (desk(), win(hwnd)) {
-            send_position(&d, &w);
-        }
+/// Mid-drag: tell the host where the window is now (every poll: a move
+/// costs the host well under a millisecond, and the sooner it knows, the
+/// sooner what the drag uncovers is in the frame 1:1)
+fn drag_follow(hwnd: u64, _tick: u32) {
+    if let (Some(d), Some(w)) = (desk(), win(hwnd)) {
+        send_position(&d, &w);
     }
 }
 
