@@ -1812,62 +1812,14 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         handleDeskLayout(cmd);
     }
     else if (kind == "icon") {
-        AppWindow::setDeskIcon(cmd.value("key").toString(), QByteArray::fromBase64(cmd.value("png_base64").toString().toLatin1()));
+        const QByteArray key = cmd.value("key").toString().toUtf8();
+        const QByteArray png = QByteArray::fromBase64(cmd.value("png_base64").toString().toLatin1());
+        deskwm_set_icon(key.constData(), (const uint8_t*)png.constData(), (size_t)png.size());
     }
-    else if (kind == "trim") {
-        // From the renderer: what part of a popup's rect is really the popup
-        const quint64 hwnd = cmd.value("hwnd").toString().toULongLong(nullptr, 0);
-        const QRect trim(cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
-        for (DeskWin& w : m_DeskWindows) {
-            if (w.hwnd == hwnd) {
-                w.trim = trim;
-            }
-        }
-        AppWindow::setDeskTrim(hwnd, trim.x(), trim.y(), trim.width(), trim.height());
-    }
-    else if (kind == "frame") {
-        // Test hook: move/resize a desk window as the user would (points)
-        AppWindow::deskTestSetFrame(cmd.value("hwnd").toString().toULongLong(nullptr, 0),
-                                    cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
-    }
-    else if (kind == "front") {
-        AppWindow::deskTestFront(cmd.value("hwnd").toString().toULongLong(nullptr, 0));
-    }
-    else if (kind == "tile") {
-        AppWindow::deskTestTile(cmd.value("hwnd").toString().toULongLong(nullptr, 0), cmd.value("x").toInt(), cmd.value("y").toInt(), cmd.value("w").toInt(), cmd.value("h").toInt());
-    }
-    else if (kind == "liveresize") {
-        AppWindow::deskTestLiveResize(cmd.value("hwnd").toString().toULongLong(nullptr, 0), cmd.value("dw").toInt(), cmd.value("dh").toInt(), cmd.value("left").toBool());
-    }
-    else if (kind == "drag") {
-        AppWindow::deskTestDrag(cmd.value("hwnd").toString().toULongLong(nullptr, 0), cmd.value("dx").toInt(), cmd.value("dy").toInt());
-    }
-    else if (kind == "scroll") {
-        // Test hook: scroll steps on a desk window (window-relative host px, lines)
-        for (int k = 0; k < qMax(1, cmd.value("n").toInt(1)); k++) {
-            auto* in = new AppWindow::ChildInput;
-            in->hwnd = cmd.value("hwnd").toString().toULongLong(nullptr, 0);
-            in->kind = 3;
-            in->hostX = cmd.value("x").toInt();
-            in->hostY = cmd.value("y").toInt();
-            in->scrollY = (float)cmd.value("dy").toDouble(-3.0);
-            handleChildInput(in);  // releases it
-            SDL_Delay(16);
-        }
-    }
-    else if (kind == "click") {
-        // Test hook: a press and release on a desk window at window-relative host px
-        for (int k = 1; k <= 2; k++) {
-            auto* in = new AppWindow::ChildInput;
-            in->hwnd = cmd.value("hwnd").toString().toULongLong(nullptr, 0);
-            in->kind = k;
-            in->hostX = cmd.value("x").toInt();
-            in->hostY = cmd.value("y").toInt();
-            in->button = cmd.value("button").toInt(1);
-            in->clicks = 1;
-            handleChildInput(in);  // releases it
-            SDL_Delay(30);
-        }
+    else if (kind == "frame" || kind == "front" || kind == "tile" || kind == "liveresize" || kind == "drag" || kind == "scroll" ||
+             kind == "click") {
+        // Test hooks: the desk windows do these as the user would
+        deskwm_command(QJsonDocument(cmd).toJson(QJsonDocument::Compact).constData());
     }
     else if (kind == "close") {
         SDL_Event quit = {};
@@ -1880,211 +1832,70 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
 // Desk mode
 // ---------------------------------------------------------------------------
 
-// Mouse input from a desk window: the window's pixels are at its host rect on
-// the desk, so a point in the window is that rect's origin plus the offset.
-// Caption presses do what the host says is there (drag, minimize, maximize,
-// close); a press on a part of the window that another of ours covers on the
-// host raises it there first.
-void Session::handleChildInput(void* raw)
-{
-    auto* in = static_cast<AppWindow::ChildInput*>(raw);
-    const DeskWin* win = nullptr;
-    for (const DeskWin& w : m_DeskWindows) {
-        if (w.hwnd == in->hwnd) {
-            win = &w;
-        }
-    }
-    if (!win) {
-        AppWindow::releaseChildInput(in);
-        return;
-    }
-    const int deskW = m_StreamConfig.width, deskH = m_StreamConfig.height;
-    const int px = qBound(0, win->rect.x() + win->trim.x() + in->hostX, deskW);
-    const int py = qBound(0, win->rect.y() + win->trim.y() + in->hostY, deskH);
-    if (in->kind == 1) {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk 0x%llx press button %d at %d,%d -> desk %d,%d (window at %d,%d %dx%d, kind %d)",
-                    (unsigned long long)in->hwnd, in->button, in->hostX, in->hostY, px, py,
-                    win->rect.x(), win->rect.y(), win->rect.width(), win->rect.height(), win->kind);
-    }
-    switch (in->kind) {
-    case 0:
-        if (m_PendingCaption.contains(in->hwnd)) {
-            PendingCaption& pc = m_PendingCaption[in->hwnd];
-            if (!pc.dragging && qAbs(in->hostX - pc.x) + qAbs(in->hostY - pc.y) > 8) {
-                pc.dragging = true;
-                AppWindow::deskBeginDrag(in->hwnd);
-            }
-            break;  // the mouse is moving the Mac window, not pointing at the host
-        }
-        LiSendMousePositionEvent((short)px, (short)py, deskW, deskH);
-        break;
-    case 1: {
-        if (win->kind != 2 && !win->focused && !deskPointCovered(in->hwnd, px, py)) {
-            // Focus follows the press at once, also when it starts a drag
-            sendWindowAction(in->hwnd, "activate");
-        }
-        QString hit = "client";
-        const bool cmdHeld = (SDL_GetModState() & KMOD_GUI) != 0;
-        if (win->kind != 2 && in->button == 1) {
-            if (cmdHeld) {
-                hit = "drag";
-            }
-            else if (in->hostY < qMax(96, win->caption)) {
-                try {
-                    NvHTTP http(m_Computer);
-                    hit = http.hitTestWindow(in->hwnd, in->hostX, in->hostY);
-                }
-                catch (...) {
-                    hit = "client";  // the host did not answer in time: treat it as a click
-                }
-            }
-        }
-        if (hit == "drag") {
-            m_ChildPressSwallowed.insert(in->hwnd);
-            if (in->clicks >= 2) {
-                AppWindow::deskTitleAction(in->hwnd);
-            }
-            else {
-                // A drag if the mouse moves, else a click for the host (tabs,
-                // custom title bars whose hit test over-reports the caption)
-                PendingCaption pc;
-                pc.x = in->hostX;
-                pc.y = in->hostY;
-                pc.button = in->button;
-                m_PendingCaption.insert(in->hwnd, pc);
-            }
-        }
-        else if (hit == "min" || hit == "max" || hit == "close") {
-            // Like a button: nothing until the release, and only if it is
-            // still on the button
-            m_ChildPressSwallowed.insert(in->hwnd);
-            PendingControl pc;
-            pc.hit = hit;
-            pc.x = in->hostX;
-            pc.y = in->hostY;
-            m_PendingControl.insert(in->hwnd, pc);
-        }
-        else {
-            m_ChildPressSwallowed.remove(in->hwnd);
-            if (win->kind != 2 && deskPointCovered(in->hwnd, px, py)) {
-                // On the Mac this window is in front here; on the host another
-                // of ours still covers the spot. Raise it there, then click.
-                NvHTTP http(m_Computer);
-                http.windowAction(in->hwnd, "activate");
-                SDL_Delay(40);
-            }
-            LiSendMousePositionEvent((short)px, (short)py, deskW, deskH);
-            LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, in->button);
-        }
-        break;
-    }
-    case 2:
-        if (m_PendingControl.contains(in->hwnd)) {
-            const PendingControl pc = m_PendingControl.take(in->hwnd);
-            m_ChildPressSwallowed.remove(in->hwnd);
-            if (qAbs(in->hostX - pc.x) + qAbs(in->hostY - pc.y) <= 12) {
-                if (pc.hit == "min") {
-                    AppWindow::deskMinimize(in->hwnd);
-                }
-                else if (pc.hit == "max") {
-                    AppWindow::deskTitleAction(in->hwnd);
-                }
-                else {
-                    sendWindowAction(in->hwnd, "close");
-                    emit appWindowEvent({{"kind", "close"}, {"hwnd", QString("0x%1").arg(in->hwnd, 0, 16)}});
-                }
-            }
-            break;
-        }
-        if (m_PendingCaption.contains(in->hwnd)) {
-            const PendingCaption pc = m_PendingCaption.take(in->hwnd);
-            m_ChildPressSwallowed.remove(in->hwnd);
-            if (pc.dragging) {
-                AppWindow::deskEndDrag(in->hwnd);
-            }
-            else {
-                const int cx = qBound(0, win->rect.x() + win->trim.x() + pc.x, deskW);
-                const int cy = qBound(0, win->rect.y() + win->trim.y() + pc.y, deskH);
-                LiSendMousePositionEvent((short)cx, (short)cy, deskW, deskH);
-                LiSendMouseButtonEvent(BUTTON_ACTION_PRESS, pc.button);
-                LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, pc.button);
-            }
-            break;
-        }
-        if (m_ChildPressSwallowed.remove(in->hwnd)) {
-            break;
-        }
-        LiSendMousePositionEvent((short)px, (short)py, deskW, deskH);
-        LiSendMouseButtonEvent(BUTTON_ACTION_RELEASE, in->button);
-        break;
-    case 3:
-        // At most one notch per event, as Moonlight does: macOS acceleration
-        // produces wild deltas on fast flicks (hundreds of notches at once).
-        LiSendMousePositionEvent((short)px, (short)py, deskW, deskH);
-        if (in->scrollY != 0.0f) {
-            LiSendHighResScrollEvent((short)qBound(-120.0f, in->scrollY * 12.0f, 120.0f));
-        }
-        if (in->scrollX != 0.0f) {
-            LiSendHighResHScrollEvent((short)qBound(-120.0f, in->scrollX * 12.0f, 120.0f));
-        }
-        break;
-    default:
-        break;
-    }
-    AppWindow::releaseChildInput(in);
-}
-
-// Is desk pixel (px, py) of hwnd covered by one of the desk's other windows
-// or dialogs that the host stacks above it?
-bool Session::deskPointCovered(quint64 hwnd, int px, int py) const
-{
-    bool above = false;
-    for (const DeskWin& w : m_DeskWindows) {  // bottom-most first
-        if (w.hwnd == hwnd) {
-            above = true;
-            continue;
-        }
-        if (above && w.kind != 2 && w.state != "minimized" && w.rect.contains(px, py)) {
-            return true;
-        }
-    }
-    return false;
-}
-
 double Session::appWindowScale() const
 {
-    const double s = AppWindow::deskPointsPerPx();
+    const double s = deskwm_points_per_px();
     return s > 0 ? s : 96.0 / qMax(48, m_AppWindow.dpi);
 }
 
-void Session::handleDeskEvent(void* raw)
+void Session::deskWindowOp(void* ctx, uint64_t hwnd, const char* op, int32_t x, int32_t y, int32_t w, int32_t h)
 {
-    auto* ev = static_cast<AppWindow::DeskEvent*>(raw);
-    if (ev->kind == "move" || ev->kind == "resize") {
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk send %s 0x%llx %d,%d %dx%d", qPrintable(ev->kind), (unsigned long long)ev->hwnd, ev->x, ev->y, ev->w, ev->h);
+    auto* self = static_cast<Session*>(ctx);
+    const QString name = QString::fromUtf8(op);
+    if (name == "adopt" || name == "resize") {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk send %s 0x%llx %d,%d %dx%d", op, (unsigned long long)hwnd, x, y, w, h);
     }
-    if (ev->kind == "move") {
-        sendWindowAction(ev->hwnd, "adopt", ev->x, ev->y);
+    self->sendWindowAction(hwnd, name, x, y, w, h);
+}
+
+void Session::deskOrder(void* ctx, const uint64_t* hwnds, size_t count, bool focus)
+{
+    auto* self = static_cast<Session*>(ctx);
+    QStringList list;
+    for (size_t i = 0; i < count; i++) {
+        list.append(QString("0x%1").arg(hwnds[i], 0, 16));
     }
-    else if (ev->kind == "resize") {
-        sendWindowAction(ev->hwnd, "resize", 0, 0, ev->w, ev->h);
-    }
-    else if (ev->kind == "minimize" || ev->kind == "restore" || ev->kind == "lower" || ev->kind == "activate" || ev->kind == "park" || ev->kind == "dismiss") {
-        sendWindowAction(ev->hwnd, ev->kind);
-    }
-    else if (ev->kind == "dragend") {
-        m_PendingCaption.remove(ev->hwnd);
-        m_ChildPressSwallowed.remove(ev->hwnd);
-    }
-    else if (ev->kind == "order") {
-        QStringList hwnds;
-        for (quint64 h : ev->order) {
-            hwnds.append(QString("0x%1").arg(h, 0, 16));
+    self->sendWindowAction(0, (focus ? "orderfocus:" : "order:") + list.join(','));
+}
+
+// What the host says is under a point of a window's title bar (its own hit
+// test: tabs, custom title bars, caption buttons), answered to deskwm
+void Session::deskHitTest(void* ctx, uint64_t hwnd, int32_t x, int32_t y, uint64_t token)
+{
+    NvComputer* computer = static_cast<Session*>(ctx)->m_Computer;
+    QThreadPool::globalInstance()->start([computer, hwnd, x, y, token]() {
+        QString hit = "client";
+        try {
+            NvHTTP http(computer);
+            hit = http.hitTestWindow(hwnd, x, y);
         }
-        sendWindowAction(0, (ev->focus ? "orderfocus:" : "order:") + hwnds.join(','));
+        catch (...) {
+            // The host did not answer in time: a click
+        }
+        deskwm_hittest_result(token, hit.toUtf8().constData());
+    });
+}
+
+void Session::deskEvent(void* ctx, const char* json)
+{
+    auto* self = static_cast<Session*>(ctx);
+    const QJsonDocument doc = QJsonDocument::fromJson(QByteArray(json));
+    if (doc.isObject()) {
+        emit self->appWindowEvent(doc.object());
     }
-    emit appWindowEvent({{"kind", ev->kind}, {"hwnd", QString("0x%1").arg(ev->hwnd, 0, 16)}, {"x", ev->x}, {"y", ev->y}, {"w", ev->w}, {"h", ev->h}});
-    delete ev;
+}
+
+void Session::deskLog(void*, int32_t level, const char* message)
+{
+    if (level >= 2) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "%s", message);
+    }
+    else if (level == 1) {
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "%s", message);
+    }
+    else {
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "%s", message);
+    }
 }
 
 // Window ops go to the host off the main thread: a slow host must not stall
@@ -2098,7 +1909,7 @@ void Session::sendWindowAction(quint64 hwnd, const QString& op, int x, int y, in
         QThread* thread = QThread::create([sender, computer]() {
             NvHTTP http(computer);
             for (;;) {
-                QHash<quint64, QPoint> moves;
+                QHash<quint64, QRect> moves;
                 QHash<quint64, QSize> resizes;
                 QVector<std::pair<quint64, QString>> ops;
                 {
@@ -2117,7 +1928,7 @@ void Session::sendWindowAction(quint64 hwnd, const QString& op, int x, int y, in
                     http.windowAction(it.key(), "resize", 0, 0, it.value().width(), it.value().height());
                 }
                 for (auto it = moves.cbegin(); it != moves.cend(); ++it) {
-                    http.windowAction(it.key(), "adopt", it.value().x(), it.value().y());
+                    http.windowAction(it.key(), "adopt", it.value().x(), it.value().y(), it.value().width(), it.value().height());
                 }
                 for (const auto& op : ops) {
                     if (op.second.startsWith("order:") || op.second.startsWith("orderfocus:")) {
@@ -2140,7 +1951,10 @@ void Session::sendWindowAction(quint64 hwnd, const QString& op, int x, int y, in
     {
         QMutexLocker locker(&m_DeskSender->lock);
         if (op == "adopt") {
-            m_DeskSender->moves[hwnd] = QPoint(x, y);
+            m_DeskSender->moves[hwnd] = QRect(x, y, w, h);
+            if (w > 0 && h > 0) {
+                m_DeskSender->resizes.remove(hwnd);  // the frame carries the size
+            }
         }
         else if (op == "resize") {
             m_DeskSender->resizes[hwnd] = QSize(w, h);
@@ -2219,6 +2033,8 @@ void Session::startDeskPoller()
                 continue;
             }
             etag = newEtag;
+            const QByteArray raw = body.toUtf8();
+            deskwm_layout(raw.constData(), (size_t)raw.size());
             layout.insert("cmd", "layout");
             SDL_Event event = {};
             event.type = SDL_USEREVENT;
@@ -2234,8 +2050,9 @@ void Session::startDeskPoller()
 
 void Session::handleDeskLayout(const QJsonObject& layout)
 {
+    // (The windows themselves are deskwm's: the poller hands it every layout.
+    // Here: icons, and new windows outside the mirrored screen.)
     QVector<DeskWin> windows;
-    QVector<AppWindow::DeskWindow> macWindows;
     for (const QJsonValue& v : layout.value("windows").toArray()) {
         const QJsonObject o = v.toObject();
         const QJsonArray r = o.value("rect").toArray();
@@ -2264,29 +2081,7 @@ void Session::handleDeskLayout(const QJsonObject& layout)
             // it, and a window of its own would cover the whole screen.
             continue;
         }
-        for (const DeskWin& old : m_DeskWindows) {
-            if (old.hwnd == w.hwnd) {
-                w.trim = old.trim;
-            }
-        }
         windows.append(w);
-        AppWindow::DeskWindow m;
-        m.hwnd = w.hwnd;
-        m.owner = w.owner;
-        m.kind = w.kind;
-        m.x = w.rect.x();
-        m.y = w.rect.y();
-        m.w = w.rect.width();
-        m.h = w.rect.height();
-        m.radius = w.radius;
-        m.caption = w.caption;
-        m.z = w.z;
-        m.focused = w.focused;
-        m.title = w.title;
-        m.state = w.state;
-        m.iconKey = w.iconKey;
-        m.ts = (quint32)(qint64)layout.value("ts").toDouble(0);
-        macWindows.append(m);
         if (!w.iconKey.isEmpty() && !m_DeskIconsRequested.contains(w.iconKey)) {
             m_DeskIconsRequested.insert(w.iconKey);
             NvComputer* computer = m_Computer;
@@ -2336,7 +2131,6 @@ void Session::handleDeskLayout(const QJsonObject& layout)
         }
     }
     m_DeskWindows = windows;
-    AppWindow::syncDesk(macWindows);
 }
 
 bool Session::isClipboardSyncAllowed(ClipboardDirection direction)
@@ -2633,7 +2427,14 @@ void Session::exec()
     if (m_IsAppWindow) {
         // Desk mode: nothing is drawn in the SDL window; every desk window is
         // a Mac window of its own, fed by the layout poller.
-        AppWindow::beginDesk(m_Window, m_AppWindow.screenPts, appWindowScale(), m_StreamConfig.width, m_StreamConfig.height);
+        DeskwmCallbacks callbacks = {};
+        callbacks.ctx = this;
+        callbacks.window_op = &Session::deskWindowOp;
+        callbacks.order = &Session::deskOrder;
+        callbacks.hittest = &Session::deskHitTest;
+        callbacks.event = &Session::deskEvent;
+        callbacks.log = &Session::deskLog;
+        AppWindow::beginDesk(m_Window, m_AppWindow.screenPts, appWindowScale(), m_StreamConfig.width, m_StreamConfig.height, callbacks);
         AppWindow::setAppIcon(m_AppWindow.iconPng);
         startDeskPoller();
     }
@@ -2779,12 +2580,6 @@ void Session::exec()
                 break;
             case SDL_CODE_FLUSH_WINDOW_EVENT_BARRIER:
                 m_FlushingWindowEventsRef--;
-                break;
-            case SDL_CODE_APPWINDOW_CHILD_INPUT:
-                handleChildInput(event.user.data1);
-                break;
-            case SDL_CODE_APPWINDOW_DESK_EVENT:
-                handleDeskEvent(event.user.data1);
                 break;
             case SDL_CODE_APPWINDOW_CMD: {
                 QJsonObject* cmd = reinterpret_cast<QJsonObject*>(event.user.data1);

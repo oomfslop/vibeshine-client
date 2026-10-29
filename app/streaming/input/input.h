@@ -158,7 +158,9 @@ public:
     // Window mode: Cmd belongs to the Mac (Cmd-Tab, Cmd-Space, ...). Neither
     // it (it would be the Windows key) nor keys pressed with it go to the host.
     void setSwallowCommandKey(bool swallow) { m_SwallowCommandKey = swallow; }
-    bool m_SwallowCommandKey = false;
+    bool m_SwallowCommandKey = false;  // app-window mode: Cmd shortcuts become the host's Ctrl ones
+    bool m_CmdCtrlDown = false;        // Ctrl held on the host for a Cmd shortcut
+    QHash<int, QPair<short, char>> m_CmdTranslated;  // scancode -> the key and modifiers sent for it
 
     void setCaptureActive(bool active);
 

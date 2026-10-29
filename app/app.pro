@@ -421,7 +421,13 @@ macx {
         streaming/appwindow_mac.mm
 
     HEADERS += \
-        streaming/video/ffmpeg-renderers/vt.h
+        streaming/video/ffmpeg-renderers/vt.h \
+        deskwm/deskwm.h
+
+    # Desk windows (Rust, app/deskwm): built by cargo, or handed in by nix
+    isEmpty(DESKWM_LIB): DESKWM_LIB = $$PWD/deskwm/target/release/libdeskwm.a
+    LIBS += $$DESKWM_LIB
+    PRE_TARGETDEPS += $$DESKWM_LIB
 }
 discord-rpc {
     message(Discord integration enabled)

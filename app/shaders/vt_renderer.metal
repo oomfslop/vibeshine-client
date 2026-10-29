@@ -60,14 +60,19 @@ fragment half4 ps_draw_rgb(Vertex v [[ stage_in ]],
     return rgbTexture.sample(s, v.texCoords);
 }
 
-// Desk windows: each Mac window shows a rounded rectangle of the frame (the
-// client's desk) on a transparent background.
+// Desk windows: each Mac window shows its window's picture from the frame
+// (its slot in the host's atlas), on a transparent background. Opaque
+// windows get their rounded corners here; windows with transparency (menus
+// with their shadows, tooltips) come twice in the frame, on black and on
+// white, and alpha is what differs: a = 1 - (white - black), the colour is
+// the copy on black (premultiplied by that alpha already).
 struct VertexAW
 {
     float4 position [[ position ]];
     float2 texCoords;
-    float2 local;   // pixel position inside the rectangle
-    float4 rect;    // width, height, corner radius, unused
+    float2 local;        // pixel position inside the rectangle
+    float4 rect;         // width, height, corner radius, 1 = alpha from the copy on white
+    float2 whiteOffset;  // texCoords of the copy on white minus those of the copy on black
 };
 
 vertex VertexAW vs_draw_aw(constant VertexAW *vertices [[ buffer(0) ]], uint id [[ vertex_id ]])
@@ -87,8 +92,7 @@ static half aw_coverage(float2 local, float4 rect)
     return half(saturate(0.5 - dist));
 }
 
-// The whole frame is picture; anything sampled outside the frame (a window
-// hanging off the desk) is transparent.
+// Anything sampled outside the frame is transparent.
 static half desk_coverage(float2 texCoords, float2 local, float4 rect)
 {
     half cov = aw_coverage(local, rect);
@@ -98,21 +102,33 @@ static half desk_coverage(float2 texCoords, float2 local, float4 rect)
     return cov;
 }
 
-// Popups (rect.w = band width): a Windows 11 menu's window is larger than
-// the menu, its edges holding the soft shadow drawn over whatever is under
-// it on the host. Near-black pixels in that band are what the host has
-// beneath (the desk's black, a dark window), not the menu: transparent.
-static half desk_key(half3 rgb, float2 local, float4 rect)
+static half3 biplanar_rgb(float2 uv, constant CscParams &p, texture2d<half> luma, texture2d<half> chroma)
 {
-    if (rect.w <= 0.0) {
-        return 1.0h;
+    float2 chromaOffset = float2(p.chromaOffset) / float2(luma.get_width(), luma.get_height());
+    half3 yuv = half3(luma.sample(s, uv).r, chroma.sample(s, uv + chromaOffset).rg);
+    yuv *= p.bitnessScaleFactor;
+    yuv -= p.offsets;
+    return yuv * p.matrix;
+}
+
+static half3 triplanar_rgb(float2 uv, constant CscParams &p, texture2d<half> luma, texture2d<half> u, texture2d<half> v)
+{
+    float2 chromaOffset = float2(p.chromaOffset) / float2(luma.get_width(), luma.get_height());
+    half3 yuv = half3(luma.sample(s, uv).r, u.sample(s, uv + chromaOffset).r, v.sample(s, uv + chromaOffset).r);
+    yuv *= p.bitnessScaleFactor;
+    yuv -= p.offsets;
+    return yuv * p.matrix;
+}
+
+static half4 desk_out(half3 black, half3 white, VertexAW v)
+{
+    half cov = desk_coverage(v.texCoords, v.local, v.rect);
+    if (v.rect.w > 0.5) {
+        half a = saturate(1.0h - dot(white - black, half3(1.0h / 3.0h)));
+        half3 c = clamp(black, half3(0.0h), half3(a));
+        return half4(c * cov, a * cov);
     }
-    float edge = min(min(local.x, local.y), min(rect.x - local.x, rect.y - local.y));
-    if (edge >= rect.w) {
-        return 1.0h;
-    }
-    half bright = max(rgb.r, max(rgb.g, rgb.b));
-    return smoothstep(0.035h, 0.085h, bright);
+    return half4(black * cov, cov);
 }
 
 fragment half4 ps_draw_biplanar_desk(VertexAW v [[ stage_in ]],
@@ -120,15 +136,9 @@ fragment half4 ps_draw_biplanar_desk(VertexAW v [[ stage_in ]],
                                      texture2d<half> luminancePlane [[ texture(0) ]],
                                      texture2d<half> chrominancePlane [[ texture(1) ]])
 {
-    float2 chromaOffset = float2(cscParams.chromaOffset) / float2(luminancePlane.get_width(),
-                                                                  luminancePlane.get_height());
-    half3 yuv = half3(luminancePlane.sample(s, v.texCoords).r,
-                      chrominancePlane.sample(s, v.texCoords + chromaOffset).rg);
-    yuv *= cscParams.bitnessScaleFactor;
-    yuv -= cscParams.offsets;
-    half3 rgb = yuv * cscParams.matrix;
-    half cov = desk_coverage(v.texCoords, v.local, v.rect) * desk_key(rgb, v.local, v.rect);
-    return half4(rgb * cov, cov);
+    half3 black = biplanar_rgb(v.texCoords, cscParams, luminancePlane, chrominancePlane);
+    half3 white = v.rect.w > 0.5 ? biplanar_rgb(v.texCoords + v.whiteOffset, cscParams, luminancePlane, chrominancePlane) : black;
+    return desk_out(black, white, v);
 }
 
 fragment half4 ps_draw_triplanar_desk(VertexAW v [[ stage_in ]],
@@ -137,14 +147,7 @@ fragment half4 ps_draw_triplanar_desk(VertexAW v [[ stage_in ]],
                                       texture2d<half> chrominancePlaneU [[ texture(1) ]],
                                       texture2d<half> chrominancePlaneV [[ texture(2) ]])
 {
-    float2 chromaOffset = float2(cscParams.chromaOffset) / float2(luminancePlane.get_width(),
-                                                                  luminancePlane.get_height());
-    half3 yuv = half3(luminancePlane.sample(s, v.texCoords).r,
-                      chrominancePlaneU.sample(s, v.texCoords + chromaOffset).r,
-                      chrominancePlaneV.sample(s, v.texCoords + chromaOffset).r);
-    yuv *= cscParams.bitnessScaleFactor;
-    yuv -= cscParams.offsets;
-    half3 rgb = yuv * cscParams.matrix;
-    half cov = desk_coverage(v.texCoords, v.local, v.rect) * desk_key(rgb, v.local, v.rect);
-    return half4(rgb * cov, cov);
+    half3 black = triplanar_rgb(v.texCoords, cscParams, luminancePlane, chrominancePlaneU, chrominancePlaneV);
+    half3 white = v.rect.w > 0.5 ? triplanar_rgb(v.texCoords + v.whiteOffset, cscParams, luminancePlane, chrominancePlaneU, chrominancePlaneV) : black;
+    return desk_out(black, white, v);
 }

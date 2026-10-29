@@ -12,6 +12,8 @@
 #include "streaming/appwindow.h"
 #include <QHash>
 #include <atomic>
+#include <functional>
+#include <tuple>
 #include <memory>
 #include <QJsonObject>
 #include <QRect>
@@ -54,7 +56,16 @@ struct VertexAW
     simd_float2 texCoord;
     simd_float2 local;
     simd_float4 rect;
+    simd_float2 whiteOffset;
 };
+
+// Every desk window's layer, from deskwm (Rust), under its lock
+static void forEachDeskLayer(const std::function<void(const DeskwmLayer&)>& fn)
+{
+    deskwm_for_each_layer([](void* ctx, const DeskwmLayer* layer) {
+        (*static_cast<const std::function<void(const DeskwmLayer&)>*>(ctx))(*layer);
+    }, (void*)&fn);
+}
 
 #define MAX_VIDEO_PLANES 3
 
@@ -528,9 +539,11 @@ public:
     void renderChildWindows(AVFrame* frame, id<MTLCommandBuffer> commandBuffer, size_t planes,
                             const std::array<CVMetalTextureRef, MAX_VIDEO_PLANES>& cvMetalTextures)
     {
-        AppWindow::forEachChildLayer([&](const AppWindow::ChildLayer& child) {
-            CAMetalLayer* layer = (__bridge CAMetalLayer*)child.metalLayer;
-            if (!layer || child.w <= 0 || child.h <= 0 || !child.visible || child.frozen) {
+        // Picture sizes go back to deskwm after the walk (it holds the layers' lock meanwhile)
+        QVector<std::tuple<uint64_t, int, int>> shown;
+        forEachDeskLayer([&](const DeskwmLayer& child) {
+            CAMetalLayer* layer = (__bridge CAMetalLayer*)child.metal_layer;
+            if (!layer || !child.visible || child.geo_count == 0) {
                 return;
             }
             if (layer.device != m_MetalLayer.device || layer.pixelFormat != m_MetalLayer.pixelFormat) {
@@ -540,6 +553,23 @@ public:
                 layer.displaySyncEnabled = m_MetalLayer.displaySyncEnabled;
             }
             if (layer.drawableSize.width < 1 || layer.drawableSize.height < 1) {
+                return;
+            }
+            // The window's picture as it was when this frame was captured: the
+            // newest geometry stamped at or before the frame's capture time.
+            int pick = (int)child.geo_count - 1;
+            if (frame->pts != AV_NOPTS_VALUE) {
+                const quint32 pts = (quint32)frame->pts;
+                pick = 0;
+                for (int i = (int)child.geo_count - 1; i >= 0; i--) {
+                    if ((qint32)(pts - child.geo[i].ts) >= 0) {
+                        pick = i;
+                        break;
+                    }
+                }
+            }
+            const DeskwmGeo g = child.geo[pick];
+            if (g.w <= 0 || g.h <= 0) {
                 return;
             }
             // Never wait for a drawable: a window that is not being presented
@@ -567,67 +597,35 @@ public:
                 captured->count.fetch_sub(1);
                 captured->lastPresented.store(CACurrentMediaTime());
             }];
-            // The window's rect as it was when this frame was captured: the
-            // newest one stamped at or before the frame's capture time.
-            int gx = child.canvasX, gy = child.canvasY, gw = child.w, gh = child.h;
-            if (child.geoCount > 0) {
-                int pick = child.geoCount - 1;
-                if (frame->pts != AV_NOPTS_VALUE) {
-                    const quint32 pts = (quint32)frame->pts;
-                    pick = 0;
-                    for (int i = child.geoCount - 1; i >= 0; i--) {
-                        if ((qint32)(pts - child.geo[i].ts) >= 0) {
-                            pick = i;
-                            break;
-                        }
-                    }
-                }
-                gx = child.geo[pick].x;
-                gy = child.geo[pick].y;
-                gw = child.geo[pick].w;
-                gh = child.geo[pick].h;
-                if (child.popup && child.trimW > 0 && child.trimH > 0) {
-                    gx += child.trimX;
-                    gy += child.trimY;
-                    gw = child.trimW;
-                    gh = child.trimH;
-                }
-            }
-            if (gw <= 0 || gh <= 0) {
-                return;
-            }
-            if (child.shown) {
-                const quint64 shown = ((quint64)gw << 32) | (quint32)gh;
-                if (child.shown->exchange(shown) != shown) {
-                    AppWindow::deskShownChanged(child.hwnd, gw, gh);
-                }
-            }
+            // The picture in host px (a full atlas may hold it scaled down)
+            const float scale = g.scale > 0.0f ? g.scale : 1.0f;
+            const int pw = (int)lroundf(g.w / scale), ph = (int)lroundf(g.h / scale);
+            shown.append(std::make_tuple(child.hwnd, pw, ph));
             // Drawn 1:1 against the edges it hugs; cut (never scaled) where the
             // window is smaller than the picture
-            const int vw = qMax(1, child.viewW), vh = qMax(1, child.viewH);
-            const int dw = qMin(gw, vw), dh = qMin(gh, vh);
-            if (child.anchorRight) {
-                gx += gw - dw;
-            }
-            if (child.anchorBottom) {
-                gy += gh - dh;
-            }
-            const int ox = child.anchorRight ? vw - dw : 0, oy = child.anchorBottom ? vh - dh : 0;
+            const int vw = qMax(1, child.view_w), vh = qMax(1, child.view_h);
+            const int dw = qMin(pw, vw), dh = qMin(ph, vh);
+            const float sx = (float)g.x + (child.anchor_right ? (pw - dw) * scale : 0.0f);
+            const float sy = (float)g.y + (child.anchor_bottom ? (ph - dh) * scale : 0.0f);
+            const int ox = child.anchor_right ? vw - dw : 0, oy = child.anchor_bottom ? vh - dh : 0;
             const float xl = -1.0f + 2.0f * ox / vw, xr = -1.0f + 2.0f * (ox + dw) / vw;
             const float yt = 1.0f - 2.0f * oy / vh, yb = 1.0f - 2.0f * (oy + dh) / vh;
-            // Popups: key out the shadow band at their edges (see desk_key)
-            const simd_float4 rect = { (float)dw, (float)dh, (float)child.radius, child.popup ? 28.0f : 0.0f };
-            const float u0 = (float)gx / frame->width;
-            const float v0 = (float)gy / frame->height;
-            const float u1 = (float)(gx + dw) / frame->width;
-            const float v1 = (float)(gy + dh) / frame->height;
+            const bool alpha = g.ax >= 0 && g.ay >= 0;
+            // Opaque windows get their rounded corners here; a picture with
+            // alpha carries its own shape
+            const simd_float4 rect = { (float)dw, (float)dh, alpha ? 0.0f : (float)child.radius, alpha ? 1.0f : 0.0f };
+            const simd_float2 white = { alpha ? (float)(g.ax - g.x) / frame->width : 0.0f, alpha ? (float)(g.ay - g.y) / frame->height : 0.0f };
+            const float u0 = sx / frame->width;
+            const float v0 = sy / frame->height;
+            const float u1 = (sx + dw * scale) / frame->width;
+            const float v1 = (sy + dh * scale) / frame->height;
             const VertexAW verts[] = {
-                { { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)dh }, rect },
-                { { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
-                { { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { (float)dw, (float)dh }, rect },
-                { { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { (float)dw, (float)dh }, rect },
-                { { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect },
-                { { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { (float)dw, 0.0f }, rect },
+                { { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { 0.0f, (float)dh }, rect, white },
+                { { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect, white },
+                { { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { (float)dw, (float)dh }, rect, white },
+                { { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { (float)dw, (float)dh }, rect, white },
+                { { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { 0.0f, 0.0f }, rect, white },
+                { { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { (float)dw, 0.0f }, rect, white },
             };
             id<MTLBuffer> vb = [m_MetalLayer.device newBufferWithBytes:verts length:sizeof(verts) options:MTLResourceStorageModeShared];
             auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -654,109 +652,14 @@ public:
             [commandBuffer presentDrawable:drawable];
             [vb release];
         });
+        for (const auto& [hwnd, w, h] : shown) {
+            deskwm_shown(hwnd, w, h);
+        }
     }
 
     // Caller frees frame after we return
     // Desk mode: nothing is drawn in the (hidden) SDL window, so no drawable
     // of its layer is needed; the desk windows' layers get the frame.
-    // A popup's window on the desk is larger than the popup: WinUI menus and
-    // tooltips keep margins for their shadow, transparent on a real display,
-    // the desk's black background here. Find the popup inside its rect (the
-    // bounding box of everything that is not black) and report it; the Mac
-    // window and crop shrink to that.
-    void trimPopups(CVPixelBufferRef pixBuf, int frameW, int frameH)
-    {
-        QVector<AppWindow::ChildLayer> popups;
-        AppWindow::forEachChildLayer([&](const AppWindow::ChildLayer& l) {
-            if (l.popup && l.hostW > 0 && l.hostH > 0) {
-                popups.append(l);
-            }
-        });
-        if (popups.isEmpty()) {
-            return;
-        }
-        if (CVPixelBufferLockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
-            return;
-        }
-        const uint8_t* base = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(pixBuf, 0);
-        const size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pixBuf, 0);
-        const size_t planeW = CVPixelBufferGetWidthOfPlane(pixBuf, 0);
-        const bool wide = planeW > 0 && stride / planeW >= 2;  // 10-bit: 16-bit samples, value in the top bits
-        const int threshold = 28;  // video-range black is 16; the darkest menu backgrounds are above 40
-        for (const AppWindow::ChildLayer& p : popups) {
-            const int x0 = qMax(0, p.hostX), y0 = qMax(0, p.hostY);
-            const int x1 = qMin(frameW, p.hostX + p.hostW), y1 = qMin(frameH, p.hostY + p.hostH);
-            // A menu's window holds the menu and, around it, its shadow drawn
-            // over whatever is beneath on the host. The menu is the area of
-            // its background colour, the most common one in the window.
-            int hist[256] = {0};
-            int samples = 0;
-            for (int y = y0; y < y1; y += 2) {
-                const uint8_t* row = base + (size_t)y * stride;
-                for (int x = x0; x < x1; x += 2) {
-                    hist[wide ? (((const uint16_t*)row)[x] >> 8) : row[x]]++;
-                    samples++;
-                }
-            }
-            int mode = 0;
-            for (int v = 1; v < 256; v++) {
-                if (hist[v] > hist[mode]) {
-                    mode = v;
-                }
-            }
-            const bool body = samples > 0 && hist[mode] * 4 >= samples;  // a clear background: cut to it
-            int minX = x1, minY = y1, maxX = x0 - 1, maxY = y0 - 1;
-            for (int y = y0; y < y1; y++) {
-                const uint8_t* row = base + (size_t)y * stride;
-                int first = -1, last = -1, count = 0;
-                for (int x = x0; x < x1; x++) {
-                    const int v = wide ? (((const uint16_t*)row)[x] >> 8) : row[x];
-                    if (body ? qAbs(v - mode) <= 3 : v > threshold) {
-                        if (first < 0) {
-                            first = x;
-                        }
-                        last = x;
-                        count++;
-                    }
-                }
-                if (body && count < 8) {
-                    first = -1;  // a stray pixel of that colour in the shadow
-                }
-                if (first >= 0) {
-                    minX = qMin(minX, first);
-                    maxX = qMax(maxX, last);
-                    minY = qMin(minY, y);
-                    maxY = y;
-                }
-            }
-            QRect trim;
-            if (maxX >= minX && maxY >= minY) {
-                if (body) {
-                    // The menu's 1 px border sits just outside its background
-                    minX = qMax(x0, minX - 1);
-                    minY = qMax(y0, minY - 1);
-                    maxX = qMin(x1 - 1, maxX + 1);
-                    maxY = qMin(y1 - 1, maxY + 1);
-                }
-                trim = QRect(minX - p.hostX, minY - p.hostY, maxX - minX + 1, maxY - minY + 1);
-                if (trim == QRect(0, 0, p.hostW, p.hostH)) {
-                    trim = QRect();
-                }
-            }
-            const QRect last = m_PopupTrims.value(p.hwnd, QRect(-1, -1, -1, -1));
-            if (trim != last) {
-                m_PopupTrims[p.hwnd] = trim;
-                SDL_Event event = {};
-                event.type = SDL_USEREVENT;
-                event.user.code = SDL_CODE_APPWINDOW_CMD;
-                event.user.data1 = new QJsonObject({{"cmd", "trim"}, {"hwnd", QString("0x%1").arg(p.hwnd, 0, 16)},
-                                                    {"x", trim.x()}, {"y", trim.y()}, {"w", trim.width()}, {"h", trim.height()}});
-                SDL_PushEvent(&event);
-            }
-        }
-        CVPixelBufferUnlockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly);
-    }
-
     void renderDeskFrame(AVFrame* frame)
     { @autoreleasepool {
         std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures;
@@ -765,9 +668,6 @@ public:
         if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
             if (!createTexturesFromFrame(frame, cvMetalTextures)) {
                 return;
-            }
-            if ((++m_DeskFrameCount % 4) == 0) {
-                trimPopups(reinterpret_cast<CVPixelBufferRef>(frame->data[3]), frame->width, frame->height);
             }
         }
         auto commandBuffer = [m_CommandQueue commandBuffer];
@@ -1323,7 +1223,6 @@ private:
     int m_LastDrawableHeight;
     int m_VideoVertexCount = 0;
     bool m_AppWindowMode = false;  // desk session: see AppWindow::deskActive()
-    unsigned m_DeskFrameCount = 0;
     QHash<quint64, QRect> m_PopupTrims;
     struct Inflight {
         std::atomic<int> count {0};

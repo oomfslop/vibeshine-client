@@ -201,9 +201,13 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
         return;
     }
 
-    if (m_SwallowCommandKey &&
-            (event->keysym.scancode == SDL_SCANCODE_LGUI || event->keysym.scancode == SDL_SCANCODE_RGUI ||
-             (event->state == SDL_PRESSED && (event->keysym.mod & KMOD_GUI)))) {
+    if (m_SwallowCommandKey && (event->keysym.scancode == SDL_SCANCODE_LGUI || event->keysym.scancode == SDL_SCANCODE_RGUI)) {
+        // App-window mode: Cmd is the Mac's, never the host's Windows key;
+        // its shortcuts are translated below
+        if (event->state == SDL_RELEASED && m_CmdCtrlDown && !(event->keysym.mod & KMOD_GUI)) {
+            LiSendKeyboardEvent2(0xA2 | 0x8000, KEY_ACTION_UP, 0, 0);  // VK_LCONTROL
+            m_CmdCtrlDown = false;
+        }
         return;
     }
 
@@ -514,6 +518,51 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
 
     keyCode |= 0x8000;
     flags = shouldNotConvertToScanCodeOnServer ? SS_KBE_FLAG_NON_NORMALIZED : 0;
+
+    if (m_SwallowCommandKey) {
+        // App-window mode: a key sent translated is released as it was sent,
+        // whatever was let go first
+        const int sc = event->keysym.scancode;
+        if (event->state == SDL_RELEASED && m_CmdTranslated.contains(sc)) {
+            const QPair<short, char> sent = m_CmdTranslated.take(sc);
+            LiSendKeyboardEvent2(sent.first, KEY_ACTION_UP, sent.second, 0);
+            return;
+        }
+        if (event->keysym.mod & KMOD_GUI) {
+            if (event->state != SDL_PRESSED) {
+                return;
+            }
+            // The Mac's own shortcuts stay the Mac's
+            if (sc == SDL_SCANCODE_Q || sc == SDL_SCANCODE_H || sc == SDL_SCANCODE_M || sc == SDL_SCANCODE_TAB ||
+                    sc == SDL_SCANCODE_GRAVE || sc == SDL_SCANCODE_SPACE) {
+                return;
+            }
+            // Cmd shortcuts are the host's Ctrl ones; Cmd+arrows move to the
+            // line's or document's ends, Cmd+[ and ] go back and forward
+            short vk = keyCode;
+            bool ctrl = true;
+            char mods = modifiers & (MODIFIER_SHIFT | MODIFIER_ALT);
+            switch (sc) {
+            case SDL_SCANCODE_LEFT: vk = 0x24 | 0x8000; ctrl = false; mods |= MODIFIER_EXTENDED; break;   // Home
+            case SDL_SCANCODE_RIGHT: vk = 0x23 | 0x8000; ctrl = false; mods |= MODIFIER_EXTENDED; break;  // End
+            case SDL_SCANCODE_UP: vk = 0x24 | 0x8000; mods |= MODIFIER_EXTENDED; break;                   // Ctrl+Home
+            case SDL_SCANCODE_DOWN: vk = 0x23 | 0x8000; mods |= MODIFIER_EXTENDED; break;                 // Ctrl+End
+            case SDL_SCANCODE_LEFTBRACKET: vk = 0xA6 | 0x8000; ctrl = false; break;                       // Browser back
+            case SDL_SCANCODE_RIGHTBRACKET: vk = 0xA7 | 0x8000; ctrl = false; break;                      // Browser forward
+            default: break;
+            }
+            if (ctrl) {
+                if (!m_CmdCtrlDown) {
+                    LiSendKeyboardEvent2(0xA2 | 0x8000, KEY_ACTION_DOWN, MODIFIER_CTRL, 0);  // VK_LCONTROL
+                    m_CmdCtrlDown = true;
+                }
+                mods |= MODIFIER_CTRL;
+            }
+            m_CmdTranslated.insert(sc, qMakePair(vk, mods));
+            LiSendKeyboardEvent2(vk, KEY_ACTION_DOWN, mods, 0);
+            return;
+        }
+    }
 
     // Track the key state so we always know which keys are down
     if (event->state == SDL_PRESSED) {

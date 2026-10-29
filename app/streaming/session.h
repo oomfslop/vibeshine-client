@@ -31,8 +31,6 @@
 #define SDL_CODE_CLIPBOARD_TEXT_RECEIVED 107
 #define SDL_CODE_QUICKMENU_TOAST 108
 #define SDL_CODE_APPWINDOW_CMD 109
-#define SDL_CODE_APPWINDOW_CHILD_INPUT 110
-#define SDL_CODE_APPWINDOW_DESK_EVENT 111
 
 class SupportedVideoFormatList : public QList<int>
 {
@@ -356,22 +354,6 @@ private:
     AppWindowInfo m_AppWindow;
     bool m_IsAppWindow = false;
     void handleAppWindowCommand(const QJsonObject& cmd);
-    // Mouse input from a desk window (releases the ChildInput)
-    void handleChildInput(void* input);
-    QSet<quint64> m_ChildPressSwallowed;
-    // A press on a caption: a click unless the mouse moves before the release
-    struct PendingCaption {
-        int x = 0, y = 0;   // window-relative host px of the press
-        int button = 1;
-        bool dragging = false;
-    };
-    QHash<quint64, PendingCaption> m_PendingCaption;
-    // A press on a caption button: acts on release, like a click
-    struct PendingControl {
-        QString hit;
-        int x = 0, y = 0;
-    };
-    QHash<quint64, PendingControl> m_PendingControl;  // presses that acted on the window itself: swallow the release
     struct DeskWin {
         quint64 hwnd = 0, owner = 0;
         int kind = 0;          // 0 window, 1 dialog, 2 popup
@@ -379,7 +361,6 @@ private:
         int caption = 0, radius = 0, z = 0;
         bool focused = false;
         QString state, title, iconKey;
-        QRect trim;            // popups: the visible part of rect (empty = all)
     };
     QVector<DeskWin> m_DeskWindows;
     QSet<QString> m_DeskIconsRequested;
@@ -389,7 +370,7 @@ private:
     struct DeskSender {
         QMutex lock;
         QWaitCondition wake;
-        QHash<quint64, QPoint> moves;
+        QHash<quint64, QRect> moves;  // adopt: x, y and, when it changes too, w x h
         QHash<quint64, QSize> resizes;
         QVector<std::pair<quint64, QString>> ops;
         std::atomic<bool> stop {false};
@@ -397,9 +378,13 @@ private:
     std::shared_ptr<DeskSender> m_DeskSender;
     void startDeskPoller();
     void handleDeskLayout(const QJsonObject& layout);
-    void handleDeskEvent(void* event);
     void sendWindowAction(quint64 hwnd, const QString& op, int x = 0, int y = 0, int w = 0, int h = 0);
-    bool deskPointCovered(quint64 hwnd, int px, int py) const;
+    // deskwm's callbacks (ctx = this): host ops, stacking, hit tests, events, logs
+    static void deskWindowOp(void* ctx, uint64_t hwnd, const char* op, int32_t x, int32_t y, int32_t w, int32_t h);
+    static void deskOrder(void* ctx, const uint64_t* hwnds, size_t count, bool focus);
+    static void deskHitTest(void* ctx, uint64_t hwnd, int32_t x, int32_t y, uint64_t token);
+    static void deskEvent(void* ctx, const char* json);
+    static void deskLog(void* ctx, int32_t level, const char* message);
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;

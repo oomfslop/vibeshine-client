@@ -10,6 +10,23 @@
     in
     {
       packages = forAll (pkgs: rec {
+        # The desk windows of app-window streaming (Rust, app/deskwm): a static
+        # library the helper links on macOS.
+        deskwm = pkgs.rustPlatform.buildRustPackage {
+          pname = "deskwm";
+          version = "0.1.0";
+          src = ./app/deskwm;
+          cargoLock.lockFile = ./app/deskwm/Cargo.lock;
+          buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.apple-sdk_15 ];
+          doCheck = false;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out/lib $out/include
+            cp "$(find target -path '*/release/libdeskwm.a' | head -n 1)" $out/lib/libdeskwm.a
+            cp deskwm.h $out/include/
+            runHook postInstall
+          '';
+        };
         # Reuse the nixpkgs derivation (qmake + pkg-config, CONFIG+=disable-prebuilts)
         # but build this tree, including the modified moonlight-common-c submodule.
         moonlight-qt = pkgs.moonlight-qt.overrideAttrs (old: {
@@ -25,7 +42,7 @@
           # (PL_COLOR_TRC_SCRGB). Metal is the primary renderer on macOS anyway, so
           # build without the Vulkan renderer there.
           qmakeFlags = old.qmakeFlags
-            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ "CONFIG+=disable-libplacebo" ];
+            ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ "CONFIG+=disable-libplacebo" "DESKWM_LIB=${deskwm}/lib/libdeskwm.a" ];
         });
         # The GPUI launcher. Built with cargoLock so no vendor hash is needed.
         sloplight = pkgs.rustPlatform.buildRustPackage {
