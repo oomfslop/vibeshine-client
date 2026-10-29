@@ -454,6 +454,7 @@ struct DeskState {
 
 NSMutableDictionary<NSNumber*, NSValue*>* g_desk = nil;
 QVector<AppWindow::DeskWindow> g_lastWanted;  // the last layout, re-applied by the timer
+bool g_deskClosed = false;  // the stream is ending: layouts still on their way must not bring windows back
 bool g_forceOrderPush = false;  // a drag ended: the Mac's order goes to the host, whatever the host did meanwhile  // hwnd -> DeskState*
 NSWindow* g_deskKeyWindow = nil;
 NSRect g_deskScreen = NSZeroRect;   // SDL global points, top-left origin
@@ -1222,6 +1223,7 @@ void beginDesk(SDL_Window* keyWindow, const QRect& screenPts, double pointsPerHo
         return;
     }
     g_deskKeyWindow = ns;
+    g_deskClosed = false;
     g_deskScreen = NSMakeRect(screenPts.x(), screenPts.y(), screenPts.width(), screenPts.height());
     {
         static id s_activeObserver = nil;
@@ -1298,6 +1300,9 @@ void syncDesk(const QVector<DeskWindow>& windows)
 {
     QVector<DeskWindow> wanted = windows;
     deskOnMain("syncDesk", ^{
+        if (g_deskClosed) {
+            return;
+        }
         g_lastWanted = wanted;
         if (!g_desk) {
             g_desk = [NSMutableDictionary new];
@@ -1872,6 +1877,8 @@ void closeDeskWindows()
     if (!g_desk) {
         return;
     }
+    g_deskClosed = true;
+    g_lastWanted.clear();
     for (NSNumber* key in g_desk) {
         closeDesk((DeskState*)g_desk[key].pointerValue);
     }
