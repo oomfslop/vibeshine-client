@@ -2,7 +2,7 @@
 //! selected host and the desk stream. The desk is a private host display that
 //! mirrors this screen; streamed windows are *adopted* onto it and one helper
 //! streams the whole desk, showing every window on it as a Mac window of its
-//! own (the helper follows the desk's layout itself). See DESIGN-APPWINDOWS.md.
+//! own (the helper follows the desk's layout itself).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
