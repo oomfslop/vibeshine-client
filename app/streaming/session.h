@@ -385,6 +385,7 @@ private:
     static void deskHitTest(void* ctx, uint64_t hwnd, int32_t x, int32_t y, uint64_t token);
     static void deskEvent(void* ctx, const char* json);
     static void deskLog(void* ctx, int32_t level, const char* message);
+    static void deskRedraw(void* ctx, uint64_t hwnd);
     bool m_UnexpectedTermination;
     SdlInputHandler* m_InputHandler;
     int m_MouseEmulationRefCount;

@@ -11,10 +11,13 @@
 #include "streaming/streamutils.h"
 #include "streaming/appwindow.h"
 #include <QHash>
+#include <algorithm>
 #include <atomic>
 #include <functional>
 #include <tuple>
 #include <memory>
+#include <mutex>
+#include <vector>
 #include <QJsonObject>
 #include <QRect>
 #include "path.h"
@@ -59,6 +62,13 @@ struct VertexAW
     simd_float4 rect;
     simd_float2 whiteOffset;
 };
+
+class VTMetalRenderer;
+// The renderer of the desk session (one at a time), for redraws asked for
+// from the main thread (live resizes)
+static std::mutex s_DeskRendererLock;
+static VTMetalRenderer* s_DeskRenderer = nullptr;
+void vtDeskRedraw(uint64_t hwnd);
 
 // Test hook: the next desk frame (the whole atlas, as decoded) goes to a PNG
 static std::atomic<bool> s_DumpDeskFrame { false };
@@ -121,6 +131,16 @@ public:
 
     virtual ~VTMetalRenderer() override
     { @autoreleasepool {
+        {
+            std::lock_guard<std::mutex> lock(s_DeskRendererLock);
+            if (s_DeskRenderer == this) {
+                s_DeskRenderer = nullptr;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_DeskFrameLock);
+            av_frame_free(&m_LastDeskFrame);
+        }
         // Stop the display link and free associated state
         stopDisplayLink();
         av_frame_free(&m_LatestUnrenderedFrame);
@@ -547,9 +567,16 @@ public:
     // Child dialogs of an app window have Mac windows of their own, each
     // showing its rectangle of the canvas: draw those with the same pipeline
     // and textures, one drawable per child, on the same command buffer.
+    // only: just that window; deferred: drawables to present after the
+    // command buffer is scheduled (a layer presenting with the main thread's
+    // transaction, in a live resize), else presented with the buffer
     void renderChildWindows(AVFrame* frame, id<MTLCommandBuffer> commandBuffer, size_t planes,
-                            const std::array<CVMetalTextureRef, MAX_VIDEO_PLANES>& cvMetalTextures)
+                            const std::array<CVMetalTextureRef, MAX_VIDEO_PLANES>& cvMetalTextures,
+                            uint64_t only = 0, std::vector<id<CAMetalDrawable>>* deferred = nullptr)
     {
+        // Windows in a live resize are drawn by the main thread, in step with
+        // their size: a new frame asks it to
+        QVector<uint64_t> toMain;
         // Picture sizes go back to deskwm after the walk (it holds the layers' lock meanwhile)
         QVector<std::tuple<uint64_t, int, int>> shown;
         forEachDeskLayer([&](const DeskwmLayer& child) {
@@ -562,6 +589,13 @@ public:
                 layer.pixelFormat = m_MetalLayer.pixelFormat;
                 layer.colorspace = m_MetalLayer.colorspace;
                 layer.displaySyncEnabled = m_MetalLayer.displaySyncEnabled;
+            }
+            if (only != 0 && child.hwnd != only) {
+                return;
+            }
+            if (deferred == nullptr && layer.presentsWithTransaction) {
+                toMain.append(child.hwnd);
+                return;
             }
             if (layer.drawableSize.width < 1 || layer.drawableSize.height < 1) {
                 return;
@@ -620,13 +654,19 @@ public:
             // window is smaller than the picture
             const int vw = qMax(1, child.view_w), vh = qMax(1, child.view_h);
             const int dw = qMin(pw, vw), dh = qMin(ph, vh);
+            static const bool debugResize = qEnvironmentVariableIsSet("DESKWM_DEBUG_RESIZE");
+            if (debugResize && layer.presentsWithTransaction) {
+                SDL_Log("resize draw %llx t=%.4f view=%dx%d picture=%dx%d %s", (unsigned long long)child.hwnd, CACurrentMediaTime(), vw, vh, pw, ph, deferred ? "main" : "frame");
+            }
             const float sx = (float)g.x + (child.anchor_right ? (pw - dw) * scale : 0.0f);
             const float sy = (float)g.y + (child.anchor_bottom ? (ph - dh) * scale : 0.0f);
             const int ox = child.anchor_right ? vw - dw : 0, oy = child.anchor_bottom ? vh - dh : 0;
             const bool alpha = g.ax >= 0 && g.ay >= 0;
-            // Opaque windows get their rounded corners here; a picture with
-            // alpha carries its own shape
-            const simd_float4 rect = { (float)dw, (float)dh, alpha ? 0.0f : (float)child.radius, alpha ? 1.0f : 0.0f };
+            // Opaque windows get their rounded corners here, at the Mac
+            // window's own corners (in a live resize the picture may be
+            // smaller or larger than it); a picture with alpha carries its
+            // own shape
+            const simd_float4 rect = { (float)(alpha ? dw : vw), (float)(alpha ? dh : vh), alpha ? 0.0f : (float)child.radius, alpha ? 1.0f : 0.0f };
             // The copy on white (alpha_scale times the size): per corner, its
             // texture coordinates minus the picture's
             const float ar = g.alpha_scale > 0.0f ? g.alpha_scale : 1.0f;
@@ -643,7 +683,7 @@ public:
                 const float yt = 1.0f - 2.0f * dy0 / vh, yb = 1.0f - 2.0f * dy1 / vh;
                 const float u0 = tx0 / frame->width, u1 = tx1 / frame->width;
                 const float v0 = ty0 / frame->height, v1 = ty1 / frame->height;
-                const float lx0 = dx0 - ox, lx1 = dx1 - ox, ly0 = dy0 - oy, ly1 = dy1 - oy;
+                const float lx0 = alpha ? dx0 - ox : dx0, lx1 = alpha ? dx1 - ox : dx1, ly0 = alpha ? dy0 - oy : dy0, ly1 = alpha ? dy1 - oy : dy1;
                 const simd_float2 w00 = whiteAt(tx0, ty0), w10 = whiteAt(tx1, ty0), w01 = whiteAt(tx0, ty1), w11 = whiteAt(tx1, ty1);
                 verts.push_back({ { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { lx0, ly1 }, rect, w01 });
                 verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, w00 });
@@ -652,18 +692,72 @@ public:
                 verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, w00 });
                 verts.push_back({ { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { lx1, ly0 }, rect, w10 });
             };
-            quad(ox, oy, ox + dw, oy + dh, sx, sy, sx + dw * scale, sy + dh * scale);
-            // The parts the user sees, 1:1 over the smaller picture
-            const int px0 = child.anchor_right ? pw - dw : 0, py0 = child.anchor_bottom ? ph - dh : 0;
-            for (uint32_t k = 0; k < g.piece_count && k < DESKWM_PIECE_MAX; k++) {
-                const DeskwmPiece& p = g.pieces[k];
-                const int x0 = qMax(p.x, px0), x1 = qMin(p.x + p.w, px0 + dw);
-                const int y0 = qMax(p.y, py0), y1 = qMin(p.y + p.h, py0 + dh);
-                if (x0 >= x1 || y0 >= y1) {
-                    continue;
+            if (alpha) {
+                // Popups never resize live: 1:1 against their anchors
+                quad(ox, oy, ox + dw, oy + dh, sx, sy, sx + dw * scale, sy + dh * scale);
+            }
+            else {
+                // Opaque windows: the picture keeps both edges where the
+                // window has them. Its last 320 px (caption buttons,
+                // scroll bar) stay against the right edge, its last 120 px
+                // (status bar) against the bottom; a window smaller than its
+                // picture (the host has not drawn the new size yet) loses
+                // the difference in the middle, a larger one gets the
+                // middle stretched there.
+                struct Seg {
+                    int d0, d1;  // window px
+                    int s0, s1;  // picture px (one column, stretched, when the sizes differ)
+                };
+                auto segments = [](int P, int V, int most) {
+                    std::vector<Seg> out;
+                    if (P == V) {
+                        out.push_back({ 0, V, 0, P });
+                        return out;
+                    }
+                    const int S = qMax(0, qMin(most, qMin(P, V) / 3));
+                    if (V > P) {
+                        out.push_back({ 0, P - S, 0, P - S });
+                        out.push_back({ P - S, V - S, qMax(0, P - S - 1), qMax(1, P - S) });
+                        out.push_back({ V - S, V, P - S, P });
+                    }
+                    else {
+                        out.push_back({ 0, V - S, 0, V - S });
+                        out.push_back({ V - S, V, P - S, P });
+                    }
+                    out.erase(std::remove_if(out.begin(), out.end(), [](const Seg& g) { return g.d1 <= g.d0 || g.s1 <= g.s0; }), out.end());
+                    return out;
+                };
+                const std::vector<Seg> xs = segments(pw, vw, 320), ys = segments(ph, vh, 120);
+                // Part [x0, x1) x [y0, y1) of the picture, at (ax, ay) in the frame, sc frame px per picture px
+                auto region = [&](int x0, int y0, int x1, int y1, float ax, float ay, float sc) {
+                    for (const Seg& gx : xs) {
+                        const int a0 = qMax(x0, gx.s0), a1 = qMin(x1, gx.s1);
+                        if (a0 >= a1) {
+                            continue;
+                        }
+                        const bool stretchX = gx.s1 - gx.s0 != gx.d1 - gx.d0;
+                        const float dx0 = stretchX ? gx.d0 : gx.d0 + (a0 - gx.s0), dx1 = stretchX ? gx.d1 : gx.d0 + (a1 - gx.s0);
+                        const float tx0 = stretchX ? ax + (a0 + 0.5f - x0) * sc : ax + (a0 - x0) * sc;
+                        const float tx1 = stretchX ? tx0 : ax + (a1 - x0) * sc;
+                        for (const Seg& gy : ys) {
+                            const int b0 = qMax(y0, gy.s0), b1 = qMin(y1, gy.s1);
+                            if (b0 >= b1) {
+                                continue;
+                            }
+                            const bool stretchY = gy.s1 - gy.s0 != gy.d1 - gy.d0;
+                            const float dy0 = stretchY ? gy.d0 : gy.d0 + (b0 - gy.s0), dy1 = stretchY ? gy.d1 : gy.d0 + (b1 - gy.s0);
+                            const float ty0 = stretchY ? ay + (b0 + 0.5f - y0) * sc : ay + (b0 - y0) * sc;
+                            const float ty1 = stretchY ? ty0 : ay + (b1 - y0) * sc;
+                            quad(dx0, dy0, dx1, dy1, tx0, ty0, tx1, ty1);
+                        }
+                    }
+                };
+                region(0, 0, pw, ph, (float)g.x, (float)g.y, scale);
+                // The parts the user sees, 1:1 over the smaller picture
+                for (uint32_t k = 0; k < g.piece_count && k < DESKWM_PIECE_MAX; k++) {
+                    const DeskwmPiece& p = g.pieces[k];
+                    region(p.x, p.y, p.x + p.w, p.y + p.h, (float)p.ax, (float)p.ay, 1.0f);
                 }
-                quad(ox + x0 - px0, oy + y0 - py0, ox + x1 - px0, oy + y1 - py0,
-                     p.ax + x0 - p.x, p.ay + y0 - p.y, p.ax + x1 - p.x, p.ay + y1 - p.y);
             }
             id<MTLBuffer> vb = [m_MetalLayer.device newBufferWithBytes:verts.data() length:verts.size() * sizeof(VertexAW) options:MTLResourceStorageModeShared];
             auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -687,13 +781,58 @@ public:
             [encoder setVertexBuffer:vb offset:0 atIndex:0];
             [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:verts.size()];
             [encoder endEncoding];
-            [commandBuffer presentDrawable:drawable];
+            if (deferred != nullptr && layer.presentsWithTransaction) {
+                deferred->push_back(drawable);
+            }
+            else {
+                [commandBuffer presentDrawable:drawable];
+            }
             [vb release];
         });
         for (const auto& [hwnd, w, h] : shown) {
             deskwm_shown(hwnd, w, h);
         }
+        for (uint64_t hwnd : toMain) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                vtDeskRedraw(hwnd);
+            });
+        }
     }
+
+public:
+    // Main thread: draws one window again from the latest frame, presented
+    // with the current Core Animation transaction (its new size)
+    void redrawDeskWindow(uint64_t hwnd)
+    { @autoreleasepool {
+        std::lock_guard<std::mutex> lock(m_DeskFrameLock);
+        if (m_LastDeskFrame == nullptr || m_LastDeskFrame->buf[0] == nullptr || m_LastDeskFrame->format != AV_PIX_FMT_VIDEOTOOLBOX) {
+            return;
+        }
+        AVFrame* frame = m_LastDeskFrame;
+        std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures;
+        size_t planes = getFramePlaneCount(frame);
+        if (!createTexturesFromFrame(frame, cvMetalTextures)) {
+            return;
+        }
+        auto commandBuffer = [m_CommandQueue commandBuffer];
+        CVPixelBufferRef pixBuf = reinterpret_cast<CVPixelBufferRef>(frame->data[3]);
+        CVPixelBufferRetain(pixBuf);
+        [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+            for (size_t i = 0; i < planes; i++) {
+                CFRelease(cvMetalTextures[i]);
+            }
+            CVPixelBufferRelease(pixBuf);
+        }];
+        std::vector<id<CAMetalDrawable>> deferred;
+        renderChildWindows(frame, commandBuffer, planes, cvMetalTextures, hwnd, &deferred);
+        [commandBuffer commit];
+        [commandBuffer waitUntilScheduled];
+        for (id<CAMetalDrawable> drawable : deferred) {
+            [drawable present];
+        }
+    }}
+
+public:
 
     // Caller frees frame after we return
     // Desk mode: nothing is drawn in the (hidden) SDL window, so no drawable
@@ -728,6 +867,11 @@ public:
         }
         renderChildWindows(frame, commandBuffer, planes, cvMetalTextures);
         [commandBuffer commit];
+        std::lock_guard<std::mutex> lock(m_DeskFrameLock);
+        if (m_LastDeskFrame != nullptr) {
+            av_frame_unref(m_LastDeskFrame);
+            av_frame_ref(m_LastDeskFrame, frame);
+        }
     }}
 
     virtual void renderFrameIntoDrawable(AVFrame* frame, id<CAMetalDrawable> drawable)
@@ -1018,6 +1162,8 @@ public:
             m_AppWindowMode = AppWindow::deskActive();
             if (m_AppWindowMode) {
                 m_MetalLayer.opaque = NO;
+                std::lock_guard<std::mutex> lock(s_DeskRendererLock);
+                s_DeskRenderer = this;
             }
 
             // Allow EDR content if we're streaming in a 10-bit format
@@ -1268,6 +1414,8 @@ private:
     int m_LastDrawableHeight;
     int m_VideoVertexCount = 0;
     bool m_AppWindowMode = false;  // desk session: see AppWindow::deskActive()
+    std::mutex m_DeskFrameLock;
+    AVFrame* m_LastDeskFrame = av_frame_alloc();  // for redraws between frames
     QHash<quint64, QRect> m_PopupTrims;
     struct Inflight {
         std::atomic<int> count {0};
@@ -1294,4 +1442,12 @@ private:
 
 IFFmpegRenderer* VTMetalRendererFactory::createRenderer(bool hwAccel) {
     return new VTMetalRenderer(hwAccel);
+}
+
+void vtDeskRedraw(uint64_t hwnd)
+{
+    std::lock_guard<std::mutex> lock(s_DeskRendererLock);
+    if (s_DeskRenderer != nullptr) {
+        s_DeskRenderer->redrawDeskWindow(hwnd);
+    }
 }

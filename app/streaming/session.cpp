@@ -1896,6 +1896,19 @@ void Session::deskEvent(void* ctx, const char* json)
     }
 }
 
+#ifdef Q_OS_DARWIN
+void vtDeskRedraw(uint64_t hwnd);
+#endif
+
+void Session::deskRedraw(void*, uint64_t hwnd)
+{
+#ifdef Q_OS_DARWIN
+    vtDeskRedraw(hwnd);
+#else
+    (void)hwnd;
+#endif
+}
+
 void Session::deskLog(void*, int32_t level, const char* message)
 {
     if (level >= 2) {
@@ -2445,6 +2458,7 @@ void Session::exec()
         callbacks.hittest = &Session::deskHitTest;
         callbacks.event = &Session::deskEvent;
         callbacks.log = &Session::deskLog;
+        callbacks.redraw = &Session::deskRedraw;
         AppWindow::beginDesk(m_Window, m_AppWindow.screenPts, appWindowScale(), m_StreamConfig.width, m_StreamConfig.height, callbacks);
         AppWindow::setAppIcon(m_AppWindow.iconPng);
         startDeskPoller();

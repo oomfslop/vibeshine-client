@@ -16,6 +16,7 @@ pub struct Callbacks {
     pub hittest: Option<extern "C" fn(*mut c_void, u64, i32, i32, u64)>,
     pub event: Option<extern "C" fn(*mut c_void, *const c_char)>,
     pub log: Option<extern "C" fn(*mut c_void, i32, *const c_char)>,
+    pub redraw: Option<extern "C" fn(*mut c_void, u64)>,
 }
 
 // The helper's callbacks are thread-safe by contract (see deskwm.h)
@@ -29,6 +30,16 @@ pub fn set_callbacks(cb: Option<Callbacks>) {
 
 fn callbacks() -> Option<Callbacks> {
     *CALLBACKS.lock().unwrap()
+}
+
+/// Draw the window again now, from the latest frame (main thread, in step
+/// with its new size)
+pub fn redraw(hwnd: u64) {
+    if let Some(cb) = callbacks() {
+        if let Some(f) = cb.redraw {
+            f(cb.ctx, hwnd);
+        }
+    }
 }
 
 pub fn log(level: i32, message: &str) {

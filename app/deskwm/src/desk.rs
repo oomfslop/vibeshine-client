@@ -33,6 +33,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSData, NSPoint, NSProcessInfo, NSRect, NSSize, NSString, NSUserDefaults};
 
 use crate::classes::{Delegate, DeskView, DeskWindow};
+use objc2_quartz_core::CAMetalLayer;
 use crate::ffi::{self, info, Geo};
 use crate::layout::Info;
 
@@ -719,11 +720,23 @@ fn send_position(d: &Desk, w: &Win) {
     ffi::window_op(w.hwnd, "adopt", x, y, 0, 0);
 }
 
+/// In a live resize the window's picture is drawn by the main thread with
+/// each new size, presented in the same transaction: window and picture
+/// change in the same screen refresh, nothing is ever stretched
+fn present_with_size(w: &Win, on: bool) {
+    if let Some(layer) = w._view.metal_layer() {
+        if let Ok(metal) = layer.downcast::<CAMetalLayer>() {
+            metal.setPresentsWithTransaction(on);
+        }
+    }
+}
+
 pub fn will_start_live_resize(hwnd: u64) {
     let Some(w) = win(hwnd) else { return };
     if !w.pane {
         return;
     }
+    present_with_size(&w, true);
     w.in_resize.set(true);
     w.settling.set(false);
     dismiss_menus(hwnd);
@@ -739,19 +752,19 @@ pub fn will_start_live_resize(hwnd: u64) {
     w.set_anchors(right, bottom);
 }
 
-/// The window never gets smaller than the picture the host has drawn: a
-/// shrink waits for the host, so nothing is ever squeezed or cut. Growing
-/// shows the picture against the edges that stay put.
+/// The window follows the mouse at once, both ways, like a native one: the
+/// picture hugs the edges that stay put, cut where it is still larger than
+/// the window, its edge stretched where it is still smaller, until the host
+/// has drawn the new size.
 pub fn will_resize(hwnd: u64, size: NSSize) -> NSSize {
-    let (Some(d), Some(w)) = (desk(), win(hwnd)) else { return size };
+    let Some(w) = win(hwnd) else { return size };
     if w.applying.get() || !w.in_resize.get() {
         return size;
     }
     w.proposed.set(size);
     w.asked_size.set(true);
-    schedule_resize_settled(&w, if ffi::now() - w.last_resize_sent.get() >= 0.016 { 0.0 } else { 0.016 });
-    let (sw, sh) = ffi::shown(hwnd);
-    NSSize::new(size.width.max(sw as f64 * d.map.ppp), size.height.max(sh as f64 * d.map.ppp))
+    schedule_resize_settled(&w, if ffi::now() - w.last_resize_sent.get() >= 0.008 { 0.0 } else { 0.008 });
+    size
 }
 
 pub fn did_resize(hwnd: u64) {
@@ -761,6 +774,9 @@ pub fn did_resize(hwnd: u64) {
         l.view_w = (f.size.width / d.map.ppp).round() as i32;
         l.view_h = (f.size.height / d.map.ppp).round() as i32;
     });
+    if w.in_resize.get() || w.settling.get() {
+        ffi::redraw(hwnd);
+    }
     if w.applying.get() || !w.pane {
         return;
     }
@@ -882,6 +898,7 @@ fn settle(hwnd: u64, _deadline: bool) {
     }
     w.settling.set(false);
     w.set_anchors(false, false);
+    present_with_size(&w, false);
     send_position(&d, &w);
 }
 
@@ -1318,11 +1335,11 @@ pub fn test_live_resize(hwnd: u64, dw: f64, dh: f64, from_left: bool) {
     if from_left {
         w.set_anchors(true, w.anchor_bottom.get());
     }
-    for i in 1..=30 {
-        ffi::on_main_after(i as f64 * 0.016, move || {
+    for i in 1..=60 {
+        ffi::on_main_after(i as f64 / 120.0, move || {
             ffi::guard("test live resize", || {
                 let Some(w) = win(hwnd) else { return };
-                let want = NSSize::new(start.size.width + dw * i as f64 / 30.0, start.size.height + dh * i as f64 / 30.0);
+                let want = NSSize::new(start.size.width + dw * i as f64 / 60.0, start.size.height + dh * i as f64 / 60.0);
                 let got = will_resize(hwnd, want);
                 let x = if from_left { start.origin.x + start.size.width - got.width } else { start.origin.x };
                 w.ns().setFrame_display_animate(

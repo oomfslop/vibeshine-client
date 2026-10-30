@@ -57,6 +57,7 @@ struct Callbacks {
     hittest: Option<extern "C" fn(*mut c_void, u64, i32, i32, u64)>,
     event: Option<extern "C" fn(*mut c_void, *const c_char)>,
     log: Option<extern "C" fn(*mut c_void, i32, *const c_char)>,
+    redraw: Option<extern "C" fn(*mut c_void, u64)>,
 }
 
 #[repr(C)]
@@ -186,7 +187,7 @@ fn main() {
             false,
         )
     };
-    let cb = Callbacks { ctx: std::ptr::null_mut(), window_op: Some(op), order: Some(order), hittest: Some(hittest), event: Some(event), log: Some(log) };
+    let cb = Callbacks { ctx: std::ptr::null_mut(), window_op: Some(op), order: Some(order), hittest: Some(hittest), event: Some(event), log: Some(log), redraw: None };
     // A mirrored "screen" far off to the right: nothing shows on the real one
     unsafe { deskwm_begin(Retained::as_ptr(&key) as *mut c_void, 30000.0, 0.0, 1512.0, 982.0, 0.5, 3840, 2160, cb) };
     pump(0.2);

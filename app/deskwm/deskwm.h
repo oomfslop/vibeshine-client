@@ -31,6 +31,9 @@ typedef struct DeskwmCallbacks {
     void (*event)(void* ctx, const char* json);
     // level: 0 info, 1 warning, 2 error
     void (*log)(void* ctx, int32_t level, const char* message);
+    // Draw the window again from the latest frame, now, presented with the
+    // current Core Animation transaction (main thread, live resizes)
+    void (*redraw)(void* ctx, uint64_t hwnd);
 } DeskwmCallbacks;
 
 // A window's picture in a frame: where it is (x, y, w, h: its slot in the
