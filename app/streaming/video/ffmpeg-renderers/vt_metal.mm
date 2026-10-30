@@ -183,6 +183,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(m_DeskFrameLock);
             av_frame_free(&m_LastDeskFrame);
+            av_frame_free(&m_HeldDeskFrame);
         }
         // Stop the display link and free associated state
         stopDisplayLink();
@@ -617,6 +618,7 @@ public:
                             const std::array<CVMetalTextureRef, MAX_VIDEO_PLANES>& cvMetalTextures,
                             uint64_t only = 0, std::vector<id<CAMetalDrawable>>* deferred = nullptr)
     {
+        m_DeskResult = 0;
         // Windows in a live resize are drawn by the main thread, in step with
         // their size: a new frame asks it to
         QVector<uint64_t> toMain;
@@ -634,6 +636,7 @@ public:
         if (deferred == nullptr && layoutSeq >= 0) {
             unreadable = frameSeq < 0 ? unreadable + 1 : 0;
             if (frameSeq < 0 && unreadable < 30) {
+                m_DeskResult = 2;
                 return;
             }
         }
@@ -643,6 +646,7 @@ public:
                 // Its layout has not come yet: every window keeps what it
                 // shows until it does (then this frame is drawn)
                 s_DeskHeld.store(true);
+                m_DeskResult = 1;
                 return;
             }
         }
@@ -939,10 +943,11 @@ public:
             return;
         }
         std::lock_guard<std::mutex> lock(m_DeskFrameLock);
-        if (m_LastDeskFrame == nullptr || m_LastDeskFrame->buf[0] == nullptr || m_LastDeskFrame->format != AV_PIX_FMT_VIDEOTOOLBOX) {
+        // 0: the held frame (its layout has come); a window: the last drawn
+        AVFrame* frame = hwnd == 0 ? m_HeldDeskFrame : m_LastDeskFrame;
+        if (frame == nullptr || frame->buf[0] == nullptr || frame->format != AV_PIX_FMT_VIDEOTOOLBOX) {
             return;
         }
-        AVFrame* frame = m_LastDeskFrame;
         std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures;
         size_t planes = getFramePlaneCount(frame);
         if (!createTexturesFromFrame(frame, cvMetalTextures)) {
@@ -960,6 +965,10 @@ public:
         std::vector<id<CAMetalDrawable>> deferred;
         renderChildWindows(frame, commandBuffer, planes, cvMetalTextures, hwnd, &deferred);
         [commandBuffer commit];
+        if (hwnd == 0 && m_DeskResult == 0 && m_LastDeskFrame != nullptr) {
+            av_frame_unref(m_LastDeskFrame);
+            av_frame_move_ref(m_LastDeskFrame, m_HeldDeskFrame);
+        }
         [commandBuffer waitUntilScheduled];
         for (id<CAMetalDrawable> drawable : deferred) {
             [drawable present];
@@ -973,6 +982,8 @@ public:
     // of its layer is needed; the desk windows' layers get the frame.
     void renderDeskFrame(AVFrame* frame)
     { @autoreleasepool {
+        // One draw at a time: main-thread redraws use the same state
+        std::lock_guard<std::mutex> lock(m_DeskFrameLock);
         if (s_DumpDeskFrame.exchange(false) && frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
             CIImage* image = [CIImage imageWithCVPixelBuffer:reinterpret_cast<CVPixelBufferRef>(frame->data[3])];
             CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
@@ -1001,10 +1012,15 @@ public:
         }
         renderChildWindows(frame, commandBuffer, planes, cvMetalTextures);
         [commandBuffer commit];
-        std::lock_guard<std::mutex> lock(m_DeskFrameLock);
-        if (m_LastDeskFrame != nullptr) {
-            av_frame_unref(m_LastDeskFrame);
-            av_frame_ref(m_LastDeskFrame, frame);
+        // Redraws use the last frame drawn; a frame held for its layout is
+        // drawn when the layout comes; an unreadable one never
+        AVFrame* keep = m_DeskResult == 0 ? m_LastDeskFrame : m_DeskResult == 1 ? m_HeldDeskFrame : nullptr;
+        if (keep != nullptr) {
+            av_frame_unref(keep);
+            av_frame_ref(keep, frame);
+        }
+        if (m_DeskResult == 0 && m_HeldDeskFrame != nullptr) {
+            av_frame_unref(m_HeldDeskFrame);
         }
     }}
 
@@ -1549,7 +1565,9 @@ private:
     int m_VideoVertexCount = 0;
     bool m_AppWindowMode = false;  // desk session: see AppWindow::deskActive()
     std::mutex m_DeskFrameLock;
-    AVFrame* m_LastDeskFrame = av_frame_alloc();  // for redraws between frames
+    AVFrame* m_LastDeskFrame = av_frame_alloc();  // the last frame drawn, for redraws between frames
+    AVFrame* m_HeldDeskFrame = av_frame_alloc();  // a frame waiting for its layout
+    int m_DeskResult = 0;  // the last renderChildWindows: 0 drawn, 1 held for its layout, 2 not readable
     QHash<quint64, QRect> m_PopupTrims;
     struct Inflight {
         std::atomic<int> count {0};
