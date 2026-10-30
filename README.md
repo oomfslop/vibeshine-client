@@ -6,7 +6,7 @@ Moonlight also has mobile versions for [Android](https://github.com/moonlight-st
 
 You can follow development on our [Discord server](https://moonlight-stream.org/discord) and help translate Moonlight into your language on [Weblate](https://hosted.weblate.org/projects/moonlight/moonlight-qt/).
 
- [![Build](https://img.shields.io/github/actions/workflow/status/moonlight-stream/moonlight-qt/build.yml?branch=master)](https://github.com/moonlight-stream/moonlight-qt/actions/workflows/build.yml?query=branch%3Amaster)
+ [![Build](https://img.shields.io/github/actions/workflow/status/oomfslop/vibeshine-client/build.yml?branch=master)](https://github.com/oomfslop/vibeshine-client/actions/workflows/build.yml?query=branch%3Amaster)
  [![Downloads](https://img.shields.io/github/downloads/moonlight-stream/moonlight-qt/total)](https://github.com/moonlight-stream/moonlight-qt/releases)
  [![Translation Status](https://hosted.weblate.org/widgets/moonlight/-/moonlight-qt/svg-badge.svg)](https://hosted.weblate.org/projects/moonlight/moonlight-qt/)
 
@@ -32,7 +32,7 @@ You can follow development on our [Discord server](https://moonlight-stream.org/
 - [NVIDIA Jetson and Nintendo Switch (Ubuntu L4T)](https://github.com/moonlight-stream/moonlight-docs/wiki/Installing-Moonlight-Qt-on-Linux4Tegra-(L4T)-Ubuntu)
 
 ### Nightly Builds
-- [Downloads](https://nightly.link/moonlight-stream/moonlight-qt/workflows/build/master)
+- [Downloads](https://nightly.link/oomfslop/vibeshine-client/workflows/build/master)
 
 #### Special Thanks
 
