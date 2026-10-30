@@ -47,7 +47,9 @@ pub fn open(root: &mut Root, uuid: Option<String>, window: &mut Window, cx: &mut
     }
     let input = cx.new(|cx| {
         let mut t = TextInput::new(cx, "Search apps or type a command", InputKind::Text);
-        t.height = 32.;
+        t.height = 44.;
+        t.text_size = type_scale::LG;
+        t.bare = true;
         t
     });
     cx.subscribe(&input, |this: &mut Root, input, event: &TextInputEvent, cx| match event {
@@ -239,14 +241,13 @@ pub fn render(root: &mut Root, theme: &Theme, window: &mut Window, cx: &mut Cont
     let header = div()
         .flex()
         .items_center()
-        .gap(px(8.))
-        .px(px(8.))
-        .h(px(44.))
+        .gap(px(10.))
+        .px(px(14.))
+        .h(px(48.))
         .border_b_1()
         .border_color(theme.border)
-        .child(icon_el(icon::SEARCH, 14., theme.text_muted))
+        .child(icon_el(icon::SEARCH, 16., theme.text_muted))
         .child(div().flex_1().child(input))
-        .child(div().text_size(type_scale::SM).text_color(theme.text_muted).whitespace_nowrap().child(format!("on {host_name}")))
         .child(
             icon_button("launcher-refresh", if refreshing { icon::LOADER } else { icon::ROTATE_CCW })
                 .size(22., 12.)

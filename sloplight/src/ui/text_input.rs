@@ -76,6 +76,8 @@ pub struct TextInput {
     pub align_right: bool,
     /// Draw no border/background until focused or non-empty
     pub quiet: bool,
+    /// Never draw a border/background: the surrounding row is the field
+    pub bare: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -102,6 +104,7 @@ impl TextInput {
             text_size: type_scale::BASE,
             align_right: false,
             quiet: false,
+            bare: false,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -590,9 +593,11 @@ impl Render for TextInput {
             cx.emit(TextInputEvent::Blur);
         }
         self.was_focused = focused;
-        let quiet_idle = self.quiet && !focused && self.content.is_empty() && !self.invalid;
+        let quiet_idle = self.bare || (self.quiet && !focused && self.content.is_empty() && !self.invalid);
         let border = if self.invalid {
             theme.error
+        } else if self.bare {
+            gpui::transparent_black()
         } else if focused {
             theme.border_focused
         } else if quiet_idle {
@@ -610,12 +615,12 @@ impl Render for TextInput {
             .items_center()
             .w_full()
             .h(px(self.height))
-            .px(px(8.))
+            .px(px(if self.bare { 0. } else { 8. }))
             .rounded(px(4.))
             .bg(if quiet_idle { gpui::transparent_black() } else { theme.bg })
             .border_1()
             .border_color(border)
-            .when(!focused && !self.disabled && !self.invalid, |d| d.hover(|s| s.border_color(theme.text_muted.alpha(0.5))))
+            .when(!focused && !self.disabled && !self.invalid && !self.bare, |d| d.hover(|s| s.border_color(theme.text_muted.alpha(0.5))))
             .cursor(if self.disabled { CursorStyle::Arrow } else { CursorStyle::IBeam })
             .font(font(&family, gpui::FontWeight::NORMAL))
             .text_size(self.text_size)
