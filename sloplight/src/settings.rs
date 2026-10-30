@@ -39,6 +39,25 @@ enum_setting!(WindowMode { Fullscreen = 0 => "Fullscreen", Borderless = 1 => "Bo
 enum_setting!(UiDisplayMode { Windowed = 0 => "Windowed", Maximized = 1 => "Maximized", Fullscreen = 2 => "Fullscreen" });
 enum_setting!(CaptureSysKeys { Off = 0 => "Off", Fullscreen = 1 => "In fullscreen", Always = 2 => "Always" });
 enum_setting!(WindowDensity { Retina = 0 => "Retina", Standard = 1 => "Standard" });
+enum_setting!(BackgroundQuality { Full = 0 => "Full", Lower = 1 => "Lower", Low = 2 => "Low" });
+
+impl BackgroundQuality {
+    /// How much coarser the host quantizes background windows (HEVC/H.264 QP:
+    /// +6 halves the bits a change costs)
+    pub fn qp_delta(self) -> i32 {
+        match self {
+            BackgroundQuality::Full => 0,
+            BackgroundQuality::Lower => 4,
+            BackgroundQuality::Low => 8,
+        }
+    }
+}
+
+impl Default for BackgroundQuality {
+    fn default() -> Self {
+        BackgroundQuality::Full
+    }
+}
 
 /// The settings that suit a network: a preset holds these, the rest are
 /// shared. Choosing a preset copies its values into the settings; changing
@@ -59,6 +78,8 @@ pub struct Preset {
     pub app_window_background_divisor: i32,
     pub app_window_skip_covered: bool,
     pub app_window_density: WindowDensity,
+    pub app_window_background_quality: BackgroundQuality,
+    pub app_window_efficient_encoding: bool,
 }
 
 impl Default for WindowDensity {
@@ -89,6 +110,8 @@ impl Preset {
             app_window_background_divisor: s.app_window_background_divisor,
             app_window_skip_covered: s.app_window_skip_covered,
             app_window_density: s.app_window_density,
+            app_window_background_quality: s.app_window_background_quality,
+            app_window_efficient_encoding: s.app_window_efficient_encoding,
         }
     }
 
@@ -106,6 +129,8 @@ impl Preset {
         s.app_window_background_divisor = self.app_window_background_divisor;
         s.app_window_skip_covered = self.app_window_skip_covered;
         s.app_window_density = self.app_window_density;
+        s.app_window_background_quality = self.app_window_background_quality;
+        s.app_window_efficient_encoding = self.app_window_efficient_encoding;
     }
 
     /// Full quality (home Wi-Fi, LAN): the screen's own resolution at its
@@ -127,13 +152,16 @@ impl Preset {
             app_window_background_divisor: 1,
             app_window_skip_covered: true,
             app_window_density: WindowDensity::Retina,
+            app_window_background_quality: BackgroundQuality::Full,
+            app_window_efficient_encoding: false,
         }
     }
 
     /// Data saver (a phone's hotspot, slow or metered links: a few Mbps to a
     /// few tens, latency that varies, some loss): half the screen's pixels
     /// each way (sharp enough, 4x less to encode and send), 60 fps for smooth
-    /// scrolling, HEVC, background windows at a quarter rate
+    /// scrolling, HEVC; background windows at an eighth of the rate and lower
+    /// quality; the host's encoder in its efficient mode
     pub fn data_saver(screen_pts: (i32, i32)) -> Preset {
         let (width, height) = (screen_pts.0 & !1, screen_pts.1 & !1);
         Preset {
@@ -147,9 +175,11 @@ impl Preset {
             video_codec_config: VideoCodec::Hevc,
             packet_size: 0,
             app_window_bitrate_kbps: 12000,
-            app_window_background_divisor: 4,
+            app_window_background_divisor: 8,
             app_window_skip_covered: true,
             app_window_density: WindowDensity::Standard,
+            app_window_background_quality: BackgroundQuality::Low,
+            app_window_efficient_encoding: true,
         }
     }
 }
@@ -286,6 +316,14 @@ pub struct Settings {
     /// 4x fewer pixels, for slow links)
     #[serde(default)]
     pub app_window_density: WindowDensity,
+    /// App windows: windows other than the focused one coded coarser (their
+    /// changes cost fewer bits)
+    #[serde(default)]
+    pub app_window_background_quality: BackgroundQuality,
+    /// App windows: the host's encoder spends more time per frame for fewer
+    /// bits (slower preset, a pre-pass, a quality ceiling on still areas)
+    #[serde(default)]
+    pub app_window_efficient_encoding: bool,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
     /// Draw only the Mac cursor; the host leaves its cursor out of the
@@ -369,6 +407,8 @@ impl Default for Settings {
             app_window_background_divisor: 1,
             app_window_skip_covered: true,
             app_window_density: WindowDensity::Retina,
+            app_window_background_quality: BackgroundQuality::Full,
+            app_window_efficient_encoding: false,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             hide_host_cursor: false,
@@ -648,6 +688,7 @@ mod tests {
         assert!(s.preset_modified());
         // The preset itself stays as it was
         assert_eq!(s.preset_by_id("custom:Saver").unwrap().app_window_bitrate_kbps, 12000);
+        assert!(s.app_window_efficient_encoding && s.app_window_background_quality == BackgroundQuality::Low);
         s.save_custom_preset("Train");
         assert_eq!(s.active_preset, "custom:Train");
         assert!(!s.preset_modified());

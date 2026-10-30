@@ -222,7 +222,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         let k = 1.0 / plan.points_per_px;
         let dpi = std::env::var("SLOPLIGHT_DESK_DPI").ok().and_then(|v| v.parse().ok()).unwrap_or(plan.dpi);
         let want = plan.size;
-        let desk = match http.open_desk(want.0, want.1, settings.fps.max(30), dpi, settings.app_window_background_divisor, !settings.app_window_skip_covered, plan.atlas) {
+        let desk = match http.open_desk(want.0, want.1, settings.fps.max(30), dpi, &appwindows::desk_options(&settings, &plan)) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("desk open: {e}");

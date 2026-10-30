@@ -79,6 +79,17 @@ pub fn desk_plan(settings: &Settings, screen_pts: (i32, i32), backing: f32) -> D
     DeskPlan { size, dpi, points_per_px: 1.0 / k, atlas }
 }
 
+/// The host-side options of a desk planned so (`open_desk`)
+pub fn desk_options(settings: &Settings, plan: &DeskPlan) -> crate::backend::http::DeskOptions {
+    crate::backend::http::DeskOptions {
+        background_divisor: settings.app_window_background_divisor,
+        keep_covered: !settings.app_window_skip_covered,
+        atlas: plan.atlas,
+        background_qp: settings.app_window_background_quality.qp_delta(),
+        efficient: settings.app_window_efficient_encoding,
+    }
+}
+
 pub type WindowsSender = UnboundedSender<WindowsEvent>;
 
 pub enum WindowsEvent {
@@ -283,7 +294,7 @@ impl Root {
         let screen = [f32::from(b.origin.x) as i32, f32::from(b.origin.y) as i32, f32::from(b.size.width) as i32, f32::from(b.size.height) as i32];
         let plan = desk_plan(&self.settings, (screen[2], screen[3]), Self::screen_backing_scale());
         let (want, dpi) = (plan.size, plan.dpi);
-        let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi, self.settings.app_window_background_divisor, !self.settings.app_window_skip_covered, plan.atlas) {
+        let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi, &desk_options(&self.settings, &plan)) {
             Ok(d) => d,
             Err(e) => {
                 self.toast(ToastKind::Error, format!("Couldn't open the desk on the host: {e}"), cx);

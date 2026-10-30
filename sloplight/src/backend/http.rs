@@ -304,8 +304,11 @@ impl NvHttp {
     /// the driver could give (its mode catalog is fixed), which the stream uses.
     /// background: windows other than the focused one at 1/n of the frame
     /// rate; covered: stream windows that others cover whole
-    pub fn open_desk(&self, w: i32, h: i32, fps: i32, dpi: i32, background: i32, covered: bool, atlas: (i32, i32)) -> Result<DeskInfo, HttpError> {
-        let query = format!("op=open&w={w}&h={h}&fps={fps}&dpi={dpi}&unfocused={background}&covered={}&atlas_w={}&atlas_h={}", covered as i32, atlas.0, atlas.1);
+    pub fn open_desk(&self, w: i32, h: i32, fps: i32, dpi: i32, opts: &DeskOptions) -> Result<DeskInfo, HttpError> {
+        let query = format!(
+            "op=open&w={w}&h={h}&fps={fps}&dpi={dpi}&unfocused={}&covered={}&atlas_w={}&atlas_h={}&bgqp={}&efficient={}",
+            opts.background_divisor, opts.keep_covered as i32, opts.atlas.0, opts.atlas.1, opts.background_qp, opts.efficient as i32
+        );
         let resp = self.request(true, "actions/desk", &query, Duration::from_secs(40), Some(("text/plain", b"")))?;
         serde_json::from_slice(&resp.body).map_err(|e| HttpError::Network(format!("desk: {e}")))
     }
@@ -626,6 +629,21 @@ mod tests {
             Err(e) => println!("ERR {e:?}"),
         }
     }
+}
+
+/// How the host runs a desk (`open_desk`)
+#[derive(Debug, Clone, Default)]
+pub struct DeskOptions {
+    /// Windows other than the focused one at 1/n of the frame rate
+    pub background_divisor: i32,
+    /// Keep windows covered whole in the stream
+    pub keep_covered: bool,
+    /// The atlas (what is streamed): width, height
+    pub atlas: (i32, i32),
+    /// Background windows' quantizer offset (0: same quality)
+    pub background_qp: i32,
+    /// The encoder's efficient mode
+    pub efficient: bool,
 }
 
 /// The client's desk as the host reports it (`POST /actions/desk`).
