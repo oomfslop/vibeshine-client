@@ -623,6 +623,10 @@ public:
         // Which layout this frame shows: its geometry is the one to draw it with
         const int frameSeq = readDeskMarker(frame);
         const int layoutSeq = deskwm_layout_seq();
+        static const bool debugSeq = qEnvironmentVariableIsSet("DESKWM_DEBUG_RESIZE");
+        if (debugSeq && deferred == nullptr) {
+            SDL_Log("desk frame#%d layout#%d", frameSeq, layoutSeq);
+        }
         if (frameSeq >= 0 && layoutSeq >= 0) {
             const int ahead = (frameSeq - layoutSeq) & 0xfff;
             if (ahead != 0 && ahead < 2048) {
@@ -735,7 +739,7 @@ public:
             const int dw = qMin(pw, vw), dh = qMin(ph, vh);
             static const bool debugResize = qEnvironmentVariableIsSet("DESKWM_DEBUG_RESIZE");
             if (debugResize && layer.presentsWithTransaction) {
-                SDL_Log("resize draw %llx t=%.4f view=%dx%d picture=%dx%d %s", (unsigned long long)child.hwnd, CACurrentMediaTime(), vw, vh, pw, ph, deferred ? "main" : "frame");
+                SDL_Log("resize draw %llx t=%.4f view=%dx%d picture=%dx%d %s frame#%d layout#%d", (unsigned long long)child.hwnd, CACurrentMediaTime(), vw, vh, pw, ph, deferred ? "main" : "frame", frameSeq, layoutSeq);
             }
             const float sx = (float)g.x + (child.anchor_right ? (pw - dw) * scale : 0.0f);
             const float sy = (float)g.y + (child.anchor_bottom ? (ph - dh) * scale : 0.0f);
