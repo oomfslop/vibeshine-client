@@ -166,10 +166,10 @@ pub fn touches(hwnd: u64, e: &NSEvent, view: &NSView) {
         if !t.down {
             move_to_pointer(hwnd);
         }
-        ffi::trackpad(&contacts, mm(size.width), mm(size.height));
+        ffi::trackpad(&contacts, mm(size.width), mm(size.height), e.timestamp());
         t = Trackpad { down: true, gesture: true };
     } else if t.down {
-        ffi::trackpad(&[], 0.0, 0.0);
+        ffi::trackpad(&[], 0.0, 0.0, e.timestamp());
         t.down = false;
     }
     TRACKPAD.with(|c| c.set(t));

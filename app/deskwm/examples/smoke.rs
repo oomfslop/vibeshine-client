@@ -30,7 +30,7 @@ pub extern "C" fn LiSendMouseMoveEvent(dx: i16, dy: i16) -> i32 {
     0
 }
 #[no_mangle]
-pub extern "C" fn LiSendTrackpadEvent(count: u8, _contacts: *const deskwm::TrackpadContact, _w: f32, _h: f32) -> i32 {
+pub extern "C" fn LiSendTrackpadEvent(count: u8, _contacts: *const deskwm::TrackpadContact, _w: f32, _h: f32, _time: u32) -> i32 {
     INPUT.lock().unwrap().push(format!("trackpad {count}"));
     0
 }

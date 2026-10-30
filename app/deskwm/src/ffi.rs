@@ -97,7 +97,7 @@ extern "C" {
     fn LiSendHighResScrollEvent(amount: i16) -> i32;
     fn LiSendHighResHScrollEvent(amount: i16) -> i32;
     fn LiSendKeyboardEvent2(key_code: i16, key_action: c_char, modifiers: c_char, flags: c_char) -> i32;
-    fn LiSendTrackpadEvent(count: u8, contacts: *const TrackpadContact, width: f32, height: f32) -> i32;
+    fn LiSendTrackpadEvent(count: u8, contacts: *const TrackpadContact, width: f32, height: f32, timestamp_ms: u32) -> i32;
     fn LiGetHostFeatureFlags() -> u32;
 }
 
@@ -115,10 +115,11 @@ pub fn trackpad_supported() -> bool {
     unsafe { LiGetHostFeatureFlags() & 0x04 != 0 }
 }
 
-/// The fingers on the trackpad (none: all lifted); width and height in mm
-pub fn trackpad(contacts: &[TrackpadContact], width: f32, height: f32) {
+/// The fingers on the trackpad (none: all lifted); width and height in mm;
+/// when they were there (seconds, any base: the event's timestamp)
+pub fn trackpad(contacts: &[TrackpadContact], width: f32, height: f32, time: f64) {
     unsafe {
-        LiSendTrackpadEvent(contacts.len().min(5) as u8, contacts.as_ptr(), width, height);
+        LiSendTrackpadEvent(contacts.len().min(5) as u8, contacts.as_ptr(), width, height, (time * 1000.0) as u64 as u32);
     }
 }
 
