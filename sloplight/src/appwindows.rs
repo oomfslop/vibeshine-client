@@ -52,8 +52,8 @@ pub const DESK_STREAM_ID: &str = "desk";
 /// to the point: its size, the DPI host windows render at, Mac points per
 /// desk pixel and the atlas (what is streamed). Retina density: a desk of the
 /// screen's device pixels and a 4K atlas, windows as sharp as the Mac's own;
-/// Standard: one pixel to the point, a 1080p atlas (4x fewer pixels to
-/// encode and send, for slow links).
+/// Standard: one pixel to the point (4x fewer pixels to encode and send, for
+/// slow links) and a 1440p atlas.
 pub struct DeskPlan {
     pub size: (i32, i32),
     pub dpi: i32,
@@ -70,11 +70,17 @@ pub fn desk_plan(settings: &Settings, screen_pts: (i32, i32), backing: f32) -> D
     // (window size: host windows as large on this screen as the setting says,
     // at one desk pixel to `1 / k` points)
     let dpi = (96.0 * k * settings.app_window_scale.clamp(25, 400) as f32 / 100.0).round() as i32;
-    // The atlas holds what fits on the screen at once, so never more than the
-    // desk; 3840x2160 at most (the decoder's limit at 120 fps)
+    // The atlas holds every window drawn whole: room to spare costs next to
+    // nothing (what does not change is not sent again), while a full atlas
+    // puts windows behind in as small copies and their visible parts as
+    // tiles, which a window moved across them re-places (re-sent, blurry
+    // until refined). 3840x2160 at most: the decoder's limit at 120 fps.
     let atlas = match settings.app_window_density {
         WindowDensity::Retina => (3840, 2160),
-        WindowDensity::Standard => (size.0.clamp(1920, 3840), size.1.clamp(1080, 2160)),
+        // (16:9 sizes: the hardware decoder's own; odd shapes can fall back
+        // to software decoding)
+        WindowDensity::Standard if size.0 <= 1920 && size.1 <= 1200 => (2560, 1440),
+        WindowDensity::Standard => (3840, 2160),
     };
     DeskPlan { size, dpi, points_per_px: 1.0 / k, atlas }
 }
