@@ -41,6 +41,10 @@ unicode-segmentation = "1.13.3"
 uuid = { version = "1.29.0", features = ["v4"] }
 x509-parser = "0.18.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+
 [profile.dev]
 opt-level = 1
 

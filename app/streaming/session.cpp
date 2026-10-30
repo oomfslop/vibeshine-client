@@ -1805,10 +1805,16 @@ void Session::toggleQuickMenu()
 
 void Session::handleAppWindowCommand(const QJsonObject& cmd)
 {
+    const QString kind = cmd.value("cmd").toString();
+    if (kind == "focus") {
+        // A window the user launched: focused here once it shows up (it may
+        // come before the desk does)
+        deskwm_command(QJsonDocument(cmd).toJson(QJsonDocument::Compact).constData());
+        return;
+    }
     if (!m_Window) {
         return;
     }
-    const QString kind = cmd.value("cmd").toString();
     if (kind == "layout") {
         handleDeskLayout(cmd);
     }

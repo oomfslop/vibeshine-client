@@ -29,10 +29,40 @@ impl Root {
 
     /// Toasts: bottom-right of the content area, small, errors stay until dismissed.
     pub fn render_toasts(&mut self, theme: &Theme, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.toasts.is_empty() {
+        if self.toasts.is_empty() && self.launch_pending.is_none() {
             return None;
         }
         let mut stack = div().absolute().right(px(12.)).bottom(px(12.)).flex().flex_col().items_end().gap(px(8.));
+        if let Some(p) = &self.launch_pending {
+            // What a launch from the launcher is waiting for
+            let host = self.host_by_uuid(&p.host_uuid).map(|h| h.name.clone()).unwrap_or_default();
+            let text = match &p.hwnd {
+                None => format!("Opening {} on {host}…", p.label),
+                Some(_) if self.desk_opening.is_some() || self.desk_stream.as_ref().is_some_and(|d| !d.connected) => "Starting the stream…".to_string(),
+                Some(_) => format!("Bringing {} over…", p.label),
+            };
+            stack = stack.child(
+                div()
+                    .id("launch-pending")
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .h(px(32.))
+                    .pl(px(10.))
+                    .pr(px(4.))
+                    .rounded(px(6.))
+                    .bg(theme.elevated)
+                    .border_1()
+                    .border_color(theme.border)
+                    .shadow(vec![gpui::BoxShadow { color: theme.shadow, offset: gpui::point(px(0.), px(2.)), blur_radius: px(8.), spread_radius: px(0.), inset: false }])
+                    .child(spinner(12., theme.text_muted))
+                    .child(div().text_size(crate::theme::type_scale::SM).text_color(theme.text).whitespace_nowrap().child(text))
+                    .child(icon_button("launch-pending-x", icon::X).size(20., 10.).tooltip("Stop waiting (the app stays open on the host)", None).on_click(cx.listener(|this, _, _, cx| {
+                        this.launch_pending = None;
+                        cx.notify();
+                    }))),
+            );
+        }
         for toast in &self.toasts {
             let id = toast.id;
             let is_error = matches!(toast.kind, ToastKind::Error | ToastKind::Warning);

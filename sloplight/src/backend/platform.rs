@@ -36,3 +36,18 @@ pub fn discovery_hint() -> Option<&'static str> {
         None
     }
 }
+
+/// Lets the app with this pid take the activation from us (macOS only lets
+/// an app activate itself when the active app hands it over): the stream
+/// helper, to bring a window the user just launched to the front.
+pub fn yield_activation_to(pid: u32) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSApplication, NSRunningApplication};
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        let Some(target) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as i32) else { return };
+        NSApplication::sharedApplication(mtm).yieldActivationToApplication(&target);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = pid;
+}

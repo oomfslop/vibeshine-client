@@ -43,6 +43,25 @@ pub struct DeskStream {
     pub adopted: Vec<String>,
     /// Points per host pixel of the desk
     pub points_per_px: f32,
+    /// A window to focus once the helper is connected (a launched app)
+    pub focus_on_connect: Option<String>,
+}
+
+/// The desk being opened on the host (in the background: a slow link takes
+/// a while), with the windows to stream once it is there
+pub struct DeskOpening {
+    pub host_uuid: String,
+    /// The windows to adopt, the first one opens the stream; and whether to focus each
+    pub windows: Vec<(HostWindow, bool)>,
+}
+
+/// A launch from the launcher until its window shows here
+pub struct PendingLaunch {
+    pub host_uuid: String,
+    pub label: String,
+    /// The app's window, once it is known
+    pub hwnd: Option<String>,
+    pub since: Instant,
 }
 
 /// Stream events of the desk helper carry this in place of a window handle.
@@ -54,6 +73,7 @@ pub const DESK_STREAM_ID: &str = "desk";
 /// screen's device pixels and a 4K atlas, windows as sharp as the Mac's own;
 /// Standard: one pixel to the point (4x fewer pixels to encode and send, for
 /// slow links) and a 1440p atlas.
+#[derive(Clone, Copy)]
 pub struct DeskPlan {
     pub size: (i32, i32),
     pub dpi: i32,
@@ -108,6 +128,10 @@ pub enum WindowsEvent {
     /// The window of an app launched from the launcher
     Launched { host_uuid: String, window: HostWindow },
     LaunchFailed { message: String },
+    /// The host opened (or couldn't open) the desk for the first window
+    DeskOpened { host_uuid: String, plan: DeskPlan, screen: [i32; 4], result: Result<DeskInfo, String> },
+    /// A window went onto the running desk
+    Adopted { hwnd: String },
 }
 
 fn icon_dir(cache_dir: &std::path::Path) -> PathBuf {
@@ -200,11 +224,27 @@ impl Root {
                 if self.windows.host_uuid == host_uuid && !self.windows.windows.iter().any(|w| w.hwnd.eq_ignore_ascii_case(&window.hwnd)) {
                     self.windows.windows.push(window.clone());
                 }
-                if !self.window_streaming(&window.hwnd) {
-                    self.launch_window(&host_uuid, &window.hwnd, cx);
+                if let Some(p) = &mut self.launch_pending {
+                    p.hwnd = Some(window.hwnd.to_ascii_lowercase());
+                }
+                if self.window_streaming(&window.hwnd) {
+                    // Already here (it opened on the desk, or the watch got it first)
+                    self.launch_pending = None;
+                    self.focus_streamed_window(&window.hwnd);
+                } else {
+                    self.stream_window(&host_uuid, window, true, cx);
                 }
             }
-            WindowsEvent::LaunchFailed { message } => self.toast(ToastKind::Error, message, cx),
+            WindowsEvent::LaunchFailed { message } => {
+                self.launch_pending = None;
+                self.toast(ToastKind::Error, message, cx);
+            }
+            WindowsEvent::DeskOpened { host_uuid, plan, screen, result } => self.on_desk_opened(host_uuid, plan, screen, result, cx),
+            WindowsEvent::Adopted { hwnd } => {
+                if self.launch_pending.as_ref().and_then(|p| p.hwnd.as_deref()).is_some_and(|h| h.eq_ignore_ascii_case(&hwnd)) {
+                    self.focus_streamed_window(&hwnd);
+                }
+            }
         }
         cx.notify();
     }
@@ -275,12 +315,26 @@ impl Root {
     /// window), starts the desk helper, and adopts the window onto the desk at
     /// the place it has on its host monitor.
     pub fn launch_window(&mut self, uuid: &str, hwnd: &str, cx: &mut Context<Self>) {
-        if self.window_streaming(hwnd) {
+        let Some(w) = self.windows.windows.iter().find(|w| w.hwnd.eq_ignore_ascii_case(hwnd)).cloned() else { return };
+        self.stream_window(uuid, w, false, cx);
+    }
+
+    /// `launch_window` for a window at hand; `focus`: bring it to the front
+    /// here and on the host once it shows (one the user just launched)
+    pub fn stream_window(&mut self, uuid: &str, w: HostWindow, focus: bool, cx: &mut Context<Self>) {
+        if self.window_streaming(&w.hwnd) {
             return;
         }
         let Some(host) = self.host_by_uuid(uuid).cloned() else { return };
-        let Some(w) = self.windows.windows.iter().find(|w| w.hwnd.eq_ignore_ascii_case(hwnd)).cloned() else { return };
         let Some(http) = host.http(self.identity.clone()) else { return };
+        if let Some(opening) = &mut self.desk_opening {
+            if opening.host_uuid != host.uuid {
+                self.toast(ToastKind::Error, "Windows of one host at a time: stop the other host's windows first", cx);
+            } else if !opening.windows.iter().any(|(o, _)| o.hwnd.eq_ignore_ascii_case(&w.hwnd)) {
+                opening.windows.push((w, focus));
+            }
+            return;
+        }
         if let Some(ds) = &mut self.desk_stream {
             if ds.host_uuid != host.uuid {
                 self.toast(ToastKind::Error, "Windows of one host at a time: stop the other host's windows first", cx);
@@ -289,25 +343,27 @@ impl Root {
             // Desk already streaming: adopt where the window is on its monitor
             let (x, y) = Self::adopt_position(&w, ds.points_per_px, ds.desk.dpi, cx);
             ds.adopted.push(w.hwnd.to_ascii_lowercase());
+            if focus {
+                // Waits in the helper until the window shows up there
+                self.focus_streamed_window(&w.hwnd);
+            }
+            let tx = self.windows_tx.clone();
             std::thread::spawn(move || {
                 if let Err(e) = http.window_action(&w.hwnd, "adopt", x, y, 0, 0) {
                     log::warn!("adopt {}: {e}", w.hwnd);
                 }
+                if focus {
+                    let _ = http.window_action(&w.hwnd, "activate", 0, 0, 0, 0);
+                }
+                let _ = tx.unbounded_send(WindowsEvent::Adopted { hwnd: w.hwnd.clone() });
             });
             cx.notify();
             return;
         }
-        let helper = self.helper_path.clone().or_else(|| stream::find_helper(&self.settings));
-        let Some(helper) = helper else {
-            self.toast(ToastKind::Error, "Streaming helper not found; set it in Settings", cx);
-            return;
-        };
-        self.helper_path = Some(helper.clone());
-        let app = host.apps.iter().find(|a| a.id == host.current_game_id && a.id != 0).or_else(|| host.apps.first()).cloned();
-        let Some(app) = app else {
+        if host.apps.iter().all(|a| a.id == 0) {
             self.toast(ToastKind::Error, "The host lists no apps; can't start a window stream", cx);
             return;
-        };
+        }
         // The desk mirrors the screen the launcher is on, at the host window's DPI
         let Some(display) = cx.primary_display() else {
             self.toast(ToastKind::Error, "No display to mirror", cx);
@@ -316,15 +372,66 @@ impl Root {
         let b = display.bounds();
         let screen = [f32::from(b.origin.x) as i32, f32::from(b.origin.y) as i32, f32::from(b.size.width) as i32, f32::from(b.size.height) as i32];
         let plan = desk_plan(&self.settings, (screen[2], screen[3]), Self::screen_backing_scale());
-        let (want, dpi) = (plan.size, plan.dpi);
-        let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi, &desk_options(&self.settings, &plan)) {
+        let fps = self.settings.fps.max(30);
+        let options = desk_options(&self.settings, &plan);
+        self.desk_opening = Some(DeskOpening { host_uuid: host.uuid.clone(), windows: vec![(w, focus)] });
+        // A round trip or more to the host: not on the UI thread
+        let tx = self.windows_tx.clone();
+        let host_uuid = host.uuid.clone();
+        std::thread::Builder::new()
+            .name("open desk".into())
+            .spawn(move || {
+                let result = http.open_desk(plan.size.0, plan.size.1, fps, plan.dpi, &options).map_err(|e| e.to_string());
+                let _ = tx.unbounded_send(WindowsEvent::DeskOpened { host_uuid, plan, screen, result });
+            })
+            .ok();
+        cx.notify();
+    }
+
+    fn on_desk_opened(&mut self, host_uuid: String, plan: DeskPlan, screen: [i32; 4], result: Result<DeskInfo, String>, cx: &mut Context<Self>) {
+        let Some(opening) = self.desk_opening.take().filter(|o| o.host_uuid == host_uuid) else {
+            // Given up on meanwhile
+            if result.is_ok() {
+                if let Some(http) = self.host_by_uuid(&host_uuid).and_then(|h| h.http(self.identity.clone())) {
+                    std::thread::spawn(move || {
+                        let _ = http.close_desk();
+                    });
+                }
+            }
+            return;
+        };
+        let Some(host) = self.host_by_uuid(&host_uuid).cloned() else { return };
+        let Some(http) = host.http(self.identity.clone()) else { return };
+        let desk = match result {
             Ok(d) => d,
             Err(e) => {
+                self.launch_pending = None;
                 self.toast(ToastKind::Error, format!("Couldn't open the desk on the host: {e}"), cx);
                 return;
             }
         };
-        log::info!("desk {} {:?} @{} {} dpi for a {}x{} pt screen ({}x{} px wanted)", desk.display, desk.rect, desk.fps, desk.dpi, screen[2], screen[3], want.0, want.1);
+        let mut windows = opening.windows.into_iter();
+        let Some((w, focus)) = windows.next() else { return };
+        log::info!("desk {} {:?} @{} {} dpi for a {}x{} pt screen ({}x{} px wanted)", desk.display, desk.rect, desk.fps, desk.dpi, screen[2], screen[3], plan.size.0, plan.size.1);
+        let fail = |this: &mut Self, message: String, cx: &mut Context<Self>| {
+            let http = http.clone();
+            std::thread::spawn(move || {
+                let _ = http.close_desk();
+            });
+            this.launch_pending = None;
+            this.toast(ToastKind::Error, message, cx);
+        };
+        let helper = self.helper_path.clone().or_else(|| stream::find_helper(&self.settings));
+        let Some(helper) = helper else {
+            fail(self, "Streaming helper not found; set it in Settings".into(), cx);
+            return;
+        };
+        self.helper_path = Some(helper.clone());
+        let app = host.apps.iter().find(|a| a.id == host.current_game_id && a.id != 0).or_else(|| host.apps.first()).cloned();
+        let Some(app) = app else {
+            fail(self, "The host lists no apps; can't start a window stream".into(), cx);
+            return;
+        };
         let icon_png = self.windows.icons.get(&w.icon).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
         let mut settings = self.settings.clone();
         settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(2000, 150000);
@@ -345,6 +452,9 @@ impl Root {
                     if let Err(e) = adopt_http.window_action(&hwnd_s, "adopt", x, y, 0, 0) {
                         log::warn!("adopt {hwnd_s}: {e}");
                     }
+                    if focus {
+                        let _ = adopt_http.window_action(&hwnd_s, "activate", 0, 0, 0, 0);
+                    }
                 });
                 self.desk_stream = Some(DeskStream {
                     host_uuid: host.uuid.clone(),
@@ -354,15 +464,35 @@ impl Root {
                     error_lines: Vec::new(),
                     adopted: vec![w.hwnd.to_ascii_lowercase()],
                     points_per_px,
+                    focus_on_connect: focus.then(|| w.hwnd.clone()),
                 });
                 self.ensure_window_watch(&host);
+                // The ones asked for while the desk was opening
+                for (w, focus) in windows {
+                    self.stream_window(&host_uuid, w, focus, cx);
+                }
             }
-            Err(e) => {
-                let _ = http.close_desk();
-                self.toast(ToastKind::Error, format!("Couldn't stream {}: {e}", w.title), cx);
-            }
+            Err(e) => fail(self, format!("Couldn't stream {}: {e}", w.title), cx),
         }
         cx.notify();
+    }
+
+    /// Brings a streamed window to the front here (the helper takes the
+    /// activation from us: macOS lets the active app hand it over), and with
+    /// it the host's focus. Waits in the helper for a window not shown yet.
+    pub fn focus_streamed_window(&mut self, hwnd: &str) {
+        let Some(ds) = &self.desk_stream else { return };
+        if !ds.connected {
+            // (the helper takes commands once its session runs)
+            if let Some(ds) = &mut self.desk_stream {
+                ds.focus_on_connect = Some(hwnd.to_string());
+            }
+            return;
+        }
+        if let Some(pid) = ds.process.pid() {
+            crate::backend::platform::yield_activation_to(pid);
+        }
+        ds.process.send_command(&serde_json::json!({ "cmd": "focus", "hwnd": hwnd }));
     }
 
     /// Where a newly adopted window goes on the desk: its place on its host
@@ -426,12 +556,24 @@ impl Root {
     pub fn on_desk_stream_event(&mut self, event: StreamEvent, cx: &mut Context<Self>) {
         let Some(ds) = &mut self.desk_stream else { return };
         match event.event {
-            HelperEvent::ConnectionStarted => ds.connected = true,
+            HelperEvent::ConnectionStarted => {
+                ds.connected = true;
+                if let Some(hwnd) = ds.focus_on_connect.take() {
+                    self.focus_streamed_window(&hwnd);
+                }
+            }
             HelperEvent::StageFailed { stage, error_code, .. } => ds.error_lines.push(format!("Starting {stage} failed: Error {error_code}")),
             HelperEvent::LaunchError { text } => ds.error_lines.push(text),
             HelperEvent::AppWindow { kind, hwnd, .. } => {
                 // The helper talks to the host itself; this is bookkeeping.
-                if kind == "close" {
+                if kind == "shown" {
+                    // The launched app's window is here: done waiting
+                    if let (Some(h), Some(p)) = (&hwnd, &self.launch_pending) {
+                        if p.hwnd.as_deref().is_some_and(|w| w.eq_ignore_ascii_case(h)) {
+                            self.launch_pending = None;
+                        }
+                    }
+                } else if kind == "close" {
                     if let Some(h) = hwnd {
                         ds.adopted.retain(|a| !a.eq_ignore_ascii_case(&h));
                     } else {
@@ -443,6 +585,7 @@ impl Root {
             }
             HelperEvent::Exited { code, .. } => {
                 let ds = self.desk_stream.take().unwrap();
+                self.launch_pending = None;
                 if !ds.connected && code != Some(0) {
                     let why = if ds.error_lines.is_empty() { format!("helper exited with code {code:?}") } else { ds.error_lines.join(" ") };
                     self.toast(ToastKind::Error, format!("Couldn't stream the desk: {why}"), cx);

@@ -179,6 +179,11 @@ impl StreamProcess {
         stdin.write_all(line.as_bytes()).and_then(|_| stdin.flush()).is_ok()
     }
 
+    /// The helper's process id (while it runs)
+    pub fn pid(&self) -> Option<u32> {
+        self.child.lock().unwrap().as_ref().map(|c| c.id())
+    }
+
     /// Asks the helper to end the stream cleanly (it handles SIGTERM by
     /// closing the session like the window's close button would).
     pub fn terminate(&self) {

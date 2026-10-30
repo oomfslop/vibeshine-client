@@ -11,7 +11,6 @@ use gpui::Context;
 use crate::app::Root;
 use crate::appwindows::WindowsEvent;
 use crate::backend::http::Launchables;
-use crate::ui::ToastKind;
 
 /// The launcher's list for one host, as last fetched
 #[derive(Default)]
@@ -40,6 +39,9 @@ fn icon_dir(cache_dir: &Path) -> PathBuf {
 
 /// How long a launched app has to show a window (Store apps take a while)
 const WINDOW_WAIT: Duration = Duration::from_secs(20);
+
+/// The longest the loader shows: the window wait, the desk, the stream's start
+const LOADER_LIMIT: Duration = Duration::from_secs(60);
 
 impl Root {
     /// Fetches the host's launcher list, and the icons not cached yet (all in
@@ -113,14 +115,32 @@ impl Root {
     pub fn launch_on_host(&mut self, uuid: &str, target: LaunchTarget, label: String, cx: &mut Context<Self>) {
         let Some(host) = self.host_by_uuid(uuid).cloned() else { return };
         let Some(http) = host.http(self.identity.clone()) else { return };
-        self.toast(ToastKind::Info, format!("Launching {label}…"), cx);
+        let since = Instant::now();
+        self.launch_pending = Some(crate::appwindows::PendingLaunch { host_uuid: uuid.to_string(), label: label.clone(), hwnd: None, since });
+        // The loader never outstays a launch that went quiet
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LOADER_LIMIT).await;
+            let _ = this.update(cx, |root, cx| {
+                if root.launch_pending.as_ref().is_some_and(|p| p.since == since) {
+                    root.launch_pending = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
         let tx = self.windows_tx.clone();
         let uuid = uuid.to_string();
         std::thread::Builder::new()
             .name("launch on host".into())
             .spawn(move || {
                 // The windows before, to know the new one
-                let before: HashSet<String> = http.get_host_windows().unwrap_or_default().iter().map(|w| w.hwnd.to_ascii_lowercase()).collect();
+                // (without it every window would look new: no guessing)
+                let Some(before) = (0..3).find_map(|_| http.get_host_windows().ok()) else {
+                    let _ = tx.unbounded_send(WindowsEvent::LaunchFailed { message: format!("Couldn't launch {label}: the host didn't list its windows") });
+                    return;
+                };
+                let before: HashSet<String> = before.iter().map(|w| w.hwnd.to_ascii_lowercase()).collect();
                 let launched = match &target {
                     LaunchTarget::App { id } => http.launch_app(id),
                     LaunchTarget::Command { line } => http.launch_command(line),

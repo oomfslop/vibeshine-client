@@ -161,6 +161,9 @@ pub struct Root {
     pub launchables: crate::launcher::LaunchablesState,
     pub launcher: Option<crate::views::launcher::LauncherState>,
     pub desk_stream: Option<crate::appwindows::DeskStream>,
+    pub desk_opening: Option<crate::appwindows::DeskOpening>,
+    /// A launch from the launcher waiting for its window (the loader card)
+    pub launch_pending: Option<crate::appwindows::PendingLaunch>,
     pub windows_tx: crate::appwindows::WindowsSender,
     /// Stops the "new host windows" watcher that runs while windows are streamed
     pub window_watch_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -240,6 +243,8 @@ impl Root {
             launchables: Default::default(),
             launcher: None,
             desk_stream: None,
+            desk_opening: None,
+            launch_pending: None,
             windows_tx,
             window_watch_stop: None,
             cache_dir: cache_dir_copy,

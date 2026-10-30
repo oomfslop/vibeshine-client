@@ -202,6 +202,56 @@ pub struct Desk {
 thread_local! {
     static DESK: RefCell<Option<Rc<Desk>>> = const { RefCell::new(None) };
     static KEY_MONITOR: RefCell<Option<Retained<objc2::runtime::AnyObject>>> = const { RefCell::new(None) };
+    /// A window to bring to the front and focus once it shows up (one the
+    /// user launched from the launcher), and since when it is awaited
+    static PENDING_FOCUS: Cell<(u64, f64)> = const { Cell::new((0, 0.0)) };
+}
+
+/// How long a window to focus is awaited (a slow app, a slow link)
+const PENDING_FOCUS_SECS: f64 = 30.0;
+
+/// Brings `hwnd` to the front and makes this the active app, now or when
+/// the window shows up. The launcher yields the activation to us first, so
+/// macOS lets us take it; the host then focuses it too (sync_order).
+pub fn focus_when_shown(hwnd: u64) {
+    if hwnd == 0 {
+        return;
+    }
+    if let (Some(d), Some(w)) = (desk(), win(hwnd)) {
+        focus_window(&d, &w);
+        return;
+    }
+    PENDING_FOCUS.with(|p| p.set((hwnd, ffi::now())));
+}
+
+fn take_pending_focus(d: &Desk, hwnd: u64) {
+    let (want, since) = PENDING_FOCUS.with(|p| p.get());
+    if want != hwnd {
+        return;
+    }
+    PENDING_FOCUS.with(|p| p.set((0, 0.0)));
+    if ffi::now() - since > PENDING_FOCUS_SECS {
+        return;
+    }
+    if let Some(w) = d.wins.borrow().get(&hwnd).cloned() {
+        focus_window(d, &w);
+    }
+}
+
+fn focus_window(d: &Desk, w: &Rc<Win>) {
+    if !w.pane {
+        return;
+    }
+    info!("deskwm: focusing 0x{:x}", w.hwnd);
+    if w.ns().isMiniaturized() {
+        w.ns().deminiaturize(None);
+    }
+    w.ns().orderFront(None);
+    w.ns().makeMainWindow();
+    d.key_window.makeKeyWindow();
+    NSApplication::sharedApplication(d.mtm).activate();
+    d.force_order_push.set(true);
+    update_icon(d);
 }
 
 /// The Window menu's shortcuts act on the desk windows (the key window is a
@@ -438,6 +488,8 @@ pub fn apply_layout(infos: Vec<Info>, cursor: String, seq: i32, pointer_lock: u6
             None => {
                 let w = create_window(&d, i);
                 d.wins.borrow_mut().insert(i.hwnd, w);
+                ffi::event(&format!("{{\"kind\":\"shown\",\"hwnd\":\"0x{:x}\"}}", i.hwnd));
+                take_pending_focus(&d, i.hwnd);
             }
         }
     }
