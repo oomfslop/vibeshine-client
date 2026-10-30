@@ -2462,7 +2462,8 @@ void Session::exec()
         callbacks.event = &Session::deskEvent;
         callbacks.log = &Session::deskLog;
         callbacks.redraw = &Session::deskRedraw;
-        AppWindow::beginDesk(m_Window, m_AppWindow.screenPts, appWindowScale(), m_StreamConfig.width, m_StreamConfig.height, callbacks);
+        // (0 without the launcher's value: deskwm takes the screen's backing scale)
+        AppWindow::beginDesk(m_Window, m_AppWindow.screenPts, m_AppWindow.pointsPerPx, m_StreamConfig.width, m_StreamConfig.height, callbacks);
         AppWindow::setAppIcon(m_AppWindow.iconPng);
         startDeskPoller();
     }

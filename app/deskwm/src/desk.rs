@@ -276,9 +276,12 @@ pub fn win(hwnd: u64) -> Option<Rc<Win>> {
 
 pub fn begin(mtm: MainThreadMarker, key_window: Retained<NSWindow>, mut map: Mapping) {
     end();
-    // One desk pixel per device pixel: the mirrored screen's backing scale
+    // Points per desk pixel as the launcher set the desk up (one desk pixel
+    // per device pixel at Retina density, per point at Standard); without
+    // it, the mirrored screen's backing scale
     let corner = map.cocoa_point(mtm, map.sx + 1.0, map.sy + 1.0);
-    for screen in NSScreen::screens(mtm).iter() {
+    let given = map.ppp > 0.0;
+    for screen in NSScreen::screens(mtm).iter().filter(|_| !given) {
         let f = screen.frame();
         if corner.x >= f.origin.x
             && corner.x < f.origin.x + f.size.width
