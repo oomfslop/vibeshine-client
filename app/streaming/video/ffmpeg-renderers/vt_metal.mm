@@ -24,6 +24,7 @@
 #import <AVFoundation/AVFoundation.h>
 #import <dispatch/dispatch.h>
 #import <Metal/Metal.h>
+#import <CoreImage/CoreImage.h>
 #import <MetalKit/MetalKit.h>
 
 extern "C" {
@@ -58,6 +59,16 @@ struct VertexAW
     simd_float4 rect;
     simd_float2 whiteOffset;
 };
+
+// Test hook: the next desk frame (the whole atlas, as decoded) goes to a PNG
+static std::atomic<bool> s_DumpDeskFrame { false };
+static QString s_DumpDeskFramePath;
+
+void vtDeskDumpNextFrame(const QString& path)
+{
+    s_DumpDeskFramePath = path;
+    s_DumpDeskFrame.store(true);
+}
 
 // Every desk window's layer, from deskwm (Rust), under its lock
 static void forEachDeskLayer(const std::function<void(const DeskwmLayer&)>& fn)
@@ -689,6 +700,13 @@ public:
     // of its layer is needed; the desk windows' layers get the frame.
     void renderDeskFrame(AVFrame* frame)
     { @autoreleasepool {
+        if (s_DumpDeskFrame.exchange(false) && frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+            CIImage* image = [CIImage imageWithCVPixelBuffer:reinterpret_cast<CVPixelBufferRef>(frame->data[3])];
+            CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
+            NSURL* url = [NSURL fileURLWithPath:s_DumpDeskFramePath.toNSString()];
+            [[CIContext context] writePNGRepresentationOfImage:image toURL:url format:kCIFormatRGBA8 colorSpace:rgb options:@{} error:nil];
+            CGColorSpaceRelease(rgb);
+        }
         std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> cvMetalTextures;
         size_t planes = getFramePlaneCount(frame);
         SDL_assert(planes <= MAX_VIDEO_PLANES);

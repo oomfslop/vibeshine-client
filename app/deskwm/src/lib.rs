@@ -142,7 +142,7 @@ fn command(text: &str) {
         "tile" => desk::test_tile(hwnd, num("x"), num("y"), num("w"), num("h")),
         "front" => desk::test_front(hwnd),
         "mousedrag" => input::test_mouse_drag(hwnd, num("x") as i32, num("y") as i32, num("dx") as i32, num("dy") as i32),
-        "nsclick" => desk::test_nsclick(hwnd, num("x") as i32, num("y") as i32, v.get("command").and_then(|b| b.as_bool()).unwrap_or(false)),
+        "nsclick" => desk::test_nsclick(hwnd, num("x") as i32, num("y") as i32, v.get("command").and_then(|b| b.as_bool()).unwrap_or(false), num("count").max(1.0) as i32),
         other => ffi::log(1, &format!("deskwm: unknown test command {other}")),
     }
 }

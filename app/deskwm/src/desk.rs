@@ -1348,23 +1348,25 @@ pub fn test_tile(hwnd: u64, x: f64, y: f64, w: f64, h: f64) {
 
 /// A real click through AppKit: NSEvents sent to the window, as the window
 /// server would (window-relative host px; cmd: with Command held)
-pub fn test_nsclick(hwnd: u64, x: i32, y: i32, cmd: bool) {
+pub fn test_nsclick(hwnd: u64, x: i32, y: i32, cmd: bool, count: i32) {
     let (Some(d), Some(w)) = (desk(), win(hwnd)) else { return };
     let ns = w.ns();
     let h = ns.frame().size.height;
     let at = NSPoint::new(x as f64 * d.map.ppp, h - y as f64 * d.map.ppp);
     let flags = if cmd { NSEventModifierFlags::Command } else { NSEventModifierFlags::empty() };
-    for (k, kind) in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp].into_iter().enumerate() {
-        let number = ns.windowNumber();
-        ffi::on_main_after(k as f64 * 0.05, move || {
-            let Some(w) = win(hwnd) else { return };
-            let uptime = NSProcessInfo::processInfo().systemUptime();
-            if let Some(e) = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
-                kind, at, flags, uptime, number, None, 0, 1, 1.0,
-            ) {
-                w.ns().sendEvent(&e);
-            }
-        });
+    for n in 0..count.max(1) {
+        for (k, kind) in [NSEventType::LeftMouseDown, NSEventType::LeftMouseUp].into_iter().enumerate() {
+            let number = ns.windowNumber();
+            ffi::on_main_after(n as f64 * 0.12 + k as f64 * 0.05, move || {
+                let Some(w) = win(hwnd) else { return };
+                let uptime = NSProcessInfo::processInfo().systemUptime();
+                if let Some(e) = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                    kind, at, flags, uptime, number, None, 0, n as isize + 1, 1.0,
+                ) {
+                    w.ns().sendEvent(&e);
+                }
+            });
+        }
     }
 }
 
