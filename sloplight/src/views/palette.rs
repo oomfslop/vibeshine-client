@@ -11,6 +11,8 @@ use crate::ui::*;
 #[derive(Clone)]
 pub enum PaletteAction {
     LaunchApp { uuid: String, app_id: i32 },
+    /// The app launcher of a host (window streaming)
+    OpenLauncher { uuid: String },
     HostPrimary { uuid: String },
     HostDetails { uuid: String },
     AddHost,
@@ -67,7 +69,8 @@ pub fn open(root: &mut Root, window: &mut Window, cx: &mut Context<Root>) {
         _ => {}
     })
     .detach();
-    window.focus(&input.read(cx).focus_handle);
+    let input_focus = input.read(cx).focus_handle.clone();
+    window.focus(&input_focus, cx);
     root.palette = Some(PaletteState { input, query: String::new(), selected: 0 });
     root.popup = None;
     cx.notify();
@@ -91,6 +94,7 @@ fn run_selected(root: &mut Root, cx: &mut Context<Root>) {
             root.select_host(Some(uuid.clone()), cx);
             root.launch(&uuid, app_id, cx);
         }
+        PaletteAction::OpenLauncher { uuid } => root.pending_launcher = Some(uuid),
         PaletteAction::HostPrimary { uuid } => root.activate_host(&uuid, cx),
         PaletteAction::HostDetails { uuid } => {
             root.select_host(Some(uuid), cx);
@@ -145,6 +149,9 @@ pub fn items(root: &Root) -> Vec<PaletteItem> {
             "Wake"
         };
         push(1, PaletteItem { label: format!("{} {}", if verb == "Open" { "Go to" } else { verb }, host.name), detail: String::new(), icon: if verb == "Wake" { icon::POWER } else { icon::MONITOR }, running: false, action: PaletteAction::HostPrimary { uuid: host.uuid.clone() } });
+        if host.is_online() && host.is_paired() && Root::host_supports_windows(host) {
+            push(1, PaletteItem { label: format!("Launch an app on {}", host.name), detail: "⌘O".into(), icon: icon::APP_WINDOW, running: false, action: PaletteAction::OpenLauncher { uuid: host.uuid.clone() } });
+        }
         push(1, PaletteItem { label: format!("{} info", host.name), detail: String::new(), icon: icon::INFO, running: false, action: PaletteAction::HostDetails { uuid: host.uuid.clone() } });
     }
     push(2, PaletteItem { label: "Add host".into(), detail: "⌘N".into(), icon: icon::PLUS, running: false, action: PaletteAction::AddHost });
@@ -223,7 +230,7 @@ pub fn render(root: &mut Root, theme: &Theme, _window: &mut Window, cx: &mut Con
                     .bg(theme.elevated)
                     .border_1()
                     .border_color(theme.border)
-                    .shadow(vec![gpui::BoxShadow { color: theme.shadow, offset: gpui::point(px(0.), px(4.)), blur_radius: px(16.), spread_radius: px(0.) }])
+                    .shadow(vec![gpui::BoxShadow { color: theme.shadow, offset: gpui::point(px(0.), px(4.)), blur_radius: px(16.), spread_radius: px(0.), inset: false }])
                     .overflow_hidden()
                     .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(div().flex().items_center().gap(px(8.)).px(px(8.)).h(px(40.)).border_b_1().border_color(theme.border).child(icon_el(icon::SEARCH, 14., theme.text_muted)).child(div().flex_1().child(input)))

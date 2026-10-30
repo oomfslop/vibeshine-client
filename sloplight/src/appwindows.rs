@@ -97,6 +97,11 @@ pub enum WindowsEvent {
     List { host_uuid: String, result: Result<(Vec<HostWindow>, HashMap<String, PathBuf>), String> },
     /// A top-level window appeared on the host while windows were being streamed
     NewWindow { host_uuid: String, window: HostWindow },
+    /// The app launcher's list of a host
+    Launchables { host_uuid: String, result: Result<(crate::backend::http::Launchables, HashMap<String, PathBuf>), String> },
+    /// The window of an app launched from the launcher
+    Launched { host_uuid: String, window: HostWindow },
+    LaunchFailed { message: String },
 }
 
 fn icon_dir(cache_dir: &std::path::Path) -> PathBuf {
@@ -183,6 +188,17 @@ impl Root {
                 let hwnd = window.hwnd.clone();
                 self.launch_window(&host_uuid, &hwnd, cx);
             }
+            WindowsEvent::Launchables { host_uuid, result } => self.on_launchables(host_uuid, result),
+            WindowsEvent::Launched { host_uuid, window } => {
+                log::info!("launched app's window {} {:?} ({}); streaming it", window.hwnd, window.title, window.process);
+                if self.windows.host_uuid == host_uuid && !self.windows.windows.iter().any(|w| w.hwnd.eq_ignore_ascii_case(&window.hwnd)) {
+                    self.windows.windows.push(window.clone());
+                }
+                if !self.window_streaming(&window.hwnd) {
+                    self.launch_window(&host_uuid, &window.hwnd, cx);
+                }
+            }
+            WindowsEvent::LaunchFailed { message } => self.toast(ToastKind::Error, message, cx),
         }
         cx.notify();
     }

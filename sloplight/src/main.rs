@@ -1,5 +1,6 @@
 mod app;
 mod appwindows;
+mod launcher;
 mod assets;
 mod backend;
 mod display;
@@ -11,9 +12,9 @@ mod views;
 
 use std::path::PathBuf;
 
-use gpui::{App, Application, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size};
+use gpui::{App, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds, WindowOptions, point, prelude::*, px, size};
 
-use app::{AddHost, Back, CloseWindow, FocusFilter, OpenSettings, QuickLaunch, Quit, Refresh, Root, ToggleHiddenApps, ToggleInspector, CopyHostAddress};
+use app::{AddHost, Back, CloseWindow, FocusFilter, LaunchOnHost, OpenSettings, QuickLaunch, Quit, Refresh, Root, ToggleHiddenApps, ToggleInspector, CopyHostAddress};
 
 fn config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("SLOPLIGHT_CONFIG_DIR") {
@@ -359,7 +360,7 @@ fn main() {
         }
     };
 
-    Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
+    gpui_platform::application().with_assets(assets::Assets).run(move |cx: &mut App| {
         let mut theme = theme::Theme::load_from_zed();
         theme.resolve_fonts(cx);
         cx.set_global(theme);
@@ -375,6 +376,7 @@ fn main() {
             KeyBinding::new("cmd-shift-c", CopyHostAddress, None),
             KeyBinding::new("cmd-shift-h", ToggleHiddenApps, None),
             KeyBinding::new("cmd-k", QuickLaunch, None),
+            KeyBinding::new("cmd-o", LaunchOnHost, None),
             KeyBinding::new("cmd-w", CloseWindow, None),
         ]);
         cx.on_action(|_: &CloseWindow, cx| cx.hide());
@@ -382,15 +384,17 @@ fn main() {
         cx.set_menus(vec![
             Menu {
                 name: "Moonlight".into(),
+                disabled: false,
                 items: vec![
                     MenuItem::action("Settings…", OpenSettings),
                     MenuItem::separator(),
                     MenuItem::action("Quit", Quit),
                 ],
             },
-            Menu { name: "File".into(), items: vec![MenuItem::action("Add Host…", AddHost), MenuItem::action("Refresh", Refresh)] },
+            Menu { name: "File".into(), disabled: false, items: vec![MenuItem::action("Add Host…", AddHost), MenuItem::action("Launch App on Host…", LaunchOnHost), MenuItem::action("Refresh", Refresh)] },
             Menu {
                 name: "View".into(),
+                disabled: false,
                 items: vec![
                     MenuItem::action("Quick Launch", QuickLaunch),
                     MenuItem::action("Show Hidden Apps", ToggleHiddenApps),

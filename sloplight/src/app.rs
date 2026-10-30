@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use gpui::{App, ClipboardItem, Context, Entity, FocusHandle, Focusable, KeyDownEvent, Pixels, Point, Timer, Window, actions, prelude::*};
+use gpui::{App, ClipboardItem, Context, Entity, FocusHandle, Focusable, KeyDownEvent, Pixels, Point, Window, actions, prelude::*};
 
 use crate::backend::{App as NvApp, Host, HostManager, Identity, ManagerEvent};
 use crate::settings::Settings;
@@ -16,7 +16,7 @@ use crate::ui::{InputKind, TextInput, TextInputEvent, ToastKind};
 
 actions!(
     sloplight,
-    [Quit, OpenSettings, AddHost, Refresh, FocusFilter, ToggleInspector, CopyHostAddress, ToggleHiddenApps, QuickLaunch, Back, CloseWindow, SetupGuide, Troubleshooting, Discord, About]
+    [Quit, OpenSettings, AddHost, Refresh, FocusFilter, ToggleInspector, CopyHostAddress, ToggleHiddenApps, QuickLaunch, LaunchOnHost, Back, CloseWindow, SetupGuide, Troubleshooting, Discord, About]
 );
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -157,6 +157,9 @@ pub struct Root {
     pub stream_tx: UnboundedSender<StreamEvent>,
     /// App-window streaming: window list of the selected host and the streamed windows
     pub windows: crate::appwindows::WindowsState,
+    /// The app launcher's list of the host it was opened for
+    pub launchables: crate::launcher::LaunchablesState,
+    pub launcher: Option<crate::views::launcher::LauncherState>,
     pub desk_stream: Option<crate::appwindows::DeskStream>,
     pub windows_tx: crate::appwindows::WindowsSender,
     /// Stops the "new host windows" watcher that runs while windows are streamed
@@ -176,6 +179,8 @@ pub struct Root {
     pub pending_focus: Option<FocusHandle>,
     pub grid_columns: usize,
     pub pending_add_host: bool,
+    /// Open the app launcher of this host at the next render (needs the window)
+    pub pending_launcher: Option<String>,
     /// `SLOPLIGHT_DEBUG_STATE`: open a UI state right after the first poll (for screenshots)
     pub debug_state: Option<String>,
     pub debug_state_applied: bool,
@@ -232,6 +237,8 @@ impl Root {
             pending_launch: None,
             box_art_requested: HashSet::new(),
             windows: Default::default(),
+            launchables: Default::default(),
+            launcher: None,
             desk_stream: None,
             windows_tx,
             window_watch_stop: None,
@@ -248,6 +255,7 @@ impl Root {
             pending_focus: None,
             grid_columns: 5,
             pending_add_host: false,
+            pending_launcher: None,
             debug_state: None,
             debug_state_applied: false,
         };
@@ -306,7 +314,7 @@ impl Root {
         // Tick for toasts and the polling inactivity timer
         cx.spawn(async move |this, cx| {
             loop {
-                Timer::after(Duration::from_secs(1)).await;
+                cx.background_executor().timer(Duration::from_secs(1)).await;
                 if this.update(cx, |root, cx| root.tick(cx)).is_err() {
                     break;
                 }
@@ -423,7 +431,7 @@ impl Root {
         }
         let ttl = 3;
         cx.spawn(async move |this, cx| {
-            Timer::after(Duration::from_secs(ttl)).await;
+            cx.background_executor().timer(Duration::from_secs(ttl)).await;
             this.update(cx, |root, cx| {
                 root.toasts.retain(|t| t.id != id);
                 cx.notify();
@@ -843,7 +851,8 @@ impl Root {
         }
         self.pairings.retain(|p| p.uuid != uuid);
         let (otp_pin, otp_pass) = self.new_otp_inputs(cx);
-        window.focus(&otp_pin.read(cx).focus_handle);
+        let pin_focus = otp_pin.read(cx).focus_handle.clone();
+        window.focus(&pin_focus, cx);
         self.pairings.push(InlinePairing { uuid: uuid.to_string(), pin: String::new(), otp: true, in_progress: false, error: None, otp_pin, otp_pass, reveal: false });
         self.select_host(Some(uuid.to_string()), cx);
         self.popup = None;
@@ -1149,6 +1158,11 @@ impl Root {
             return;
         }
 
+        if self.launcher.is_some() {
+            crate::views::launcher::handle_key(self, event, window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if self.palette.is_some() {
             crate::views::palette::handle_key(self, event, window, cx);
             cx.stop_propagation();
@@ -1418,7 +1432,7 @@ impl Root {
         }
     }
 
-    /// Development aid: `SLOPLIGHT_DEBUG_STATE=settings|settings:N|dropdown:res|dropdown:fps|inspector|pairing|otp|add-host|error|confirm|palette|host-menu|app-menu|toast`.
+    /// Development aid: `SLOPLIGHT_DEBUG_STATE=settings|settings:N|dropdown:res|dropdown:fps|inspector|pairing|otp|add-host|error|confirm|palette|launcher|host-menu|app-menu|toast`.
     pub fn apply_debug_state(&mut self, state: &str, window: &mut Window, cx: &mut Context<Self>) {
         let uuid = self.selected_host.clone().unwrap_or_default();
         match state.split(':').next().unwrap_or("") {
@@ -1465,6 +1479,7 @@ impl Root {
             }
             "confirm" => self.confirm_quit_app(&uuid, cx),
             "palette" => crate::views::palette::open(self, window, cx),
+            "launcher" => self.pending_launcher = Some(uuid.clone()),
             "host-menu" => self.popup = Some(Popup { kind: PopupKind::HostMenu(uuid.clone()), position: gpui::point(gpui::px(120.), gpui::px(120.)), highlighted: Some(0) }),
             "app-menu" => {
                 let app_id = self.visible_apps().first().map(|a| a.id).unwrap_or(0);
@@ -1509,7 +1524,7 @@ impl Root {
             ViewMode::Main => self.filter.read(cx).focus_handle.clone(),
             ViewMode::Settings => self.settings_view.filter.read(cx).focus_handle.clone(),
         };
-        window.focus(&handle);
+        window.focus(&handle, cx);
         cx.notify();
     }
 
@@ -1577,6 +1592,8 @@ impl Root {
     pub fn action_back(&mut self, _: &Back, _window: &mut Window, cx: &mut Context<Self>) {
         if self.popup.is_some() {
             self.popup = None;
+        } else if self.launcher.is_some() {
+            self.launcher = None;
         } else if self.palette.is_some() {
             self.palette = None;
         } else if self.dialog.is_some() {
@@ -1609,6 +1626,10 @@ impl Root {
 
     pub fn action_quick_launch(&mut self, _: &QuickLaunch, window: &mut Window, cx: &mut Context<Self>) {
         crate::views::palette::open(self, window, cx);
+    }
+
+    pub fn action_launch_on_host(&mut self, _: &LaunchOnHost, window: &mut Window, cx: &mut Context<Self>) {
+        crate::views::launcher::open(self, None, window, cx);
     }
 
 }

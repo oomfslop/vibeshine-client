@@ -18,6 +18,9 @@ impl Root {
         if let Some(palette) = crate::views::palette::render(self, &theme, window, cx) {
             out.push(palette);
         }
+        if let Some(launcher) = crate::views::launcher::render(self, &theme, window, cx) {
+            out.push(launcher);
+        }
         if let Some(popup) = self.render_popup(&theme, window, cx) {
             out.push(popup);
         }
@@ -46,7 +49,7 @@ impl Root {
                     .bg(theme.elevated)
                     .border_1()
                     .border_color(theme.border)
-                    .shadow(vec![gpui::BoxShadow { color: theme.shadow, offset: gpui::point(px(0.), px(2.)), blur_radius: px(8.), spread_radius: px(0.) }])
+                    .shadow(vec![gpui::BoxShadow { color: theme.shadow, offset: gpui::point(px(0.), px(2.)), blur_radius: px(8.), spread_radius: px(0.), inset: false }])
                     .when(is_error, |d| d.child(icon_el(icon::CIRCLE_ALERT, 12., color)))
                     .child(div().text_size(crate::theme::type_scale::SM).text_color(theme.text).whitespace_nowrap().child(toast.text.clone()))
                     .when(is_error, |d| {

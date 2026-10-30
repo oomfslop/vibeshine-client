@@ -160,7 +160,7 @@ pub fn render_popover(root: &mut Root, theme: &Theme, host: &Host, max_h: f32, c
         .bg(theme.elevated)
         .border_1()
         .border_color(theme.border)
-        .shadow(vec![gpui::BoxShadow { color: theme.shadow, offset: gpui::point(px(0.), px(4.)), blur_radius: px(16.), spread_radius: px(0.) }])
+        .shadow(vec![gpui::BoxShadow { color: theme.shadow, offset: gpui::point(px(0.), px(4.)), blur_radius: px(16.), spread_radius: px(0.), inset: false }])
         .font(font(&theme.ui_font, FontWeight::NORMAL))
         .text_color(theme.text)
         .flex()
@@ -196,16 +196,37 @@ fn render_windows_section(root: &mut Root, theme: &Theme, host: &Host, cx: &mut 
             .justify_between()
             .child(div().text_size(type_scale::SM).text_color(theme.text_muted).child("Windows"))
             .child(
-                icon_button("win-refresh", icon::ROTATE_CCW)
-                    .size(20., 12.)
-                    .tooltip("Refresh", None)
-                    .on_click(cx.listener({
-                        let uuid = uuid.clone();
-                        move |this, _, _, cx| {
-                            this.windows.fetched_at = None;
-                            this.refresh_host_windows(&uuid, cx);
-                        }
-                    })),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(
+                        button("win-launch", "Launch app…")
+                            .compact()
+                            .ghost()
+                            .icon(icon::APP_WINDOW)
+                            .kbd("⌘O")
+                            .on_click(cx.listener({
+                                let uuid = uuid.clone();
+                                move |this, _, _, cx| {
+                                    this.popup = None;
+                                    this.pending_launcher = Some(uuid.clone());
+                                    cx.notify();
+                                }
+                            })),
+                    )
+                    .child(
+                        icon_button("win-refresh", icon::ROTATE_CCW)
+                            .size(20., 12.)
+                            .tooltip("Refresh", None)
+                            .on_click(cx.listener({
+                                let uuid = uuid.clone();
+                                move |this, _, _, cx| {
+                                    this.windows.fetched_at = None;
+                                    this.refresh_host_windows(&uuid, cx);
+                                }
+                            })),
+                    ),
             ),
     );
     if let Some(err) = &root.windows.error {

@@ -381,6 +381,8 @@ pub struct Settings {
     /// preset's name; empty: none (the settings as they are)
     pub active_preset: String,
     pub custom_presets: Vec<CustomPreset>,
+    /// App launcher: the apps launched lately (Apps-folder ids, newest first)
+    pub launcher_recent: Vec<String>,
 
     // UI state (not stream settings)
     pub last_host_uuid: String,
@@ -452,6 +454,7 @@ impl Default for Settings {
             helper_path: String::new(),
             active_preset: String::new(),
             custom_presets: Vec::new(),
+            launcher_recent: Vec::new(),
             last_host_uuid: String::new(),
             inspector_open: false,
             window_width: 960.0,

@@ -49,10 +49,22 @@
           pname = "sloplight";
           version = "0.1.0";
           src = ./sloplight;
-          cargoLock.lockFile = ./sloplight/Cargo.lock;
+          cargoLock = {
+            lockFile = ./sloplight/Cargo.lock;
+            # GPUI comes from Zed's repository at the commit the lockfile pins
+            allowBuiltinFetchGit = true;
+          };
           nativeBuildInputs = [ pkgs.pkg-config pkgs.makeWrapper ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.cmake ];
           buildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.apple-sdk_15 ]
             ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.fontconfig pkgs.freetype pkgs.libxkbcommon pkgs.wayland pkgs.xorg.libX11 pkgs.xorg.libxcb pkgs.vulkan-loader ];
+          # GPUI's macOS crate reads its sibling crates at ../gpui (Zed's tree);
+          # vendored crates are named with their version, so give the Zed ones
+          # their plain names too
+          preBuild = ''
+            for d in "$NIX_BUILD_TOP"/cargo-vendor-dir/gpui*-*; do
+              n="$(basename "$d")"; ln -sfn "$n" "$NIX_BUILD_TOP/cargo-vendor-dir/''${n%-*}"
+            done
+          '';
           # Point the launcher at the streaming helper from this flake
           postInstall = ''
             wrapProgram $out/bin/sloplight --set-default SLOPLIGHT_HELPER ${moonlight-qt}/bin/moonlight

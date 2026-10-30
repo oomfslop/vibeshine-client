@@ -293,6 +293,35 @@ impl NvHttp {
         Ok(parsed.windows)
     }
 
+    /// App launcher (Vibeshine fork): what the host's signed-in user can
+    /// launch (Start menu apps, PATH programs). The host asks its shell the
+    /// first time, which takes a moment; `refresh` asks it again.
+    pub fn get_launchables(&self, refresh: bool) -> Result<Launchables, HttpError> {
+        let body = self.get_string(true, "actions/launchables", if refresh { "refresh=1" } else { "" }, Duration::from_secs(45))?;
+        serde_json::from_str(&body).map_err(|e| HttpError::Network(format!("launchables: {e}")))
+    }
+
+    /// Icons of launcher apps by key, many in one request: key -> PNG
+    pub fn get_launchable_icons(&self, keys: &[String]) -> Result<Vec<(String, Vec<u8>)>, HttpError> {
+        let body = self.get_string(true, "actions/launchable-icons", &format!("keys={}", keys.join(",")), Duration::from_secs(30))?;
+        let map: std::collections::HashMap<String, String> = serde_json::from_str(&body).map_err(|e| HttpError::Network(format!("launcher icons: {e}")))?;
+        Ok(map.into_iter().filter_map(|(k, v)| decode_base64(&v).map(|png| (k, png))).collect())
+    }
+
+    /// Launch a launcher app (`Launchable::id`) as the host's user
+    pub fn launch_app(&self, id: &str) -> Result<(), HttpError> {
+        let q = format!("id={}", percent_encoding::utf8_percent_encode(id, percent_encoding::NON_ALPHANUMERIC));
+        self.request(true, "actions/launch", &q, REQUEST_TIMEOUT, Some(("text/plain", b"")))?;
+        Ok(())
+    }
+
+    /// Run a command line as the host's user (from their home folder)
+    pub fn launch_command(&self, command: &str) -> Result<(), HttpError> {
+        let q = format!("command={}", percent_encoding::utf8_percent_encode(command, percent_encoding::NON_ALPHANUMERIC));
+        self.request(true, "actions/launch", &q, REQUEST_TIMEOUT, Some(("text/plain", b"")))?;
+        Ok(())
+    }
+
     /// PNG bytes of a host window's icon.
     pub fn get_window_icon(&self, hwnd: &str) -> Result<Vec<u8>, HttpError> {
         let resp = self.request(true, "actions/window-icon", &format!("hwnd={hwnd}"), REQUEST_TIMEOUT, None)?;
@@ -671,6 +700,60 @@ impl DeskInfo {
             _ => (self.rect[2], self.rect[3]),
         }
     }
+}
+
+/// `GET /actions/launchables`: what the host's user can launch.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct Launchables {
+    #[serde(default)]
+    pub apps: Vec<LaunchableApp>,
+    #[serde(default)]
+    pub commands: Vec<LaunchableCommand>,
+}
+
+/// A Start menu app (Win32 or Store)
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LaunchableApp {
+    pub name: String,
+    /// Its id in the shell's Apps folder (AppUserModelID or path)
+    pub id: String,
+    /// Icon key ("" when it has none)
+    #[serde(default)]
+    pub icon: String,
+}
+
+/// A program on the host user's PATH
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LaunchableCommand {
+    pub name: String,
+    pub path: String,
+}
+
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    let value = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let (mut acc, mut bits) = (0u32, 0);
+    for &c in text.as_bytes() {
+        if c == b'=' || c.is_ascii_whitespace() {
+            continue;
+        }
+        acc = acc << 6 | value(c)?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
 }
 
 /// One entry of `GET /actions/windows` (Vibeshine fork, app-window streaming).

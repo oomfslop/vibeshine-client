@@ -32,6 +32,6 @@ pub mod icon {
         CHEVRONS_UP_DOWN = "chevrons-up-down", ROTATE_CCW = "rotate-ccw", RADAR = "radar", EXTERNAL_LINK = "external-link",
         MONITOR_PLAY = "monitor-play", SERVER = "server", VOLUME = "volume-2", KEYBOARD = "keyboard", MONITOR = "monitor",
         APP_WINDOW = "app-window", SLIDERS = "sliders-horizontal", NETWORK = "network", PENCIL = "pencil", TRASH = "trash-2",
-        DOWNLOAD = "download", CHEVRON_DOWN = "chevron-down", CHEVRON_RIGHT = "chevron-right", WIFI_OFF = "wifi-off",
+        DOWNLOAD = "download", CHEVRON_DOWN = "chevron-down", CHEVRON_RIGHT = "chevron-right", WIFI_OFF = "wifi-off", TERMINAL = "terminal",
     }
 }

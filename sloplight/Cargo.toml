@@ -13,7 +13,11 @@ dirs = "7.0.0"
 env_logger = "0.11.11"
 futures = "0.3.34"
 gethostname = "1.1.0"
-gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+# GPUI from Zed's repository, as GPUI apps take it (crates.io's 0.2.2 is from
+# October 2025); gpui_platform runs it (shaders compiled at run time: the Nix
+# build has no Metal compiler)
+gpui = { git = "https://github.com/zed-industries/zed", rev = "14b7b0ef3764d62a85070c8b5ccea105a2ad3235" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "14b7b0ef3764d62a85070c8b5ccea105a2ad3235", features = ["runtime_shaders", "font-kit"] }
 hex = "0.4.3"
 httparse = "1.10.1"
 if-addrs = "0.15.0"
@@ -24,7 +28,7 @@ rand = "0.8"
 rcgen = { version = "0.14.10", default-features = false, features = ["pem", "ring"] }
 roxmltree = "0.21.1"
 rsa = { version = "0.9.10", features = ["sha2", "pem"] }
-rust-embed = "8.13.0"
+rust-embed = { version = "8.13.0", features = ["include-exclude"] }
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pemfile = "2.2.0"
 rustls-pki-types = "1.15.1"

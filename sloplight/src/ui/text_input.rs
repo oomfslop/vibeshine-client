@@ -568,7 +568,7 @@ impl Element for TextElement {
         }
         let line = prepaint.line.take().unwrap();
         let origin = point(bounds.origin.x + prepaint.offset_x, bounds.origin.y);
-        line.paint(origin, window.line_height(), window, cx).ok();
+        line.paint(origin, window.line_height(), gpui::TextAlign::Left, None, window, cx).ok();
 
         if focus_handle.is_focused(window)
             && let Some(cursor) = prepaint.cursor.take() {
