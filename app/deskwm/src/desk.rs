@@ -474,6 +474,14 @@ fn geo_of(i: &Info) -> Geo {
         ay: i.alpha.1,
         scale: i.scale,
         alpha_scale: i.alpha_scale,
+        strip_width: i.alpha_strips.first().copied().unwrap_or(0),
+        strips: {
+            let mut s = [0; 8];
+            for (k, v) in i.alpha_strips.iter().skip(1).take(8).enumerate() {
+                s[k] = *v;
+            }
+            s
+        },
         piece_count: i.pieces.len().min(ffi::PIECE_MAX) as u32,
         pieces,
     }

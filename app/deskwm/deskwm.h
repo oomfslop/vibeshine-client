@@ -55,6 +55,8 @@ typedef struct DeskwmGeo {
     int32_t ax, ay;
     float scale;
     float alpha_scale;  // the copy on white's size relative to the picture
+    int32_t strip_width;  // the copy on white as edges this wide (0: a whole copy at ax, ay)
+    int32_t strips[8];    // where the top, bottom, left and right edge start in the frame
     uint32_t piece_count;
     DeskwmPiece pieces[DESKWM_PIECE_MAX];
 } DeskwmGeo;

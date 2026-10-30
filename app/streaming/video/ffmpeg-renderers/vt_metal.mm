@@ -627,6 +627,16 @@ public:
         if (debugSeq && deferred == nullptr) {
             SDL_Log("desk frame#%d layout#%d", frameSeq, layoutSeq);
         }
+        // A frame whose number cannot be read (damaged by the encoder) is
+        // not guessed at: windows keep what they show (but a host that keeps
+        // sending unreadable numbers is drawn anyway, by time)
+        static int unreadable = 0;
+        if (deferred == nullptr && layoutSeq >= 0) {
+            unreadable = frameSeq < 0 ? unreadable + 1 : 0;
+            if (frameSeq < 0 && unreadable < 30) {
+                return;
+            }
+        }
         if (frameSeq >= 0 && layoutSeq >= 0) {
             const int ahead = (frameSeq - layoutSeq) & 0xfff;
             if (ahead != 0 && ahead < 2048) {
@@ -775,7 +785,44 @@ public:
                 verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, rect, w00 });
                 verts.push_back({ { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { lx1, ly0 }, rect, w10 });
             };
-            if (alpha) {
+            if (alpha && g.strip_width > 0 && scale == 1.0f) {
+                // The copy on white only at the edges: there alpha comes from
+                // the two copies, the inside is opaque. Popups never resize
+                // live: 1:1 against their anchors.
+                const int b = g.strip_width;
+                const int px0 = child.anchor_right ? pw - dw : 0, py0 = child.anchor_bottom ? ph - dh : 0;
+                const simd_float4 opaque = { (float)dw, (float)dh, 0.0f, 0.0f };
+                // Part [x0, x1) x [y0, y1) of the picture; its copy on white starts at
+                // (wx, wy) for picture point (rx, ry) (opaque: none)
+                auto band = [&](int x0, int y0, int x1, int y1, bool op, int wx, int wy, int rx, int ry) {
+                    x0 = qMax(x0, px0); x1 = qMin(x1, px0 + dw);
+                    y0 = qMax(y0, py0); y1 = qMin(y1, py0 + dh);
+                    if (x0 >= x1 || y0 >= y1) {
+                        return;
+                    }
+                    const simd_float2 off = op ? simd_float2 { 0.0f, 0.0f }
+                                               : simd_float2 { (float)(wx - rx - g.x) / frame->width, (float)(wy - ry - g.y) / frame->height };
+                    const float dx0 = ox + x0 - px0, dx1 = ox + x1 - px0, dy0 = oy + y0 - py0, dy1 = oy + y1 - py0;
+                    const float tx0 = g.x + x0, tx1 = g.x + x1, ty0 = g.y + y0, ty1 = g.y + y1;
+                    const float xl = -1.0f + 2.0f * dx0 / vw, xr = -1.0f + 2.0f * dx1 / vw;
+                    const float yt = 1.0f - 2.0f * dy0 / vh, yb = 1.0f - 2.0f * dy1 / vh;
+                    const float u0 = tx0 / frame->width, u1 = tx1 / frame->width, v0 = ty0 / frame->height, v1 = ty1 / frame->height;
+                    const simd_float4 r = op ? opaque : rect;
+                    const float lx0 = dx0 - ox, lx1 = dx1 - ox, ly0 = dy0 - oy, ly1 = dy1 - oy;
+                    verts.push_back({ { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { lx0, ly1 }, r, off });
+                    verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, r, off });
+                    verts.push_back({ { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { lx1, ly1 }, r, off });
+                    verts.push_back({ { xr, yb, 0.0f, 1.0f }, { u1, v1 }, { lx1, ly1 }, r, off });
+                    verts.push_back({ { xl, yt, 0.0f, 1.0f }, { u0, v0 }, { lx0, ly0 }, r, off });
+                    verts.push_back({ { xr, yt, 0.0f, 1.0f }, { u1, v0 }, { lx1, ly0 }, r, off });
+                };
+                band(0, 0, pw, b, false, g.strips[0], g.strips[1], 0, 0);
+                band(0, ph - b, pw, ph, false, g.strips[2], g.strips[3], 0, ph - b);
+                band(0, b, b, ph - b, false, g.strips[4], g.strips[5], 0, b);
+                band(pw - b, b, pw, ph - b, false, g.strips[6], g.strips[7], pw - b, b);
+                band(b, b, pw - b, ph - b, true, 0, 0, 0, 0);
+            }
+            else if (alpha) {
                 // Popups never resize live: 1:1 against their anchors
                 quad(ox, oy, ox + dw, oy + dh, sx, sy, sx + dw * scale, sy + dh * scale);
             }
