@@ -15,20 +15,6 @@ use gpui::{App, Application, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions
 
 use app::{AddHost, Back, CloseWindow, FocusFilter, OpenSettings, QuickLaunch, Quit, Refresh, Root, ToggleHiddenApps, ToggleInspector, CopyHostAddress};
 
-/// LAN and Mobile hotspot presets for this Mac's screen, where the settings
-/// have none yet; true when made
-fn seed_presets(s: &mut settings::Settings) -> bool {
-    if s.preset_lan.is_some() && s.preset_hotspot.is_some() {
-        return false;
-    }
-    let d = display::displays().into_iter().next();
-    let px = d.as_ref().map(|d| d.current).filter(|p| p.0 > 0).unwrap_or((1920, 1080));
-    let pts = d.as_ref().map(|d| d.points).filter(|p| p.0 > 0).unwrap_or(px);
-    let hz = d.as_ref().map(|d| d.refresh_hz).filter(|h| *h > 0).unwrap_or(60);
-    s.ensure_presets(px, pts, hz);
-    true
-}
-
 fn config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("SLOPLIGHT_CONFIG_DIR") {
         return PathBuf::from(dir);
@@ -138,7 +124,6 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
     let config_dir = config_dir();
     let settings = {
         let mut s = settings::Settings::load(&config_dir);
-        seed_presets(&mut s);
         // Windowed by default; SLOPLIGHT_STREAM_WINDOW_MODE=fullscreen|borderless
         // keeps the configured presentation for full-screen latency tests.
         s.window_mode = match std::env::var("SLOPLIGHT_STREAM_WINDOW_MODE").as_deref() {
@@ -216,9 +201,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         let addr = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).expect("host address");
         backend::http::NvHttp::new(addr, host.active_https_port, host.server_cert(), !host.is_nvidia_server_software, identity.clone())
     };
-    // The preset for the network the host is reached over
-    let (mut settings, network) = settings.for_address(&http.address().host);
-    log::info!("[stream-cli] {} preset", network.label());
+    let mut settings = settings;
     // Desk mode: open the host's desk for a screen like this Mac's, stream it,
     // and adopt the window onto it.
     let screen = display::displays().first().map(|d| [0, 0, d.points.0, d.points.1]).unwrap_or([0, 0, 1728, 1117]);
@@ -367,10 +350,7 @@ fn main() {
 
     let config_dir = config_dir();
     let cache_dir = cache_dir();
-    let mut settings = settings::Settings::load(&config_dir);
-    if seed_presets(&mut settings) {
-        settings.save(&config_dir);
-    }
+    let settings = settings::Settings::load(&config_dir);
     let identity = match backend::Identity::load_or_create(&config_dir) {
         Ok(id) => id,
         Err(e) => {

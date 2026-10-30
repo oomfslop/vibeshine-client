@@ -4,7 +4,7 @@ use gpui::{AnyElement, Context, Entity, IntoElement, KeyDownEvent, ParentElement
 
 use crate::app::{Popup, PopupKind, Root};
 use crate::assets::icon;
-use crate::settings::{self, AudioConfig, CaptureSysKeys, LANGUAGES, Network, PresetChoice, Renderer, Settings, UiDisplayMode, VideoCodec, VideoDecoder, WindowDensity, WindowMode};
+use crate::settings::{self, AudioConfig, CaptureSysKeys, LANGUAGES, Renderer, Settings, SystemPreset, UiDisplayMode, VideoCodec, VideoDecoder, WindowDensity, WindowMode};
 use crate::theme::{Theme, type_scale};
 use crate::ui::*;
 
@@ -31,7 +31,7 @@ pub const SECTIONS: [Section; 9] = [
 /// Row labels per section (for the palette and the filter).
 pub fn section_rows(id: &str) -> Vec<&'static str> {
     match id {
-        "stream" => vec!["Preset", "Editing preset", "Resolution", "Frame rate", "Video bitrate", "Display mode", "V-Sync", "Frame pacing", "HDR", "Performance stats overlay"],
+        "stream" => vec!["Preset", "Resolution", "Frame rate", "Video bitrate", "Display mode", "V-Sync", "Frame pacing", "HDR", "Performance stats overlay"],
         "apollo" => vec!["Stream from a virtual display", "Host render scale", "App window size", "App window density", "App window bitrate", "Background window frame rate", "Skip covered windows", "Stream new windows automatically", "Sync clipboard"],
         "audio" => vec!["Audio channels", "Mute host speakers while streaming", "Mute when Moonlight isn't focused"],
         "input" => vec!["Remote desktop mouse mode", "Capture system shortcuts", "Touchscreen as trackpad", "Swap left and right mouse buttons", "Reverse scroll direction"],
@@ -46,6 +46,7 @@ pub fn section_rows(id: &str) -> Vec<&'static str> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dropdown {
+    Preset,
     Resolution,
     Fps,
     Language,
@@ -62,6 +63,9 @@ pub struct SettingsViewState {
     pub width: Entity<TextInput>,
     pub height: Entity<TextInput>,
     pub helper: Entity<TextInput>,
+    /// The name of a preset being saved ("Save as new preset…")
+    pub preset_name: Entity<TextInput>,
+    pub naming_preset: bool,
     pub custom_res: bool,
     pub custom_fps_mode: bool,
     pub last_change: Option<Settings>,
@@ -88,6 +92,21 @@ impl SettingsViewState {
         let width = numeric(cx, false, 64.);
         let height = numeric(cx, false, 64.);
         let helper = cx.new(|cx| TextInput::new(cx, "Auto-detect", InputKind::Mono));
+        let preset_name = cx.new(|cx| TextInput::new(cx, "Preset name", InputKind::Text));
+
+        cx.subscribe(&preset_name, |this: &mut Root, input, ev: &TextInputEvent, cx| match ev {
+            TextInputEvent::Submit => {
+                let name = input.read(cx).text().to_string();
+                this.save_preset_as(&name, cx);
+            }
+            TextInputEvent::Escape => {
+                this.settings_view.naming_preset = false;
+                this.focus_main(cx);
+                cx.notify();
+            }
+            _ => {}
+        })
+        .detach();
 
         cx.subscribe(&filter, |this: &mut Root, input, ev: &TextInputEvent, cx| match ev {
             TextInputEvent::Changed => {
@@ -182,6 +201,8 @@ impl SettingsViewState {
             width,
             height,
             helper,
+            preset_name,
+            naming_preset: false,
             custom_res: false,
             custom_fps_mode: false,
             last_change: None,
@@ -248,6 +269,57 @@ pub fn dropdown_entries(root: &mut Root, kind: Dropdown, cx: &mut Context<Root>)
         cx.notify();
     };
     match kind {
+        Dropdown::Preset => {
+            for p in SystemPreset::ALL {
+                entries.push(
+                    MenuEntry::new(p.name(), cx.listener(move |this, _, _, cx| {
+                        this.settings.apply_preset(p.id());
+                        close(this, cx);
+                    }))
+                    .checked(s.active_preset == p.id()),
+                );
+            }
+            for (i, c) in s.custom_presets.iter().enumerate() {
+                let id = format!("custom:{}", c.name);
+                let checked = s.active_preset == id;
+                let mut entry = MenuEntry::new(c.name.clone(), cx.listener(move |this, _, _, cx| {
+                    this.settings.apply_preset(&id);
+                    close(this, cx);
+                }))
+                .checked(checked);
+                if i == 0 {
+                    entry = entry.separator();
+                }
+                entries.push(entry);
+            }
+            entries.push(
+                MenuEntry::new("Save as new preset…", cx.listener(move |this, _, _, cx| {
+                    this.popup = None;
+                    this.settings_view.naming_preset = true;
+                    this.settings_view.preset_name.update(cx, |t, cx| t.clear(cx));
+                    let h = this.settings_view.preset_name.read(cx).focus_handle.clone();
+                    this.pending_focus = Some(h);
+                    cx.notify();
+                }))
+                .separator(),
+            );
+            if let Some(name) = s.active_preset.strip_prefix("custom:").map(str::to_string) {
+                if s.preset_modified() {
+                    let n = name.clone();
+                    entries.push(MenuEntry::new(format!("Save changes to “{name}”"), cx.listener(move |this, _, _, cx| {
+                        this.settings.save_custom_preset(&n);
+                        close(this, cx);
+                    })));
+                }
+                entries.push(
+                    MenuEntry::new(format!("Delete “{name}”"), cx.listener(move |this, _, _, cx| {
+                        this.settings.delete_custom_preset(&name);
+                        close(this, cx);
+                    }))
+                    .destructive(),
+                );
+            }
+        }
         Dropdown::Resolution => {
             for (name, w, h) in PRESET_RES {
                 let cur = s.width == w && s.height == h && !root.settings_view.custom_res;
@@ -494,6 +566,17 @@ fn numeric_control(theme: &Theme, input: Entity<TextInput>, width: f32, unit: &s
 }
 
 impl Root {
+    /// "Save as new preset…": the settings as they are, under this name
+    pub fn save_preset_as(&mut self, name: &str, cx: &mut Context<Self>) {
+        if name.trim().is_empty() {
+            return;
+        }
+        self.settings.save_custom_preset(name);
+        self.settings_view.naming_preset = false;
+        self.focus_main(cx);
+        self.after_settings_change(cx);
+    }
+
     pub fn after_settings_change(&mut self, cx: &mut Context<Self>) {
         if !self.settings.enable_vsync {
             self.settings.frame_pacing = false;
@@ -515,8 +598,43 @@ fn build_rows(root: &mut Root, theme: &Theme, section: &str, cx: &mut Context<Ro
     let mut rows = Vec::new();
     match section {
         "stream" => {
-            rows.push(segmented_row(root, cx, theme, "seg-preset", "Preset", "Which settings a stream uses. Automatic: LAN when the host answers at its address at home, Mobile hotspot when it is reached over Tailscale or the internet.", PresetChoice::ALL, &["Automatic", "LAN", "Mobile hotspot"], |s| s.preset, |s, v| s.preset = v, None));
-            rows.push(segmented_row(root, cx, theme, "seg-editing", "Editing preset", "The settings marked per preset below (resolution, frame rate, bitrates, codec, app window density and frame rates) belong to this preset; the rest are shared.", Network::ALL, &["LAN", "Mobile hotspot"], |s| s.editing, |s, v| s.edit_preset(v), None));
+            // Preset
+            let preset_label = if s.active_preset.is_empty() || s.preset_by_id(&s.active_preset).is_none() {
+                "Custom".to_string()
+            } else if s.preset_modified() {
+                format!("{} (modified)", Settings::preset_name(&s.active_preset))
+            } else {
+                Settings::preset_name(&s.active_preset)
+            };
+            let extra = root.settings_view.naming_preset.then(|| {
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(div().w(px(180.)).child(root.settings_view.preset_name.clone()))
+                    .child(button("preset-save", "Save").primary().compact().on_click(cx.listener(|this: &mut Root, _, _, cx| {
+                        let name = this.settings_view.preset_name.read(cx).text().to_string();
+                        this.save_preset_as(&name, cx);
+                    })))
+                    .child(button("preset-cancel", "Cancel").ghost().compact().on_click(cx.listener(|this: &mut Root, _, _, cx| {
+                        this.settings_view.naming_preset = false;
+                        cx.notify();
+                    })))
+                    .into_any_element()
+            });
+            rows.push(Row {
+                label: "Preset",
+                help: "Full quality is for home Wi-Fi and wired networks; Data saver for phone hotspots and slow links. Choosing one sets the settings it covers (resolution, frame rate, bitrates, codec and the app window ones); change any of them freely, and keep the result as a preset of your own if you like.".into(),
+                modified: s.preset_modified(),
+                disabled_reason: None,
+                badge: None,
+                control: dropdown_control(root, theme, "dd-preset", preset_label, Dropdown::Preset, cx),
+                extra,
+                reset: Some(Box::new(|s| {
+                    let id = s.active_preset.clone();
+                    s.apply_preset(&id);
+                })),
+            });
             // Resolution
             let extra = root.settings_view.custom_res.then(|| {
                 div()

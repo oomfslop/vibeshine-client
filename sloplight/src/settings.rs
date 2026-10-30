@@ -39,12 +39,10 @@ enum_setting!(WindowMode { Fullscreen = 0 => "Fullscreen", Borderless = 1 => "Bo
 enum_setting!(UiDisplayMode { Windowed = 0 => "Windowed", Maximized = 1 => "Maximized", Fullscreen = 2 => "Fullscreen" });
 enum_setting!(CaptureSysKeys { Off = 0 => "Off", Fullscreen = 1 => "In fullscreen", Always = 2 => "Always" });
 enum_setting!(WindowDensity { Retina = 0 => "Retina", Standard = 1 => "Standard" });
-enum_setting!(Network { Lan = 0 => "LAN", Hotspot = 1 => "Mobile hotspot" });
-enum_setting!(PresetChoice { Auto = 0 => "Automatic", Lan = 1 => "LAN", Hotspot = 2 => "Mobile hotspot" });
 
 /// The settings that suit a network: a preset holds these, the rest are
-/// shared. The stream settings in `Settings` are the values of the preset
-/// being edited (`Settings::editing`).
+/// shared. Choosing a preset copies its values into the settings; changing
+/// any of them afterwards leaves the preset itself as it was.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Preset {
@@ -66,18 +64,6 @@ pub struct Preset {
 impl Default for WindowDensity {
     fn default() -> Self {
         WindowDensity::Retina
-    }
-}
-
-impl Default for PresetChoice {
-    fn default() -> Self {
-        PresetChoice::Auto
-    }
-}
-
-impl Default for Network {
-    fn default() -> Self {
-        Network::Lan
     }
 }
 
@@ -122,9 +108,9 @@ impl Preset {
         s.app_window_density = self.app_window_density;
     }
 
-    /// At home: the screen's own resolution at its refresh rate, windows at
-    /// Retina density, bitrates a wired or Wi-Fi LAN carries
-    pub fn lan(screen_px: (i32, i32), refresh: i32) -> Preset {
+    /// Full quality (home Wi-Fi, LAN): the screen's own resolution at its
+    /// refresh rate, windows at Retina density, bitrates a LAN carries
+    pub fn full_quality(screen_px: (i32, i32), refresh: i32) -> Preset {
         let (width, height) = screen_px;
         let fps = refresh.clamp(60, 120);
         Preset {
@@ -144,12 +130,11 @@ impl Preset {
         }
     }
 
-    /// Away, over a phone's mobile data (a few Mbps to a few tens, latency
-    /// that varies, some loss): half the screen's pixels each way (sharp
-    /// enough, 4x less to encode and send), 60 fps for smooth scrolling,
-    /// HEVC (the most compression this host's encoder has), background
-    /// windows at a quarter rate
-    pub fn hotspot(screen_pts: (i32, i32)) -> Preset {
+    /// Data saver (a phone's hotspot, slow or metered links: a few Mbps to a
+    /// few tens, latency that varies, some loss): half the screen's pixels
+    /// each way (sharp enough, 4x less to encode and send), 60 fps for smooth
+    /// scrolling, HEVC, background windows at a quarter rate
+    pub fn data_saver(screen_pts: (i32, i32)) -> Preset {
         let (width, height) = (screen_pts.0 & !1, screen_pts.1 & !1);
         Preset {
             width,
@@ -169,26 +154,48 @@ impl Preset {
     }
 }
 
-/// Which network a host is reached over: its address at home (a private
-/// LAN address) or from elsewhere (Tailscale's 100.64.0.0/10, a public
-/// address)
-pub fn network_of(address: &str) -> Network {
-    match address.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(ip)) => {
-            let [a, b, ..] = ip.octets();
-            let tailscale = a == 100 && (64..128).contains(&b);
-            if !tailscale && (ip.is_private() || ip.is_link_local() || ip.is_loopback()) { Network::Lan } else { Network::Hotspot }
+/// The built-in presets: always there, never changed
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemPreset {
+    FullQuality,
+    DataSaver,
+}
+
+impl SystemPreset {
+    pub const ALL: [SystemPreset; 2] = [SystemPreset::FullQuality, SystemPreset::DataSaver];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            SystemPreset::FullQuality => "full-quality",
+            SystemPreset::DataSaver => "data-saver",
         }
-        // fe80:: and fd00::/8 (ULA) are local; Tailscale's fd7a:115c:a1e0::/48 is not
-        Ok(std::net::IpAddr::V6(ip)) => {
-            let seg = ip.segments();
-            let tailscale = seg[0] == 0xfd7a && seg[1] == 0x115c && seg[2] == 0xa1e0;
-            let local = (seg[0] & 0xffc0) == 0xfe80 || (seg[0] & 0xfe00) == 0xfc00 || ip.is_loopback();
-            if local && !tailscale { Network::Lan } else { Network::Hotspot }
-        }
-        // A host name: on the LAN unless it is a Tailscale (MagicDNS) name
-        Err(_) => if address.ends_with(".ts.net") { Network::Hotspot } else { Network::Lan },
     }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            SystemPreset::FullQuality => "Full quality",
+            SystemPreset::DataSaver => "Data saver",
+        }
+    }
+
+    /// Its values for this Mac's main screen
+    pub fn values(self) -> Preset {
+        let d = crate::display::displays().into_iter().next();
+        let px = d.as_ref().map(|d| d.current).filter(|p| p.0 > 0).unwrap_or((1920, 1080));
+        let pts = d.as_ref().map(|d| d.points).filter(|p| p.0 > 0).unwrap_or(px);
+        let hz = d.as_ref().map(|d| d.refresh_hz).filter(|h| *h > 0).unwrap_or(60);
+        match self {
+            SystemPreset::FullQuality => Preset::full_quality(px, hz),
+            SystemPreset::DataSaver => Preset::data_saver(pts),
+        }
+    }
+}
+
+/// A preset of the user's own, made from the settings at the time
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CustomPreset {
+    pub name: String,
+    pub values: Preset,
 }
 
 /// Languages in `StreamingPreferences::Language` order (index = enum value).
@@ -323,13 +330,10 @@ pub struct Settings {
     /// Explicit path to the streaming helper (moonlight binary). Empty = auto-detect.
     pub helper_path: String,
 
-    // Presets: the stream settings above are those of `editing`; the other
-    // preset's are kept here. `preset` picks the one a stream uses.
-    pub preset: PresetChoice,
-    pub editing: Network,
-    /// None until made (settings from before presets get them on load)
-    pub preset_lan: Option<Preset>,
-    pub preset_hotspot: Option<Preset>,
+    /// The preset last chosen: a system preset's id, or "custom:" and a custom
+    /// preset's name; empty: none (the settings as they are)
+    pub active_preset: String,
+    pub custom_presets: Vec<CustomPreset>,
 
     // UI state (not stream settings)
     pub last_host_uuid: String,
@@ -396,10 +400,8 @@ impl Default for Settings {
             exclusive_fullscreen: false,
             packet_size: 0,
             helper_path: String::new(),
-            preset: PresetChoice::Auto,
-            editing: Network::Lan,
-            preset_lan: None,
-            preset_hotspot: None,
+            active_preset: String::new(),
+            custom_presets: Vec::new(),
             last_host_uuid: String::new(),
             inspector_open: false,
             window_width: 960.0,
@@ -460,6 +462,13 @@ impl Settings {
             Ok(bytes) => match serde_json::from_slice::<Settings>(&bytes) {
                 Ok(mut s) => {
                     s.sanitize();
+                    // No preset chosen yet: the one the settings are, if any
+                    if s.active_preset.is_empty() {
+                        let now = Preset::of(&s);
+                        if let Some(p) = SystemPreset::ALL.iter().find(|p| p.values() == now) {
+                            s.active_preset = p.id().to_string();
+                        }
+                    }
                     s
                 }
                 Err(e) => {
@@ -498,74 +507,54 @@ impl Settings {
         }
     }
 
-    /// The stored values of a preset (the one being edited lives in the
-    /// stream settings themselves)
-    pub fn preset_values(&self, network: Network) -> Preset {
-        if network == self.editing {
-            return Preset::of(self);
+    /// The values of a preset by id (a system preset's, or "custom:name")
+    pub fn preset_by_id(&self, id: &str) -> Option<Preset> {
+        if let Some(name) = id.strip_prefix("custom:") {
+            return self.custom_presets.iter().find(|p| p.name == name).map(|p| p.values.clone());
         }
-        let stored = match network {
-            Network::Lan => &self.preset_lan,
-            Network::Hotspot => &self.preset_hotspot,
-        };
-        stored.clone().unwrap_or_else(|| Preset::of(self))
+        SystemPreset::ALL.iter().find(|p| p.id() == id).map(|p| p.values())
     }
 
-    /// Keeps the edited preset's stored copy current (after every change)
-    pub fn store_editing(&mut self) {
-        let p = Some(Preset::of(self));
-        match self.editing {
-            Network::Lan => self.preset_lan = p,
-            Network::Hotspot => self.preset_hotspot = p,
+    pub fn preset_name(id: &str) -> String {
+        match id.strip_prefix("custom:") {
+            Some(name) => name.to_string(),
+            None => SystemPreset::ALL.iter().find(|p| p.id() == id).map(|p| p.name().to_string()).unwrap_or_default(),
         }
     }
 
-    /// Edit the other preset: its values become the stream settings
-    pub fn edit_preset(&mut self, network: Network) {
-        if network == self.editing {
-            return;
-        }
-        self.store_editing();
-        let p = self.preset_values(network);
-        self.editing = network;
-        p.apply_to(self);
-    }
-
-    /// Settings without presets yet (from before them): LAN and Mobile
-    /// hotspot presets made for this screen; the current values are the LAN
-    /// preset's unless they were set up for a slow link
-    pub fn ensure_presets(&mut self, screen_px: (i32, i32), screen_pts: (i32, i32), refresh: i32) {
-        if self.preset_lan.is_some() && self.preset_hotspot.is_some() {
-            return;
-        }
-        let slow = self.bitrate_kbps <= 15000 && self.preset_lan.is_none();
-        if self.preset_lan.is_none() {
-            self.preset_lan = Some(Preset::lan(screen_px, refresh));
-        }
-        if self.preset_hotspot.is_none() {
-            self.preset_hotspot = Some(Preset::hotspot(screen_pts));
-        }
-        self.editing = if slow { Network::Hotspot } else { Network::Lan };
-        let stored = match self.editing {
-            Network::Lan => self.preset_lan.clone(),
-            Network::Hotspot => self.preset_hotspot.clone(),
-        };
-        if let Some(p) = stored {
+    /// Choose a preset: its values become the settings
+    pub fn apply_preset(&mut self, id: &str) {
+        if let Some(p) = self.preset_by_id(id) {
             p.apply_to(self);
+            self.active_preset = id.to_string();
         }
     }
 
-    /// The settings a stream to `address` uses: the chosen preset's, or with
-    /// Automatic the preset of the network the host is reached over
-    pub fn for_address(&self, address: &str) -> (Settings, Network) {
-        let network = match self.preset {
-            PresetChoice::Auto => network_of(address),
-            PresetChoice::Lan => Network::Lan,
-            PresetChoice::Hotspot => Network::Hotspot,
-        };
-        let mut s = self.clone();
-        self.preset_values(network).apply_to(&mut s);
-        (s, network)
+    /// Have the settings been changed since the active preset was chosen?
+    pub fn preset_modified(&self) -> bool {
+        self.preset_by_id(&self.active_preset).map(|p| p != Preset::of(self)).unwrap_or(false)
+    }
+
+    /// The settings as they are, as a custom preset of this name (replacing
+    /// one of the same name); it becomes the active preset
+    pub fn save_custom_preset(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let values = Preset::of(self);
+        match self.custom_presets.iter_mut().find(|p| p.name == name) {
+            Some(p) => p.values = values,
+            None => self.custom_presets.push(CustomPreset { name: name.to_string(), values }),
+        }
+        self.active_preset = format!("custom:{name}");
+    }
+
+    pub fn delete_custom_preset(&mut self, name: &str) {
+        self.custom_presets.retain(|p| p.name != name);
+        if self.active_preset == format!("custom:{name}") {
+            self.active_preset.clear();
+        }
     }
 
     pub fn max_bitrate_kbps(&self) -> i32 {
@@ -647,40 +636,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn network_by_address() {
-        assert_eq!(network_of("192.168.15.142"), Network::Lan);
-        assert_eq!(network_of("10.0.0.5"), Network::Lan);
-        assert_eq!(network_of("172.20.10.3"), Network::Lan);
-        assert_eq!(network_of("100.89.49.100"), Network::Hotspot);
-        assert_eq!(network_of("100.63.0.1"), Network::Hotspot);
-        assert_eq!(network_of("5.77.202.233"), Network::Hotspot);
-        assert_eq!(network_of("fe80::1"), Network::Lan);
-        assert_eq!(network_of("fd7a:115c:a1e0::1"), Network::Hotspot);
-        assert_eq!(network_of("pc.tail1234.ts.net"), Network::Hotspot);
-        assert_eq!(network_of("desktop.local"), Network::Lan);
-    }
-
-    #[test]
-    fn presets_switch_and_keep_edits() {
-        let mut s = Settings { bitrate_kbps: 10000, ..Settings::default() };
-        s.ensure_presets((3024, 1964), (1512, 982), 120);
-        // Set up for a slow link before: that is the hotspot preset now
-        assert_eq!(s.editing, Network::Hotspot);
-        assert_eq!(s.app_window_density, WindowDensity::Standard);
-        assert_eq!((s.width, s.height, s.fps), (1512, 982, 60));
+    fn presets_apply_save_delete() {
+        let mut s = Settings::default();
+        let saver = Preset::data_saver((1512, 982));
+        // (system presets read the screen; a custom one stands in here)
+        s.custom_presets.push(CustomPreset { name: "Saver".into(), values: saver.clone() });
+        s.apply_preset("custom:Saver");
+        assert_eq!((s.width, s.height, s.app_window_density), (1512, 982, WindowDensity::Standard));
+        assert!(!s.preset_modified());
         s.app_window_bitrate_kbps = 8000;
-        s.edit_preset(Network::Lan);
-        assert_eq!((s.width, s.height, s.fps), (3024, 1964, 120));
-        assert_eq!(s.app_window_density, WindowDensity::Retina);
-        s.edit_preset(Network::Hotspot);
+        assert!(s.preset_modified());
+        // The preset itself stays as it was
+        assert_eq!(s.preset_by_id("custom:Saver").unwrap().app_window_bitrate_kbps, 12000);
+        s.save_custom_preset("Train");
+        assert_eq!(s.active_preset, "custom:Train");
+        assert!(!s.preset_modified());
+        s.apply_preset("custom:Saver");
+        assert_eq!(s.app_window_bitrate_kbps, 12000);
+        s.apply_preset("custom:Train");
         assert_eq!(s.app_window_bitrate_kbps, 8000);
-        // Automatic: by address, whichever preset is being edited
-        s.edit_preset(Network::Lan);
-        let (h, n) = s.for_address("100.89.49.100");
-        assert_eq!((n, h.app_window_bitrate_kbps, h.app_window_density), (Network::Hotspot, 8000, WindowDensity::Standard));
-        let (l, n) = s.for_address("192.168.15.142");
-        assert_eq!((n, l.app_window_density), (Network::Lan, WindowDensity::Retina));
-        s.preset = PresetChoice::Lan;
-        assert_eq!(s.for_address("100.89.49.100").1, Network::Lan);
+        s.delete_custom_preset("Train");
+        assert!(s.active_preset.is_empty() && s.custom_presets.len() == 1);
+        assert_eq!(Settings::preset_name("data-saver"), "Data saver");
     }
 }

@@ -263,10 +263,6 @@ impl Root {
             cx.notify();
             return;
         }
-        // The preset for the network the host is reached over
-        let address = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).map(|a| a.host).unwrap_or_default();
-        let (preset_settings, network) = self.settings.for_address(&address);
-        log::info!("window stream to {address}: {} preset", network.label());
         let helper = self.helper_path.clone().or_else(|| stream::find_helper(&self.settings));
         let Some(helper) = helper else {
             self.toast(ToastKind::Error, "Streaming helper not found; set it in Settings", cx);
@@ -285,9 +281,9 @@ impl Root {
         };
         let b = display.bounds();
         let screen = [f32::from(b.origin.x) as i32, f32::from(b.origin.y) as i32, f32::from(b.size.width) as i32, f32::from(b.size.height) as i32];
-        let plan = desk_plan(&preset_settings, (screen[2], screen[3]), Self::screen_backing_scale());
+        let plan = desk_plan(&self.settings, (screen[2], screen[3]), Self::screen_backing_scale());
         let (want, dpi) = (plan.size, plan.dpi);
-        let desk = match http.open_desk(want.0, want.1, preset_settings.fps.max(30), dpi, preset_settings.app_window_background_divisor, !preset_settings.app_window_skip_covered, plan.atlas) {
+        let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi, self.settings.app_window_background_divisor, !self.settings.app_window_skip_covered, plan.atlas) {
             Ok(d) => d,
             Err(e) => {
                 self.toast(ToastKind::Error, format!("Couldn't open the desk on the host: {e}"), cx);
@@ -296,7 +292,7 @@ impl Root {
         };
         log::info!("desk {} {:?} @{} {} dpi for a {}x{} pt screen ({}x{} px wanted)", desk.display, desk.rect, desk.fps, desk.dpi, screen[2], screen[3], want.0, want.1);
         let icon_png = self.windows.icons.get(&w.icon).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
-        let mut settings = preset_settings;
+        let mut settings = self.settings.clone();
         settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(2000, 150000);
         (settings.width, settings.height) = desk.stream_size();
         settings.fps = desk.fps;
