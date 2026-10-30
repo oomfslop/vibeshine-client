@@ -4,7 +4,7 @@ use gpui::{AnyElement, Context, Entity, IntoElement, KeyDownEvent, ParentElement
 
 use crate::app::{Popup, PopupKind, Root};
 use crate::assets::icon;
-use crate::settings::{self, AudioConfig, CaptureSysKeys, LANGUAGES, Renderer, Settings, UiDisplayMode, VideoCodec, VideoDecoder, WindowMode};
+use crate::settings::{self, AudioConfig, CaptureSysKeys, LANGUAGES, Network, PresetChoice, Renderer, Settings, UiDisplayMode, VideoCodec, VideoDecoder, WindowDensity, WindowMode};
 use crate::theme::{Theme, type_scale};
 use crate::ui::*;
 
@@ -31,8 +31,8 @@ pub const SECTIONS: [Section; 9] = [
 /// Row labels per section (for the palette and the filter).
 pub fn section_rows(id: &str) -> Vec<&'static str> {
     match id {
-        "stream" => vec!["Resolution", "Frame rate", "Video bitrate", "Display mode", "V-Sync", "Frame pacing", "HDR", "Performance stats overlay"],
-        "apollo" => vec!["Stream from a virtual display", "Host render scale", "Sync clipboard"],
+        "stream" => vec!["Preset", "Editing preset", "Resolution", "Frame rate", "Video bitrate", "Display mode", "V-Sync", "Frame pacing", "HDR", "Performance stats overlay"],
+        "apollo" => vec!["Stream from a virtual display", "Host render scale", "App window size", "App window density", "App window bitrate", "Background window frame rate", "Skip covered windows", "Stream new windows automatically", "Sync clipboard"],
         "audio" => vec!["Audio channels", "Mute host speakers while streaming", "Mute when Moonlight isn't focused"],
         "input" => vec!["Remote desktop mouse mode", "Capture system shortcuts", "Touchscreen as trackpad", "Swap left and right mouse buttons", "Reverse scroll direction"],
         "gamepad" => vec!["Swap A/B and X/Y", "Always connect gamepad 1", "Mouse control by holding Start", "Gamepad input in background"],
@@ -515,6 +515,8 @@ fn build_rows(root: &mut Root, theme: &Theme, section: &str, cx: &mut Context<Ro
     let mut rows = Vec::new();
     match section {
         "stream" => {
+            rows.push(segmented_row(root, cx, theme, "seg-preset", "Preset", "Which settings a stream uses. Automatic: LAN when the host answers at its address at home, Mobile hotspot when it is reached over Tailscale or the internet.", PresetChoice::ALL, &["Automatic", "LAN", "Mobile hotspot"], |s| s.preset, |s, v| s.preset = v, None));
+            rows.push(segmented_row(root, cx, theme, "seg-editing", "Editing preset", "The settings marked per preset below (resolution, frame rate, bitrates, codec, app window density and frame rates) belong to this preset; the rest are shared.", Network::ALL, &["LAN", "Mobile hotspot"], |s| s.editing, |s, v| s.edit_preset(v), None));
             // Resolution
             let extra = root.settings_view.custom_res.then(|| {
                 div()
@@ -588,7 +590,8 @@ fn build_rows(root: &mut Root, theme: &Theme, section: &str, cx: &mut Context<Ro
         "apollo" => {
             rows.push(toggle_row(root, cx, theme, "tg-vd", "Stream from a virtual display", "The host creates a display matching your stream instead of capturing a monitor.", |s| s.use_virtual_display, |s, v| s.use_virtual_display = v, None));
             rows.push(segmented_row(root, cx, theme, "seg-aw-scale", "App window size", "How big host windows are on this screen, relative to the Mac's own interface. Every setting keeps one host pixel per screen pixel; the host renders at the matching scale.", &[50, 75, 100, 125], &["50%", "75%", "100%", "125%"], |s| s.app_window_scale, |s, v| s.app_window_scale = v, None));
-            rows.push(segmented_row(root, cx, theme, "seg-aw-bitrate", "App window bitrate", "The desk stream carries still windows most of the time; a lower rate than for games avoids packet loss, and every lost frame freezes the picture until it recovers.", &[20000, 40000, 60000, 80000], &["20 Mbps", "40 Mbps", "60 Mbps", "80 Mbps"], |s| s.app_window_bitrate_kbps, |s, v| s.app_window_bitrate_kbps = v, None));
+            rows.push(segmented_row(root, cx, theme, "seg-aw-density", "App window density", "Retina draws host windows with two pixels to the point, as sharp as the Mac's own (a 4K stream). Standard draws them with one, like a non-Retina screen: a quarter of the pixels to encode and send, for slow links.", WindowDensity::ALL, &["Retina", "Standard"], |s| s.app_window_density, |s, v| s.app_window_density = v, None));
+            rows.push(segmented_row(root, cx, theme, "seg-aw-bitrate", "App window bitrate", "The desk stream carries still windows most of the time; a lower rate than for games avoids packet loss, and every lost frame freezes the picture until it recovers.", &[8000, 12000, 20000, 40000, 80000], &["8 Mbps", "12 Mbps", "20 Mbps", "40 Mbps", "80 Mbps"], |s| s.app_window_bitrate_kbps, |s, v| s.app_window_bitrate_kbps = v, None));
             rows.push(segmented_row(root, cx, theme, "seg-aw-background", "Background window frame rate", "Windows other than the one you work in update at a fraction of the stream's frame rate. Pixels that do not change cost almost nothing, so this saves bandwidth on what animates in the background (videos, spinners).", &[1, 2, 4, 8], &["Full", "1/2", "1/4", "1/8"], |s| s.app_window_background_divisor, |s, v| s.app_window_background_divisor = v, None));
             rows.push(toggle_row(root, cx, theme, "tg-aw-covered", "Skip covered windows", "Windows that other windows cover completely are left out of the stream; the Mac keeps their last picture until they show again.", |s| s.app_window_skip_covered, |s, v| s.app_window_skip_covered = v, None));
             rows.push(toggle_row(root, cx, theme, "tg-aw-follow", "Stream new windows automatically", "While a window is streamed, windows that newly appear on the host (opened from it, or dialogs grabbing focus) get a Mac window too.", |s| s.app_window_follow_new, |s, v| s.app_window_follow_new = v, None));

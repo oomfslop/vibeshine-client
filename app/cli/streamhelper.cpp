@@ -246,6 +246,7 @@ void Launcher::execute()
         Session::AppWindowInfo info;
         info.iconPng = QByteArray::fromBase64(aw.value("icon_png_base64").toString().toLatin1());
         info.dpi = aw.value("dpi").toInt(96);
+        info.pointsPerPx = aw.value("points_per_px").toDouble(0);
         info.desk = aw.value("desk").toBool(true);
         if (!info.desk) {
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION, "app_window.desk=false is no longer supported; app windows are desk sessions");

@@ -138,7 +138,8 @@ public:
     // window. Implies windowed mode.
     struct AppWindowInfo {
         QByteArray iconPng;       // process icon until the first desk window has one
-        int dpi = 96;             // host DPI of the desk (points per host pixel)
+        int dpi = 96;             // host DPI of the desk
+        double pointsPerPx = 0;   // Mac points per desk pixel (0: from dpi, 96 dpi to the point)
         bool desk = true;         // accepted from the config; app windows are always desk sessions
         QRect screenPts;
     };

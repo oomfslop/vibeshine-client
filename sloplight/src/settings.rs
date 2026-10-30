@@ -38,6 +38,158 @@ enum_setting!(Renderer { Auto = 0 => "Automatic", Vulkan = 1 => "Vulkan", Metal 
 enum_setting!(WindowMode { Fullscreen = 0 => "Fullscreen", Borderless = 1 => "Borderless", Windowed = 2 => "Windowed" });
 enum_setting!(UiDisplayMode { Windowed = 0 => "Windowed", Maximized = 1 => "Maximized", Fullscreen = 2 => "Fullscreen" });
 enum_setting!(CaptureSysKeys { Off = 0 => "Off", Fullscreen = 1 => "In fullscreen", Always = 2 => "Always" });
+enum_setting!(WindowDensity { Retina = 0 => "Retina", Standard = 1 => "Standard" });
+enum_setting!(Network { Lan = 0 => "LAN", Hotspot = 1 => "Mobile hotspot" });
+enum_setting!(PresetChoice { Auto = 0 => "Automatic", Lan = 1 => "LAN", Hotspot = 2 => "Mobile hotspot" });
+
+/// The settings that suit a network: a preset holds these, the rest are
+/// shared. The stream settings in `Settings` are the values of the preset
+/// being edited (`Settings::editing`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Preset {
+    pub width: i32,
+    pub height: i32,
+    pub fps: i32,
+    pub fractional_fps: f64,
+    pub bitrate_kbps: i32,
+    pub auto_adjust_bitrate: bool,
+    pub enable_yuv444: bool,
+    pub video_codec_config: VideoCodec,
+    pub packet_size: i32,
+    pub app_window_bitrate_kbps: i32,
+    pub app_window_background_divisor: i32,
+    pub app_window_skip_covered: bool,
+    pub app_window_density: WindowDensity,
+}
+
+impl Default for WindowDensity {
+    fn default() -> Self {
+        WindowDensity::Retina
+    }
+}
+
+impl Default for PresetChoice {
+    fn default() -> Self {
+        PresetChoice::Auto
+    }
+}
+
+impl Default for Network {
+    fn default() -> Self {
+        Network::Lan
+    }
+}
+
+impl Default for Preset {
+    fn default() -> Self {
+        Preset::of(&Settings::default())
+    }
+}
+
+impl Preset {
+    pub fn of(s: &Settings) -> Preset {
+        Preset {
+            width: s.width,
+            height: s.height,
+            fps: s.fps,
+            fractional_fps: s.fractional_fps,
+            bitrate_kbps: s.bitrate_kbps,
+            auto_adjust_bitrate: s.auto_adjust_bitrate,
+            enable_yuv444: s.enable_yuv444,
+            video_codec_config: s.video_codec_config,
+            packet_size: s.packet_size,
+            app_window_bitrate_kbps: s.app_window_bitrate_kbps,
+            app_window_background_divisor: s.app_window_background_divisor,
+            app_window_skip_covered: s.app_window_skip_covered,
+            app_window_density: s.app_window_density,
+        }
+    }
+
+    pub fn apply_to(&self, s: &mut Settings) {
+        s.width = self.width;
+        s.height = self.height;
+        s.fps = self.fps;
+        s.fractional_fps = self.fractional_fps;
+        s.bitrate_kbps = self.bitrate_kbps;
+        s.auto_adjust_bitrate = self.auto_adjust_bitrate;
+        s.enable_yuv444 = self.enable_yuv444;
+        s.video_codec_config = self.video_codec_config;
+        s.packet_size = self.packet_size;
+        s.app_window_bitrate_kbps = self.app_window_bitrate_kbps;
+        s.app_window_background_divisor = self.app_window_background_divisor;
+        s.app_window_skip_covered = self.app_window_skip_covered;
+        s.app_window_density = self.app_window_density;
+    }
+
+    /// At home: the screen's own resolution at its refresh rate, windows at
+    /// Retina density, bitrates a wired or Wi-Fi LAN carries
+    pub fn lan(screen_px: (i32, i32), refresh: i32) -> Preset {
+        let (width, height) = screen_px;
+        let fps = refresh.clamp(60, 120);
+        Preset {
+            width,
+            height,
+            fps,
+            fractional_fps: 0.0,
+            bitrate_kbps: default_bitrate(width, height, fps, false).min(150_000),
+            auto_adjust_bitrate: true,
+            enable_yuv444: false,
+            video_codec_config: VideoCodec::Auto,
+            packet_size: 0,
+            app_window_bitrate_kbps: 40000,
+            app_window_background_divisor: 1,
+            app_window_skip_covered: true,
+            app_window_density: WindowDensity::Retina,
+        }
+    }
+
+    /// Away, over a phone's mobile data (a few Mbps to a few tens, latency
+    /// that varies, some loss): half the screen's pixels each way (sharp
+    /// enough, 4x less to encode and send), 60 fps for smooth scrolling,
+    /// HEVC (the most compression this host's encoder has), background
+    /// windows at a quarter rate
+    pub fn hotspot(screen_pts: (i32, i32)) -> Preset {
+        let (width, height) = (screen_pts.0 & !1, screen_pts.1 & !1);
+        Preset {
+            width,
+            height,
+            fps: 60,
+            fractional_fps: 0.0,
+            bitrate_kbps: 12000,
+            auto_adjust_bitrate: false,
+            enable_yuv444: false,
+            video_codec_config: VideoCodec::Hevc,
+            packet_size: 0,
+            app_window_bitrate_kbps: 12000,
+            app_window_background_divisor: 4,
+            app_window_skip_covered: true,
+            app_window_density: WindowDensity::Standard,
+        }
+    }
+}
+
+/// Which network a host is reached over: its address at home (a private
+/// LAN address) or from elsewhere (Tailscale's 100.64.0.0/10, a public
+/// address)
+pub fn network_of(address: &str) -> Network {
+    match address.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => {
+            let [a, b, ..] = ip.octets();
+            let tailscale = a == 100 && (64..128).contains(&b);
+            if !tailscale && (ip.is_private() || ip.is_link_local() || ip.is_loopback()) { Network::Lan } else { Network::Hotspot }
+        }
+        // fe80:: and fd00::/8 (ULA) are local; Tailscale's fd7a:115c:a1e0::/48 is not
+        Ok(std::net::IpAddr::V6(ip)) => {
+            let seg = ip.segments();
+            let tailscale = seg[0] == 0xfd7a && seg[1] == 0x115c && seg[2] == 0xa1e0;
+            let local = (seg[0] & 0xffc0) == 0xfe80 || (seg[0] & 0xfe00) == 0xfc00 || ip.is_loopback();
+            if local && !tailscale { Network::Lan } else { Network::Hotspot }
+        }
+        // A host name: on the LAN unless it is a Tailscale (MagicDNS) name
+        Err(_) => if address.ends_with(".ts.net") { Network::Hotspot } else { Network::Lan },
+    }
+}
 
 /// Languages in `StreamingPreferences::Language` order (index = enum value).
 pub const LANGUAGES: &[(&str, &str)] = &[
@@ -122,6 +274,11 @@ pub struct Settings {
     /// (the Mac keeps showing their last picture).
     #[serde(default = "default_true")]
     pub app_window_skip_covered: bool,
+    /// App windows: Retina draws host windows with two pixels to the point
+    /// (sharp; a 4K atlas); Standard with one (like a non-Retina screen;
+    /// 4x fewer pixels, for slow links)
+    #[serde(default)]
+    pub app_window_density: WindowDensity,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
     /// Draw only the Mac cursor; the host leaves its cursor out of the
@@ -166,6 +323,14 @@ pub struct Settings {
     /// Explicit path to the streaming helper (moonlight binary). Empty = auto-detect.
     pub helper_path: String,
 
+    // Presets: the stream settings above are those of `editing`; the other
+    // preset's are kept here. `preset` picks the one a stream uses.
+    pub preset: PresetChoice,
+    pub editing: Network,
+    /// None until made (settings from before presets get them on load)
+    pub preset_lan: Option<Preset>,
+    pub preset_hotspot: Option<Preset>,
+
     // UI state (not stream settings)
     pub last_host_uuid: String,
     pub inspector_open: bool,
@@ -199,6 +364,7 @@ impl Default for Settings {
             app_window_bitrate_kbps: 20000,
             app_window_background_divisor: 1,
             app_window_skip_covered: true,
+            app_window_density: WindowDensity::Retina,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             hide_host_cursor: false,
@@ -230,6 +396,10 @@ impl Default for Settings {
             exclusive_fullscreen: false,
             packet_size: 0,
             helper_path: String::new(),
+            preset: PresetChoice::Auto,
+            editing: Network::Lan,
+            preset_lan: None,
+            preset_hotspot: None,
             last_host_uuid: String::new(),
             inspector_open: false,
             window_width: 960.0,
@@ -328,6 +498,76 @@ impl Settings {
         }
     }
 
+    /// The stored values of a preset (the one being edited lives in the
+    /// stream settings themselves)
+    pub fn preset_values(&self, network: Network) -> Preset {
+        if network == self.editing {
+            return Preset::of(self);
+        }
+        let stored = match network {
+            Network::Lan => &self.preset_lan,
+            Network::Hotspot => &self.preset_hotspot,
+        };
+        stored.clone().unwrap_or_else(|| Preset::of(self))
+    }
+
+    /// Keeps the edited preset's stored copy current (after every change)
+    pub fn store_editing(&mut self) {
+        let p = Some(Preset::of(self));
+        match self.editing {
+            Network::Lan => self.preset_lan = p,
+            Network::Hotspot => self.preset_hotspot = p,
+        }
+    }
+
+    /// Edit the other preset: its values become the stream settings
+    pub fn edit_preset(&mut self, network: Network) {
+        if network == self.editing {
+            return;
+        }
+        self.store_editing();
+        let p = self.preset_values(network);
+        self.editing = network;
+        p.apply_to(self);
+    }
+
+    /// Settings without presets yet (from before them): LAN and Mobile
+    /// hotspot presets made for this screen; the current values are the LAN
+    /// preset's unless they were set up for a slow link
+    pub fn ensure_presets(&mut self, screen_px: (i32, i32), screen_pts: (i32, i32), refresh: i32) {
+        if self.preset_lan.is_some() && self.preset_hotspot.is_some() {
+            return;
+        }
+        let slow = self.bitrate_kbps <= 15000 && self.preset_lan.is_none();
+        if self.preset_lan.is_none() {
+            self.preset_lan = Some(Preset::lan(screen_px, refresh));
+        }
+        if self.preset_hotspot.is_none() {
+            self.preset_hotspot = Some(Preset::hotspot(screen_pts));
+        }
+        self.editing = if slow { Network::Hotspot } else { Network::Lan };
+        let stored = match self.editing {
+            Network::Lan => self.preset_lan.clone(),
+            Network::Hotspot => self.preset_hotspot.clone(),
+        };
+        if let Some(p) = stored {
+            p.apply_to(self);
+        }
+    }
+
+    /// The settings a stream to `address` uses: the chosen preset's, or with
+    /// Automatic the preset of the network the host is reached over
+    pub fn for_address(&self, address: &str) -> (Settings, Network) {
+        let network = match self.preset {
+            PresetChoice::Auto => network_of(address),
+            PresetChoice::Lan => Network::Lan,
+            PresetChoice::Hotspot => Network::Hotspot,
+        };
+        let mut s = self.clone();
+        self.preset_values(network).apply_to(&mut s);
+        (s, network)
+    }
+
     pub fn max_bitrate_kbps(&self) -> i32 {
         if self.unlock_bitrate { 500_000 } else { 150_000 }
     }
@@ -400,4 +640,47 @@ fn default_true() -> bool {
 
 fn default_one() -> i32 {
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_by_address() {
+        assert_eq!(network_of("192.168.15.142"), Network::Lan);
+        assert_eq!(network_of("10.0.0.5"), Network::Lan);
+        assert_eq!(network_of("172.20.10.3"), Network::Lan);
+        assert_eq!(network_of("100.89.49.100"), Network::Hotspot);
+        assert_eq!(network_of("100.63.0.1"), Network::Hotspot);
+        assert_eq!(network_of("5.77.202.233"), Network::Hotspot);
+        assert_eq!(network_of("fe80::1"), Network::Lan);
+        assert_eq!(network_of("fd7a:115c:a1e0::1"), Network::Hotspot);
+        assert_eq!(network_of("pc.tail1234.ts.net"), Network::Hotspot);
+        assert_eq!(network_of("desktop.local"), Network::Lan);
+    }
+
+    #[test]
+    fn presets_switch_and_keep_edits() {
+        let mut s = Settings { bitrate_kbps: 10000, ..Settings::default() };
+        s.ensure_presets((3024, 1964), (1512, 982), 120);
+        // Set up for a slow link before: that is the hotspot preset now
+        assert_eq!(s.editing, Network::Hotspot);
+        assert_eq!(s.app_window_density, WindowDensity::Standard);
+        assert_eq!((s.width, s.height, s.fps), (1512, 982, 60));
+        s.app_window_bitrate_kbps = 8000;
+        s.edit_preset(Network::Lan);
+        assert_eq!((s.width, s.height, s.fps), (3024, 1964, 120));
+        assert_eq!(s.app_window_density, WindowDensity::Retina);
+        s.edit_preset(Network::Hotspot);
+        assert_eq!(s.app_window_bitrate_kbps, 8000);
+        // Automatic: by address, whichever preset is being edited
+        s.edit_preset(Network::Lan);
+        let (h, n) = s.for_address("100.89.49.100");
+        assert_eq!((n, h.app_window_bitrate_kbps, h.app_window_density), (Network::Hotspot, 8000, WindowDensity::Standard));
+        let (l, n) = s.for_address("192.168.15.142");
+        assert_eq!((n, l.app_window_density), (Network::Lan, WindowDensity::Retina));
+        s.preset = PresetChoice::Lan;
+        assert_eq!(s.for_address("100.89.49.100").1, Network::Lan);
+    }
 }

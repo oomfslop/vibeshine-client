@@ -17,7 +17,7 @@ use crate::app::Root;
 use crate::ui::ToastKind;
 use crate::backend::Host;
 use crate::backend::http::{DeskInfo, HostWindow};
-use crate::settings;
+use crate::settings::{self, Settings, WindowDensity};
 use crate::stream::{self, AppWindowConfig, HelperEvent, StreamEvent, StreamProcess};
 
 /// Window list of one host, as last fetched.
@@ -47,6 +47,37 @@ pub struct DeskStream {
 
 /// Stream events of the desk helper carry this in place of a window handle.
 pub const DESK_STREAM_ID: &str = "desk";
+
+/// The desk for a screen of `screen_pts` points with `backing` device pixels
+/// to the point: its size, the DPI host windows render at, Mac points per
+/// desk pixel and the atlas (what is streamed). Retina density: a desk of the
+/// screen's device pixels and a 4K atlas, windows as sharp as the Mac's own;
+/// Standard: one pixel to the point, a 1080p atlas (4x fewer pixels to
+/// encode and send, for slow links).
+pub struct DeskPlan {
+    pub size: (i32, i32),
+    pub dpi: i32,
+    pub points_per_px: f32,
+    pub atlas: (i32, i32),
+}
+
+pub fn desk_plan(settings: &Settings, screen_pts: (i32, i32), backing: f32) -> DeskPlan {
+    let k = match settings.app_window_density {
+        WindowDensity::Retina => backing,
+        WindowDensity::Standard => 1.0,
+    };
+    let size = ((screen_pts.0 as f32 * k).round() as i32, (screen_pts.1 as f32 * k).round() as i32);
+    // (window size: host windows as large on this screen as the setting says,
+    // at one desk pixel to `1 / k` points)
+    let dpi = (96.0 * k * settings.app_window_scale.clamp(25, 400) as f32 / 100.0).round() as i32;
+    // The atlas holds what fits on the screen at once, so never more than the
+    // desk; 3840x2160 at most (the decoder's limit at 120 fps)
+    let atlas = match settings.app_window_density {
+        WindowDensity::Retina => (3840, 2160),
+        WindowDensity::Standard => (size.0.clamp(1920, 3840), size.1.clamp(1080, 2160)),
+    };
+    DeskPlan { size, dpi, points_per_px: 1.0 / k, atlas }
+}
 
 pub type WindowsSender = UnboundedSender<WindowsEvent>;
 
@@ -197,7 +228,6 @@ impl Root {
         self.windows.windows.iter().any(|w| w.hwnd.eq_ignore_ascii_case(hwnd) && w.monitor.eq_ignore_ascii_case(&ds.desk.display))
     }
 
-    /// Points per host pixel for a desk at this DPI.
     /// Device pixels per point of the primary screen (2 on Retina).
     pub fn screen_backing_scale() -> f32 {
         crate::display::displays()
@@ -205,10 +235,6 @@ impl Root {
             .filter(|d| d.points.0 > 0 && d.current.0 > 0)
             .map(|d| d.current.0 as f32 / d.points.0 as f32)
             .unwrap_or(2.0)
-    }
-
-    fn desk_points_per_px(_dpi: i32) -> f32 {
-        1.0 / Self::screen_backing_scale()
     }
 
     /// Streams a host window: opens the host's desk for this screen (first
@@ -227,7 +253,7 @@ impl Root {
                 return;
             }
             // Desk already streaming: adopt where the window is on its monitor
-            let (x, y) = Self::adopt_position(&w, ds.points_per_px, cx);
+            let (x, y) = Self::adopt_position(&w, ds.points_per_px, ds.desk.dpi, cx);
             ds.adopted.push(w.hwnd.to_ascii_lowercase());
             std::thread::spawn(move || {
                 if let Err(e) = http.window_action(&w.hwnd, "adopt", x, y, 0, 0) {
@@ -237,6 +263,10 @@ impl Root {
             cx.notify();
             return;
         }
+        // The preset for the network the host is reached over
+        let address = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).map(|a| a.host).unwrap_or_default();
+        let (preset_settings, network) = self.settings.for_address(&address);
+        log::info!("window stream to {address}: {} preset", network.label());
         let helper = self.helper_path.clone().or_else(|| stream::find_helper(&self.settings));
         let Some(helper) = helper else {
             self.toast(ToastKind::Error, "Streaming helper not found; set it in Settings", cx);
@@ -255,12 +285,9 @@ impl Root {
         };
         let b = display.bounds();
         let screen = [f32::from(b.origin.x) as i32, f32::from(b.origin.y) as i32, f32::from(b.size.width) as i32, f32::from(b.size.height) as i32];
-        // The desk is the screen in device pixels; the host renders at the DPI
-        // that makes windows the chosen fraction of the Mac's logical size.
-        let backing = Self::screen_backing_scale();
-        let dpi = (96.0 * backing * self.settings.app_window_scale.clamp(25, 400) as f32 / 100.0).round() as i32;
-        let want = ((screen[2] as f32 * backing).round() as i32, (screen[3] as f32 * backing).round() as i32);
-        let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi, self.settings.app_window_background_divisor, !self.settings.app_window_skip_covered) {
+        let plan = desk_plan(&preset_settings, (screen[2], screen[3]), Self::screen_backing_scale());
+        let (want, dpi) = (plan.size, plan.dpi);
+        let desk = match http.open_desk(want.0, want.1, preset_settings.fps.max(30), dpi, preset_settings.app_window_background_divisor, !preset_settings.app_window_skip_covered, plan.atlas) {
             Ok(d) => d,
             Err(e) => {
                 self.toast(ToastKind::Error, format!("Couldn't open the desk on the host: {e}"), cx);
@@ -269,19 +296,19 @@ impl Root {
         };
         log::info!("desk {} {:?} @{} {} dpi for a {}x{} pt screen ({}x{} px wanted)", desk.display, desk.rect, desk.fps, desk.dpi, screen[2], screen[3], want.0, want.1);
         let icon_png = self.windows.icons.get(&w.icon).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
-        let mut settings = self.settings.clone();
-        settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(5000, 150000);
+        let mut settings = preset_settings;
+        settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(2000, 150000);
         (settings.width, settings.height) = desk.stream_size();
         settings.fps = desk.fps;
         settings.window_mode = settings::WindowMode::Windowed;
         settings.hide_host_cursor = true;
         settings.enable_vsync = false;
         settings.frame_pacing = false;
-        let cfg = AppWindowConfig { icon_png_base64: stream::base64_encode(&icon_png), dpi: desk.dpi, desk: true, screen };
+        let cfg = AppWindowConfig { icon_png_base64: stream::base64_encode(&icon_png), dpi: desk.dpi, points_per_px: plan.points_per_px as f64, desk: true, screen };
         match stream::start_with_window(&helper, &self.identity, &host, &app, &settings, None, self.stream_tx.clone(), Some((DESK_STREAM_ID.to_string(), cfg))) {
             Ok(process) => {
-                let points_per_px = Self::desk_points_per_px(desk.dpi);
-                let (x, y) = Self::adopt_position(&w, points_per_px, cx);
+                let points_per_px = plan.points_per_px;
+                let (x, y) = Self::adopt_position(&w, points_per_px, desk.dpi, cx);
                 let adopt_http = http.clone();
                 let hwnd_s = w.hwnd.clone();
                 std::thread::spawn(move || {
@@ -310,14 +337,14 @@ impl Root {
 
     /// Where a newly adopted window goes on the desk: its place on its host
     /// monitor, so the layout comes over as it was (the host clamps it in).
-    fn adopt_position(w: &HostWindow, points_per_px: f32, cx: &Context<Self>) -> (i32, i32) {
+    fn adopt_position(w: &HostWindow, points_per_px: f32, desk_dpi: i32, cx: &Context<Self>) -> (i32, i32) {
         let (x, y) = (w.rect[0] - w.monitor_rect[0], w.rect[1] - w.monitor_rect[1]);
         // Inside the mirrored screen (desk px), not just inside the desk
         let Some(d) = cx.primary_display() else { return (x, y) };
         let b = d.bounds();
         let (sw, sh) = ((f32::from(b.size.width) / points_per_px) as i32, (f32::from(b.size.height) / points_per_px) as i32);
         // The window rescales to the desk's DPI when it lands there
-        let k = (96.0 / points_per_px) / w.dpi.max(48) as f32;
+        let k = desk_dpi as f32 / w.dpi.max(48) as f32;
         let (ww, wh) = ((w.rect[2] as f32 * k) as i32, (w.rect[3] as f32 * k) as i32);
         (x.min((sw - ww).max(0)).max(0), y.min((sh - wh).max(0)).max(0))
     }

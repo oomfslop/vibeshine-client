@@ -15,6 +15,20 @@ use gpui::{App, Application, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions
 
 use app::{AddHost, Back, CloseWindow, FocusFilter, OpenSettings, QuickLaunch, Quit, Refresh, Root, ToggleHiddenApps, ToggleInspector, CopyHostAddress};
 
+/// LAN and Mobile hotspot presets for this Mac's screen, where the settings
+/// have none yet; true when made
+fn seed_presets(s: &mut settings::Settings) -> bool {
+    if s.preset_lan.is_some() && s.preset_hotspot.is_some() {
+        return false;
+    }
+    let d = display::displays().into_iter().next();
+    let px = d.as_ref().map(|d| d.current).filter(|p| p.0 > 0).unwrap_or((1920, 1080));
+    let pts = d.as_ref().map(|d| d.points).filter(|p| p.0 > 0).unwrap_or(px);
+    let hz = d.as_ref().map(|d| d.refresh_hz).filter(|h| *h > 0).unwrap_or(60);
+    s.ensure_presets(px, pts, hz);
+    true
+}
+
 fn config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("SLOPLIGHT_CONFIG_DIR") {
         return PathBuf::from(dir);
@@ -124,6 +138,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
     let config_dir = config_dir();
     let settings = {
         let mut s = settings::Settings::load(&config_dir);
+        seed_presets(&mut s);
         // Windowed by default; SLOPLIGHT_STREAM_WINDOW_MODE=fullscreen|borderless
         // keeps the configured presentation for full-screen latency tests.
         s.window_mode = match std::env::var("SLOPLIGHT_STREAM_WINDOW_MODE").as_deref() {
@@ -201,7 +216,9 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         let addr = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).expect("host address");
         backend::http::NvHttp::new(addr, host.active_https_port, host.server_cert(), !host.is_nvidia_server_software, identity.clone())
     };
-    let mut settings = settings;
+    // The preset for the network the host is reached over
+    let (mut settings, network) = settings.for_address(&http.address().host);
+    log::info!("[stream-cli] {} preset", network.label());
     // Desk mode: open the host's desk for a screen like this Mac's, stream it,
     // and adopt the window onto it.
     let screen = display::displays().first().map(|d| [0, 0, d.points.0, d.points.1]).unwrap_or([0, 0, 1728, 1117]);
@@ -218,10 +235,11 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
             return 2;
         };
         let icon = http.get_window_icon(&w.hwnd).unwrap_or_default();
-        let k = app::Root::screen_backing_scale();
-        let dpi = std::env::var("SLOPLIGHT_DESK_DPI").ok().and_then(|v| v.parse().ok()).unwrap_or((96.0 * k * settings.app_window_scale as f32 / 100.0).round() as i32);
-        let want = ((screen[2] as f32 * k).round() as i32, (screen[3] as f32 * k).round() as i32);
-        let desk = match http.open_desk(want.0, want.1, settings.fps.max(30), dpi, settings.app_window_background_divisor, !settings.app_window_skip_covered) {
+        let plan = appwindows::desk_plan(&settings, (screen[2], screen[3]), app::Root::screen_backing_scale());
+        let k = 1.0 / plan.points_per_px;
+        let dpi = std::env::var("SLOPLIGHT_DESK_DPI").ok().and_then(|v| v.parse().ok()).unwrap_or(plan.dpi);
+        let want = plan.size;
+        let desk = match http.open_desk(want.0, want.1, settings.fps.max(30), dpi, settings.app_window_background_divisor, !settings.app_window_skip_covered, plan.atlas) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("desk open: {e}");
@@ -229,12 +247,12 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
             }
         };
         log::info!("[stream-cli] desk {} {:?} @{} {} dpi for screen {:?} (wanted {}x{})", desk.display, desk.rect, desk.fps, desk.dpi, screen, want.0, want.1);
-        settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(5000, 150000);
+        settings.bitrate_kbps = settings.app_window_bitrate_kbps.clamp(2000, 150000);
         (settings.width, settings.height) = desk.stream_size();
         settings.fps = desk.fps;
         settings.window_mode = settings::WindowMode::Windowed;
         settings.hide_host_cursor = true;
-        let cfg = stream::AppWindowConfig { icon_png_base64: stream::base64_encode(&icon), dpi: desk.dpi, desk: true, screen };
+        let cfg = stream::AppWindowConfig { icon_png_base64: stream::base64_encode(&icon), dpi: desk.dpi, points_per_px: plan.points_per_px as f64, desk: true, screen };
         let (sw, sh) = ((screen[2] as f32 * k) as i32, (screen[3] as f32 * k) as i32);
         let kw = dpi as f32 / w.dpi.max(48) as f32;
         let (ww, wh) = ((w.rect[2] as f32 * kw) as i32, (w.rect[3] as f32 * kw) as i32);
@@ -349,7 +367,10 @@ fn main() {
 
     let config_dir = config_dir();
     let cache_dir = cache_dir();
-    let settings = settings::Settings::load(&config_dir);
+    let mut settings = settings::Settings::load(&config_dir);
+    if seed_presets(&mut settings) {
+        settings.save(&config_dir);
+    }
     let identity = match backend::Identity::load_or_create(&config_dir) {
         Ok(id) => id,
         Err(e) => {

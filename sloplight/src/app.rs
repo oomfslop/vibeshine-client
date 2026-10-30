@@ -396,6 +396,7 @@ impl Root {
     }
 
     pub fn save_settings(&mut self) {
+        self.settings.store_editing();
         self.settings.last_host_uuid = self.selected_host.clone().unwrap_or_default();
         self.settings.save(&self.config_dir);
     }
@@ -640,7 +641,11 @@ impl Root {
         };
         self.helper_path = Some(helper.clone());
         let is_resume = host.current_game_id == app.id;
-        match stream::start(&helper, &self.identity, host, &app, &self.settings, None, self.stream_tx.clone()) {
+        // The preset for the network the host is reached over
+        let address = host.active_address.clone().or_else(|| host.unique_addresses().into_iter().next()).map(|a| a.host).unwrap_or_default();
+        let (settings, network) = self.settings.for_address(&address);
+        log::info!("stream to {address}: {} preset", network.label());
+        match stream::start(&helper, &self.identity, host, &app, &settings, None, self.stream_tx.clone()) {
             Ok(process) => {
                 self.stream = Some(StreamState {
                     process,

@@ -44,6 +44,9 @@ pub struct AppWindowConfig {
     pub icon_png_base64: String,
     /// DPI of the desk
     pub dpi: i32,
+    /// Mac points per desk pixel
+    #[serde(default)]
+    pub points_per_px: f64,
     /// Desk mode: the stream is the client's desk; `screen` is the Mac screen
     /// it mirrors, in global points (x, y, w, h).
     #[serde(default)]

@@ -1846,7 +1846,10 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
 double Session::appWindowScale() const
 {
     const double s = deskwm_points_per_px();
-    return s > 0 ? s : 96.0 / qMax(48, m_AppWindow.dpi);
+    if (s > 0) {
+        return s;
+    }
+    return m_AppWindow.pointsPerPx > 0 ? m_AppWindow.pointsPerPx : 96.0 / qMax(48, m_AppWindow.dpi);
 }
 
 void Session::deskWindowOp(void* ctx, uint64_t hwnd, const char* op, int32_t x, int32_t y, int32_t w, int32_t h)
