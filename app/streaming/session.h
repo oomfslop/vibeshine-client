@@ -377,6 +377,15 @@ private:
         std::atomic<bool> stop {false};
     };
     std::shared_ptr<DeskSender> m_DeskSender;
+    // Hit tests, on a thread and connection of their own (never behind window ops)
+    struct DeskHitTests {
+        struct Query { quint64 hwnd; int x; int y; quint64 token; };
+        QMutex lock;
+        QWaitCondition wake;
+        QVector<Query> queue;
+        std::atomic<bool> stop {false};
+    };
+    std::shared_ptr<DeskHitTests> m_DeskHitTests;
     void startDeskPoller();
     void handleDeskLayout(const QJsonObject& layout);
     void sendWindowAction(quint64 hwnd, const QString& op, int x = 0, int y = 0, int w = 0, int h = 0);

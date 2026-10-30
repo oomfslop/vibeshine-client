@@ -218,6 +218,11 @@ public:
     QString
     hitTestWindow(quint64 windowHandle, int x, int y);
 
+    // Reuse the connection between requests (Vibeshine's app-window requests:
+    // one round trip each instead of a TCP and TLS handshake first). Not for
+    // GFE, which cannot take persistent connections.
+    void setKeepAlive(bool keepAlive) { m_KeepAlive = keepAlive; }
+
     // Desk streaming. deskLayout long-polls everything on the desk (JSON,
     // see the server's /actions/desk-layout); windowAction runs an op on a
     // host window (move onto the desk = "adopt" with desk-relative x, y);
@@ -267,4 +272,5 @@ private:
     QNetworkAccessManager* m_Nam;
     QSslCertificate m_ServerCert;
     bool m_UseTrueUid;
+    bool m_KeepAlive = false;
 };

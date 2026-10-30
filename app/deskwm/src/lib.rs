@@ -172,6 +172,7 @@ fn command(text: &str) {
                 ffi::log(1, "deskwm: relmove while the pointer is not locked");
             }
         }
+        "hover" => input::test_hover(hwnd, num("x") as i32, num("y") as i32),
         "mousedrag" => input::test_mouse_drag(hwnd, num("x") as i32, num("y") as i32, num("dx") as i32, num("dy") as i32),
         "nsclick" => desk::test_nsclick(hwnd, num("x") as i32, num("y") as i32, v.get("command").and_then(|b| b.as_bool()).unwrap_or(false), num("count").max(1.0) as i32),
         other => ffi::log(1, &format!("deskwm: unknown test command {other}")),

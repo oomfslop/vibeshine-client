@@ -306,8 +306,8 @@ impl NvHttp {
     /// rate; covered: stream windows that others cover whole
     pub fn open_desk(&self, w: i32, h: i32, fps: i32, dpi: i32, opts: &DeskOptions) -> Result<DeskInfo, HttpError> {
         let query = format!(
-            "op=open&w={w}&h={h}&fps={fps}&dpi={dpi}&unfocused={}&covered={}&atlas_w={}&atlas_h={}&bgqp={}&efficient={}",
-            opts.background_divisor, opts.keep_covered as i32, opts.atlas.0, opts.atlas.1, opts.background_qp, opts.efficient as i32
+            "op=open&w={w}&h={h}&fps={fps}&dpi={dpi}&unfocused={}&covered={}&atlas_w={}&atlas_h={}&bgqp={}&efficient={}&quiet={}",
+            opts.background_divisor, opts.keep_covered as i32, opts.atlas.0, opts.atlas.1, opts.background_qp, opts.efficient as i32, opts.quiet_idle as i32
         );
         let resp = self.request(true, "actions/desk", &query, Duration::from_secs(40), Some(("text/plain", b"")))?;
         serde_json::from_slice(&resp.body).map_err(|e| HttpError::Network(format!("desk: {e}")))
@@ -644,6 +644,8 @@ pub struct DeskOptions {
     pub background_qp: i32,
     /// The encoder's efficient mode
     pub efficient: bool,
+    /// A frame a second while nothing changes; the host's text cursor still
+    pub quiet_idle: bool,
 }
 
 /// The client's desk as the host reports it (`POST /actions/desk`).

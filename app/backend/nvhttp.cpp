@@ -474,7 +474,7 @@ NvHTTP::hitTestWindow(quint64 windowHandle, int x, int y)
     QString body = openConnectionToString(m_BaseUrlHttps,
                                           "actions/window-hittest",
                                           QString("hwnd=0x%1&x=%2&y=%3").arg(QString::number(windowHandle, 16)).arg(x).arg(y),
-                                          500);
+                                          2000);
     // {"hit":"drag"}
     int k = body.indexOf("\"hit\":\"");
     if (k < 0) {
@@ -677,9 +677,9 @@ NvHTTP::openConnection(QUrl baseUrl,
     // which tears down the NAM's global thread each time. We must not keep persistent connections
     // or GFE will puke.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 12, 0)
-    request.setAttribute(QNetworkRequest::ConnectionCacheExpiryTimeoutSecondsAttribute, -1);
+    request.setAttribute(QNetworkRequest::ConnectionCacheExpiryTimeoutSecondsAttribute, m_KeepAlive ? 120 : -1);
 #elif QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
-    request.setAttribute(QNetworkRequest::ConnectionCacheExpiryTimeoutSecondsAttribute, 0);
+    request.setAttribute(QNetworkRequest::ConnectionCacheExpiryTimeoutSecondsAttribute, m_KeepAlive ? 120 : 0);
 #endif
 
     auto sslErrorsConnection = connect(m_Nam, &QNetworkAccessManager::sslErrors, this, &NvHTTP::handleSslErrors);

@@ -3,6 +3,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <thread>
 #include <cxxabi.h>
 #include <typeinfo>
@@ -1817,7 +1818,7 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         deskwm_set_icon(key.constData(), (const uint8_t*)png.constData(), (size_t)png.size());
     }
     else if (kind == "frame" || kind == "front" || kind == "tile" || kind == "liveresize" || kind == "drag" || kind == "scroll" ||
-             kind == "click" || kind == "nsclick" || kind == "mousedrag" || kind == "relmove") {
+             kind == "click" || kind == "nsclick" || kind == "mousedrag" || kind == "relmove" || kind == "hover") {
         // Test hooks: the desk windows do these as the user would
         deskwm_command(QJsonDocument(cmd).toJson(QJsonDocument::Compact).constData());
     }
@@ -1876,18 +1877,51 @@ void Session::deskOrder(void* ctx, const uint64_t* hwnds, size_t count, bool foc
 // test: tabs, custom title bars, caption buttons), answered to deskwm
 void Session::deskHitTest(void* ctx, uint64_t hwnd, int32_t x, int32_t y, uint64_t token)
 {
-    NvComputer* computer = static_cast<Session*>(ctx)->m_Computer;
-    QThreadPool::globalInstance()->start([computer, hwnd, x, y, token]() {
-        QString hit = "client";
-        try {
+    auto* self = static_cast<Session*>(ctx);
+    if (!self->m_DeskHitTests) {
+        self->m_DeskHitTests = std::make_shared<DeskHitTests>();
+        auto queries = self->m_DeskHitTests;
+        NvComputer* computer = self->m_Computer;
+        // One connection kept open: a hit test is one round trip, not a TCP
+        // and TLS handshake first (half a second on a slow link)
+        QThread* thread = QThread::create([queries, computer]() {
             NvHTTP http(computer);
-            hit = http.hitTestWindow(hwnd, x, y);
-        }
-        catch (...) {
-            // The host did not answer in time: a click
-        }
-        deskwm_hittest_result(token, hit.toUtf8().constData());
-    });
+            http.setKeepAlive(true);
+            for (;;) {
+                DeskHitTests::Query q;
+                {
+                    QMutexLocker locker(&queries->lock);
+                    while (!queries->stop.load() && queries->queue.isEmpty()) {
+                        queries->wake.wait(&queries->lock);
+                    }
+                    if (queries->stop.load()) {
+                        return;
+                    }
+                    q = queries->queue.takeFirst();
+                }
+                QString hit = "client";
+                QElapsedTimer timer;
+                timer.start();
+                try {
+                    hit = http.hitTestWindow(q.hwnd, q.x, q.y);
+                }
+                catch (...) {
+                    // The host did not answer in time: a click
+                }
+                static const bool debugInput = qEnvironmentVariableIsSet("DESKWM_DEBUG_INPUT");
+                if (debugInput) {
+                    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "Desk hit test %s in %lld ms", qPrintable(hit), (long long)timer.elapsed());
+                }
+                deskwm_hittest_result(q.token, hit.toUtf8().constData());
+            }
+        });
+        thread->setObjectName("desk hit tests");
+        connect(thread, &QThread::finished, thread, &QObject::deleteLater);
+        thread->start();
+    }
+    QMutexLocker locker(&self->m_DeskHitTests->lock);
+    self->m_DeskHitTests->queue.append({hwnd, x, y, token});
+    self->m_DeskHitTests->wake.wakeAll();
 }
 
 void Session::deskEvent(void* ctx, const char* json)
@@ -1935,6 +1969,7 @@ void Session::sendWindowAction(quint64 hwnd, const QString& op, int x, int y, in
         NvComputer* computer = m_Computer;
         QThread* thread = QThread::create([sender, computer]() {
             NvHTTP http(computer);
+            http.setKeepAlive(true);  // one round trip per op, not a new connection each
             for (;;) {
                 QHash<quint64, QRect> moves;
                 QHash<quint64, QSize> resizes;
@@ -2008,6 +2043,10 @@ void Session::startDeskPoller()
         bool hadWindows = false;
         qint64 emptySince = 0;
         NvHTTP http(computer);
+        // The connection stays open between polls: the next poll is waiting
+        // on the host as soon as one returns, so a change arrives in half a
+        // round trip (a new connection per poll costs several)
+        http.setKeepAlive(true);
         while (!stop->load()) {
             QString body;
             try {
@@ -3050,6 +3089,10 @@ DispatchDeferredCleanup:
         if (m_DeskSender) {
             m_DeskSender->stop.store(true);
             m_DeskSender->wake.wakeAll();
+        }
+        if (m_DeskHitTests) {
+            m_DeskHitTests->stop.store(true);
+            m_DeskHitTests->wake.wakeAll();
         }
         AppWindow::closeChildren();
     }

@@ -59,6 +59,71 @@ struct Press {
 thread_local! {
     static PRESS: RefCell<Option<Press>> = const { RefCell::new(None) };
     static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
+    static HITS: RefCell<HitCache> = RefCell::new(HitCache::default());
+}
+
+/// The host's hit test answers, by window and spot: asked ahead while the
+/// pointer is over a title bar, so a press there is answered at once (each
+/// question is a round trip to the host, long on a slow link). An answer
+/// holds while the window keeps its size and title (a new tab changes the
+/// title) and for a few seconds at most.
+#[derive(Default)]
+struct HitCache {
+    answers: std::collections::HashMap<HitKey, (String, f64)>,
+    /// Questions asked ahead: token -> spot
+    asked: std::collections::HashMap<u64, (HitKey, f64)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct HitKey {
+    hwnd: u64,
+    w: i32,
+    h: i32,
+    title: u64,
+    bx: i32,
+    by: i32,
+}
+
+const HIT_FRESH: f64 = 10.0;
+
+fn hit_key(hwnd: u64, x: i32, y: i32) -> Option<HitKey> {
+    use std::hash::{Hash, Hasher};
+    let w = win(hwnd)?;
+    let i = w.info.borrow();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    i.title.hash(&mut h);
+    Some(HitKey { hwnd, w: i.w, h: i.h, title: h.finish(), bx: x.div_euclid(12), by: y.div_euclid(8) })
+}
+
+fn cached_hit(key: HitKey) -> Option<String> {
+    let now = ffi::now();
+    HITS.with(|c| c.borrow().answers.get(&key).filter(|(_, at)| now - at < HIT_FRESH).map(|(h, _)| h.clone()))
+}
+
+fn next_token() -> u64 {
+    NEXT_TOKEN.with(|t| {
+        let v = t.get();
+        t.set(v + 1);
+        v
+    })
+}
+
+/// Ask the host what is at a spot of a title bar, for the cache
+fn ask_ahead(hwnd: u64, x: i32, y: i32) {
+    let Some(key) = hit_key(hwnd, x, y) else { return };
+    let now = ffi::now();
+    let pending = HITS.with(|c| {
+        let mut c = c.borrow_mut();
+        c.asked.retain(|_, (_, at)| now - *at < 3.0);
+        // One question at a time, and none twice
+        !c.asked.is_empty() || c.answers.get(&key).is_some_and(|(_, at)| now - at < HIT_FRESH)
+    });
+    if pending {
+        return;
+    }
+    let token = next_token();
+    HITS.with(|c| c.borrow_mut().asked.insert(token, (key, now)));
+    ffi::hittest(hwnd, x, y, token);
 }
 
 fn with_press<R>(f: impl FnOnce(&mut Option<Press>) -> R) -> R {
@@ -249,6 +314,9 @@ fn moved(hwnd: u64, ev: Ev, x: i32, y: i32) {
     if ev == Ev::Move && !pointer_over(hwnd) {
         return;
     }
+    if ev == Ev::Move && in_title_band(hwnd, y) {
+        ask_ahead(hwnd, x, y);
+    }
     move_to(hwnd, x, y);
     if let Some(d) = desk() {
         desk::show_cursor(&d);
@@ -258,17 +326,27 @@ fn moved(hwnd: u64, ev: Ev, x: i32, y: i32) {
 fn down(hwnd: u64, button: i32, x: i32, y: i32, clicks: i32, cmd: bool) {
     let Some(w) = win(hwnd) else { return };
     desk::note_press(hwnd);
-    let info = w.info();
     // A press that never got its release (a drag the system swallowed): forget it
     with_press(|p| *p = None);
-    let token = NEXT_TOKEN.with(|t| {
-        let v = t.get();
-        t.set(v + 1);
-        v
-    });
+    let token = next_token();
     let press = Press { hwnd, button, x, y, clicks, token, state: State::AwaitHit, released: None, since: ffi::now(), ctrl: cmd };
-    if w.pane && button == 1 && y < info.caption.max(96) {
+    if w.pane && button == 1 && in_title_band(hwnd, y) {
         with_press(|p| *p = Some(press));
+        // Known already (asked while the pointer came here): at once; the
+        // host is asked again for the cache
+        let cached = hit_key(hwnd, x, y).and_then(cached_hit);
+        if std::env::var_os("DESKWM_DEBUG_INPUT").is_some() {
+            ffi::log(0, &format!("deskwm: title press on 0x{hwnd:x} at {x},{y}: {}", cached.as_deref().map(|h| format!("known ({h})")).unwrap_or_else(|| "asking the host".into())));
+        }
+        if let Some(hit) = cached {
+            hit_result(token, &hit);
+            if let Some(key) = hit_key(hwnd, x, y) {
+                let refresh = next_token();
+                HITS.with(|c| c.borrow_mut().asked.insert(refresh, (key, ffi::now())));
+                ffi::hittest(hwnd, x, y, refresh);
+            }
+            return;
+        }
         if !ffi::hittest(hwnd, x, y, token) {
             hit_result(token, "client");
         }
@@ -330,7 +408,25 @@ pub fn layout_changed() {
     }
 }
 
+/// The part of a window where the host's hit test decides (title bars,
+/// custom ones included)
+fn in_title_band(hwnd: u64, y: i32) -> bool {
+    win(hwnd).map(|w| w.pane && y >= 0 && y < w.info().caption.max(96)).unwrap_or(false)
+}
+
 pub fn hit_result(token: u64, hit: &str) {
+    // Every answer goes into the cache: asked ahead, or for a press
+    let now = ffi::now();
+    let press_key = with_press(|p| p.as_ref().filter(|p| p.token == token).map(|p| (p.hwnd, p.x, p.y))).and_then(|(h, x, y)| hit_key(h, x, y));
+    HITS.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(key) = c.asked.remove(&token).map(|(k, _)| k).or(press_key) {
+            c.answers.insert(key, (hit.to_string(), now));
+        }
+        if c.answers.len() > 4096 {
+            c.answers.retain(|_, (_, at)| now - *at < HIT_FRESH);
+        }
+    });
     let Some((hwnd, clicks, released, x, y, button)) = with_press(|p| {
         p.as_ref().filter(|p| p.token == token && p.state == State::AwaitHit).map(|p| (p.hwnd, p.clicks, p.released, p.x, p.y, p.button))
     }) else {
@@ -445,6 +541,13 @@ pub fn drag_ended(hwnd: u64) {
 // --- Test hooks ---------------------------------------------------------------------------
 
 /// A press and release at window-relative host px, as the user would make them
+/// Test hook: the pointer over a spot of a window (its title bar asked ahead)
+pub fn test_hover(hwnd: u64, x: i32, y: i32) {
+    if in_title_band(hwnd, y) {
+        ask_ahead(hwnd, x, y);
+    }
+}
+
 pub fn test_click(hwnd: u64, x: i32, y: i32, button: i32) {
     down(hwnd, button, x, y, 1, false);
     ffi::on_main_after(0.03, move || {

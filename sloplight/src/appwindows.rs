@@ -87,6 +87,7 @@ pub fn desk_options(settings: &Settings, plan: &DeskPlan) -> crate::backend::htt
         atlas: plan.atlas,
         background_qp: settings.app_window_background_quality.qp_delta(),
         efficient: settings.app_window_efficient_encoding,
+        quiet_idle: settings.app_window_quiet_idle,
     }
 }
 

@@ -80,6 +80,7 @@ pub struct Preset {
     pub app_window_density: WindowDensity,
     pub app_window_background_quality: BackgroundQuality,
     pub app_window_efficient_encoding: bool,
+    pub app_window_quiet_idle: bool,
 }
 
 impl Default for WindowDensity {
@@ -112,6 +113,7 @@ impl Preset {
             app_window_density: s.app_window_density,
             app_window_background_quality: s.app_window_background_quality,
             app_window_efficient_encoding: s.app_window_efficient_encoding,
+            app_window_quiet_idle: s.app_window_quiet_idle,
         }
     }
 
@@ -131,6 +133,7 @@ impl Preset {
         s.app_window_density = self.app_window_density;
         s.app_window_background_quality = self.app_window_background_quality;
         s.app_window_efficient_encoding = self.app_window_efficient_encoding;
+        s.app_window_quiet_idle = self.app_window_quiet_idle;
     }
 
     /// Full quality (home Wi-Fi, LAN): the screen's own resolution at its
@@ -154,6 +157,7 @@ impl Preset {
             app_window_density: WindowDensity::Retina,
             app_window_background_quality: BackgroundQuality::Full,
             app_window_efficient_encoding: false,
+            app_window_quiet_idle: false,
         }
     }
 
@@ -161,7 +165,7 @@ impl Preset {
     /// few tens, latency that varies, some loss): half the screen's pixels
     /// each way (sharp enough, 4x less to encode and send), 60 fps for smooth
     /// scrolling, HEVC; background windows at an eighth of the rate and lower
-    /// quality; the host's encoder in its efficient mode
+    /// quality; the host's encoder in its efficient mode, quiet when idle
     pub fn data_saver(screen_pts: (i32, i32)) -> Preset {
         let (width, height) = (screen_pts.0 & !1, screen_pts.1 & !1);
         Preset {
@@ -180,6 +184,7 @@ impl Preset {
             app_window_density: WindowDensity::Standard,
             app_window_background_quality: BackgroundQuality::Low,
             app_window_efficient_encoding: true,
+            app_window_quiet_idle: true,
         }
     }
 }
@@ -324,6 +329,10 @@ pub struct Settings {
     /// bits (slower preset, a pre-pass, a quality ceiling on still areas)
     #[serde(default)]
     pub app_window_efficient_encoding: bool,
+    /// App windows: while nothing changes, the host sends a frame a second
+    /// instead of repeating the picture, and its text cursor stops blinking
+    #[serde(default)]
+    pub app_window_quiet_idle: bool,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
     /// Draw only the Mac cursor; the host leaves its cursor out of the
@@ -409,6 +418,7 @@ impl Default for Settings {
             app_window_density: WindowDensity::Retina,
             app_window_background_quality: BackgroundQuality::Full,
             app_window_efficient_encoding: false,
+            app_window_quiet_idle: false,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             hide_host_cursor: false,
