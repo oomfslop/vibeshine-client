@@ -21,6 +21,17 @@ static PPP_BITS: AtomicU64 = AtomicU64::new(0);
 static FRONT: AtomicU64 = AtomicU64::new(0);
 static DESK_W: AtomicI32 = AtomicI32::new(0);
 static DESK_H: AtomicI32 = AtomicI32::new(0);
+static LAYOUT_SEQ: AtomicI32 = AtomicI32::new(-1);
+
+pub(crate) fn set_layout_seq(seq: i32) {
+    LAYOUT_SEQ.store(seq, Ordering::Release);
+}
+
+/// The newest layout number whose geometry is in (-1: none yet)
+#[no_mangle]
+pub extern "C" fn deskwm_layout_seq() -> i32 {
+    LAYOUT_SEQ.load(Ordering::Acquire)
+}
 
 pub(crate) fn set_points_per_px(ppp: f64) {
     PPP_BITS.store(ppp.to_bits(), Ordering::Relaxed);
@@ -88,7 +99,7 @@ pub unsafe extern "C" fn deskwm_layout(json: *const c_char, len: usize) {
         return;
     };
     ffi::on_main(move || {
-        guard("layout", || desk::apply_layout(layout.windows, layout.cursor));
+        guard("layout", || desk::apply_layout(layout.windows, layout.cursor, layout.seq));
     });
 }
 
@@ -176,6 +187,8 @@ pub unsafe extern "C" fn deskwm_for_each_layer(f: Option<extern "C" fn(*mut c_vo
             visible: l.visible,
             anchor_right: l.anchor_right,
             anchor_bottom: l.anchor_bottom,
+            cap_w: l.cap.0,
+            cap_h: l.cap.1,
             geo_count: l.geo.len().min(GEO_MAX) as u32,
             geo: [Geo::default(); GEO_MAX],
         };

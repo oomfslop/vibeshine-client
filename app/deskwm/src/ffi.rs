@@ -141,6 +141,8 @@ pub fn scroll(dy: i16, dx: i16) {
 #[derive(Copy, Clone, PartialEq)]
 pub struct Geo {
     pub ts: u32,
+    /// The layout number this geometry came with (-1: none)
+    pub seq: i32,
     pub x: i32,
     pub y: i32,
     pub w: i32,
@@ -170,7 +172,7 @@ pub const PIECE_MAX: usize = 192;
 
 impl Default for Geo {
     fn default() -> Self {
-        Geo { ts: 0, x: 0, y: 0, w: 0, h: 0, ax: 0, ay: 0, scale: 0.0, alpha_scale: 1.0, piece_count: 0, pieces: [Piece::default(); PIECE_MAX] }
+        Geo { ts: 0, seq: -1, x: 0, y: 0, w: 0, h: 0, ax: 0, ay: 0, scale: 0.0, alpha_scale: 1.0, piece_count: 0, pieces: [Piece::default(); PIECE_MAX] }
     }
 }
 
@@ -186,6 +188,8 @@ pub struct CLayer {
     pub visible: bool,
     pub anchor_right: bool,
     pub anchor_bottom: bool,
+    pub cap_w: i32,
+    pub cap_h: i32,
     pub geo_count: u32,
     pub geo: [Geo; GEO_MAX],
 }
@@ -201,6 +205,7 @@ pub struct Layer {
     pub visible: bool,
     pub anchor_right: bool,
     pub anchor_bottom: bool,
+    pub cap: (i32, i32),
     pub geo: Vec<Geo>,
     pub shown: (i32, i32),
 }
@@ -235,6 +240,7 @@ pub fn add_layer(hwnd: u64, metal: *mut c_void, radius: i32) {
         visible: true,
         anchor_right: false,
         anchor_bottom: false,
+        cap: (0, 0),
         geo: Vec::new(),
         shown: (0, 0),
     });
@@ -258,7 +264,8 @@ pub fn with_layer<R>(hwnd: u64, f: impl FnOnce(&mut Layer) -> R) -> Option<R> {
 pub fn push_geo(hwnd: u64, g: Geo) {
     with_layer(hwnd, |l| {
         if let Some(last) = l.geo.last() {
-            let same = Geo { ts: last.ts, ..g };
+            // Unchanged: the older entry stays valid for the newer frames
+            let same = Geo { ts: last.ts, seq: last.seq, ..g };
             if *last == same {
                 return;
             }

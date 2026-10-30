@@ -384,7 +384,7 @@ fn schedule_tick(generation: u64) {
 
 // --- Layout ---------------------------------------------------------------------
 
-pub fn apply_layout(infos: Vec<Info>, cursor: String) {
+pub fn apply_layout(infos: Vec<Info>, cursor: String, seq: i32) {
     let Some(d) = desk() else { return };
     if d.closed.get() {
         return;
@@ -429,6 +429,12 @@ pub fn apply_layout(infos: Vec<Info>, cursor: String) {
     sync_order(&d);
     update_icon(&d);
     crate::input::layout_changed();
+    // Every window's geometry for this layout number is in: frames carrying it
+    // can be drawn, also one that came first and was held back
+    if seq >= 0 {
+        crate::set_layout_seq(seq);
+        ffi::redraw(0);
+    }
 }
 
 fn close_if_gone(hwnd: u64) {
@@ -459,6 +465,7 @@ fn geo_of(i: &Info) -> Geo {
     }
     Geo {
         ts: i.ts,
+        seq: i.seq,
         x: i.slot.0,
         y: i.slot.1,
         w: if i.minimized { 0 } else { i.slot.2 },
@@ -837,6 +844,9 @@ fn resize_settled(hwnd: u64) {
     let top = if w.anchor_bottom.get() { f.origin.y + p.height } else { f.origin.y + f.size.height };
     let (x, y, _, _) = d.map.to_desk(d.mtm, NSRect::new(NSPoint::new(left, top - p.height), p));
     let resized = pw != i.w || ph != i.h || w.pending_resize.get();
+    // Frames may show the host window at this size before its layout comes:
+    // the picture is drawn no larger meanwhile (nothing past its new edge)
+    ffi::with_layer(hwnd, |l| l.cap = (pw, ph));
     if resized {
         w.pending_resize.set(true);
         w.pending_since.set(now);
@@ -899,6 +909,7 @@ fn settle(hwnd: u64, _deadline: bool) {
     w.settling.set(false);
     w.set_anchors(false, false);
     present_with_size(&w, false);
+    ffi::with_layer(hwnd, |l| l.cap = (0, 0));
     send_position(&d, &w);
 }
 

@@ -41,6 +41,8 @@ pub struct Info {
     pub pieces: Vec<[i32; 6]>,
     /// When the host saw this, on the video frames' clock
     pub ts: u32,
+    /// The layout number frames showing these pictures carry (-1: none)
+    pub seq: i32,
 }
 
 impl Info {
@@ -90,10 +92,14 @@ struct RawLayout {
     ts: f64,
     #[serde(default)]
     cursor: String,
+    #[serde(default)]
+    seq: Option<i64>,
 }
 
 pub struct Layout {
     pub windows: Vec<Info>,
+    /// The layout number (-1: the host does not tag its frames)
+    pub seq: i32,
     /// The host pointer's shape (arrow, ibeam, hand, we, ns, nwse, nesw, ...)
     pub cursor: String,
 }
@@ -113,6 +119,7 @@ pub fn parse_hwnd(s: &str) -> u64 {
 pub fn parse(json: &[u8], desk_w: i32, desk_h: i32) -> Option<Layout> {
     let raw: RawLayout = serde_json::from_slice(json).ok()?;
     let ts = raw.ts as i64 as u32;
+    let seq = raw.seq.map(|s| (s & 0xfff) as i32).unwrap_or(-1);
     let mut out = Vec::with_capacity(raw.windows.len());
     for w in raw.windows {
         let hwnd = parse_hwnd(&w.hwnd);
@@ -149,9 +156,10 @@ pub fn parse(json: &[u8], desk_w: i32, desk_h: i32) -> Option<Layout> {
             scale: w.scale.unwrap_or(1.0) as f32,
             pieces: w.pieces.iter().filter(|p| p.len() == 6 && p[2] > 0 && p[3] > 0).map(|p| [p[0], p[1], p[2], p[3], p[4], p[5]]).collect(),
             ts,
+            seq,
         });
     }
-    Some(Layout { windows: out, cursor: raw.cursor })
+    Some(Layout { windows: out, seq, cursor: raw.cursor })
 }
 
 #[cfg(test)]

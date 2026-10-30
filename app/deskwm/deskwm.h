@@ -50,6 +50,7 @@ typedef struct DeskwmPiece {
 
 typedef struct DeskwmGeo {
     uint32_t ts;
+    int32_t seq;  // the layout number it came with: frames carry theirs (-1: none)
     int32_t x, y, w, h;
     int32_t ax, ay;
     float scale;
@@ -60,6 +61,9 @@ typedef struct DeskwmGeo {
 
 #define DESKWM_GEO_MAX 12
 
+// The newest layout number whose geometry has been applied (-1: none)
+int32_t deskwm_layout_seq(void);
+
 typedef struct DeskwmLayer {
     uint64_t hwnd;
     void* metal_layer;      // CAMetalLayer*, alive while deskwm_for_each_layer runs
@@ -67,6 +71,7 @@ typedef struct DeskwmLayer {
     int32_t radius;         // corner radius in host px (0: square)
     bool visible;
     bool anchor_right, anchor_bottom;  // mid-resize: the picture hugs these edges
+    int32_t cap_w, cap_h;  // mid-resize: the size last asked of the host (0: none); the picture is drawn no larger
     uint32_t geo_count;     // oldest first
     DeskwmGeo geo[DESKWM_GEO_MAX];
 } DeskwmLayer;

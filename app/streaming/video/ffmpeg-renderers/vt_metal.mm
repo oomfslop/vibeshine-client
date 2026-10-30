@@ -70,6 +70,49 @@ static std::mutex s_DeskRendererLock;
 static VTMetalRenderer* s_DeskRenderer = nullptr;
 void vtDeskRedraw(uint64_t hwnd);
 
+// A desk frame carries the number of the layout it shows, in the atlas'
+// bottom rows: 16 blocks of 16 px, black or white, 12 bits of sequence and a
+// 4-bit check (its bit count). -1 when it is not there (or not readable).
+static int readDeskMarker(AVFrame* frame)
+{
+    if (frame->format != AV_PIX_FMT_VIDEOTOOLBOX || frame->width < 256 || frame->height < 8) {
+        return -1;
+    }
+    CVPixelBufferRef pixBuf = reinterpret_cast<CVPixelBufferRef>(frame->data[3]);
+    if (!CVPixelBufferIsPlanar(pixBuf) || CVPixelBufferLockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+        return -1;
+    }
+    const OSType format = CVPixelBufferGetPixelFormatType(pixBuf);
+    const bool wide = format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange;
+    const uint8_t* base = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddressOfPlane(pixBuf, 0));
+    const size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pixBuf, 0);
+    int code = -1;
+    if (base != nullptr) {
+        const uint8_t* row = base + stride * (size_t)(frame->height - 4);
+        code = 0;
+        for (int i = 0; i < 16; i++) {
+            const int x = i * 16 + 8;
+            const int luma = wide ? reinterpret_cast<const uint16_t*>(row)[x] >> 8 : row[x];
+            if (luma > 128) {
+                code |= 1 << i;
+            }
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly);
+    if (code < 0) {
+        return -1;
+    }
+    const int seq = code & 0xfff;
+    int bits = 0;
+    for (int i = 0; i < 12; i++) {
+        bits += (seq >> i) & 1;
+    }
+    return ((code >> 12) & 0xf) == (bits & 0xf) ? seq : -1;
+}
+
+// A frame came ahead of its layout and was not drawn: draw it when it comes
+static std::atomic<bool> s_DeskHeld { false };
+
 // Test hook: the next desk frame (the whole atlas, as decoded) goes to a PNG
 static std::atomic<bool> s_DumpDeskFrame { false };
 static QString s_DumpDeskFramePath;
@@ -577,6 +620,18 @@ public:
         // Windows in a live resize are drawn by the main thread, in step with
         // their size: a new frame asks it to
         QVector<uint64_t> toMain;
+        // Which layout this frame shows: its geometry is the one to draw it with
+        const int frameSeq = readDeskMarker(frame);
+        const int layoutSeq = deskwm_layout_seq();
+        if (frameSeq >= 0 && layoutSeq >= 0) {
+            const int ahead = (frameSeq - layoutSeq) & 0xfff;
+            if (ahead != 0 && ahead < 2048) {
+                // Its layout has not come yet: every window keeps what it
+                // shows until it does (then this frame is drawn)
+                s_DeskHeld.store(true);
+                return;
+            }
+        }
         // Picture sizes go back to deskwm after the walk (it holds the layers' lock meanwhile)
         QVector<std::tuple<uint64_t, int, int>> shown;
         forEachDeskLayer([&](const DeskwmLayer& child) {
@@ -600,11 +655,29 @@ public:
             if (layer.drawableSize.width < 1 || layer.drawableSize.height < 1) {
                 return;
             }
-            // The window's picture as it was when this frame was captured: the
-            // newest geometry stamped at or before the frame's capture time.
-            // None yet (a window that has just appeared): nothing to draw.
-            int pick = (int)child.geo_count - 1;
-            if (frame->pts != AV_NOPTS_VALUE) {
+            // The window's picture in this frame: the geometry of the layout
+            // the frame shows (its newest change at or before that number);
+            // without numbers, the newest geometry stamped at or before the
+            // frame's capture time. None yet (a window that has just
+            // appeared): nothing to draw.
+            int pick = -1;
+            bool numbered = false;
+            if (frameSeq >= 0) {
+                for (int i = (int)child.geo_count - 1; i >= 0; i--) {
+                    numbered = numbered || child.geo[i].seq >= 0;
+                    if (child.geo[i].seq >= 0 && ((frameSeq - child.geo[i].seq) & 0xfff) < 2048) {
+                        pick = i;
+                        break;
+                    }
+                }
+                if (pick < 0 && numbered) {
+                    return;  // the window came after this frame
+                }
+            }
+            if (pick < 0) {
+                pick = (int)child.geo_count - 1;
+            }
+            if (!numbered && frame->pts != AV_NOPTS_VALUE) {
                 const quint32 pts = (quint32)frame->pts;
                 pick = -1;
                 for (int i = (int)child.geo_count - 1; i >= 0; i--) {
@@ -648,8 +721,14 @@ public:
             }];
             // The picture in host px (a full atlas may hold it scaled down)
             const float scale = g.scale > 0.0f ? g.scale : 1.0f;
-            const int pw = (int)lroundf(g.w / scale), ph = (int)lroundf(g.h / scale);
+            int pw = (int)lroundf(g.w / scale), ph = (int)lroundf(g.h / scale);
             shown.append(std::make_tuple(child.hwnd, pw, ph));
+            // Mid-resize: never larger than the size last asked of the host
+            // (it may already show the window smaller than this layout says)
+            if (child.cap_w > 0 && child.cap_h > 0 && !(g.ax >= 0 && g.ay >= 0)) {
+                pw = qMin(pw, child.cap_w);
+                ph = qMin(ph, child.cap_h);
+            }
             // Drawn 1:1 against the edges it hugs; cut (never scaled) where the
             // window is smaller than the picture
             const int vw = qMax(1, child.view_w), vh = qMax(1, child.view_h);
@@ -804,6 +883,10 @@ public:
     // with the current Core Animation transaction (its new size)
     void redrawDeskWindow(uint64_t hwnd)
     { @autoreleasepool {
+        // 0: all windows, once a frame held back for its layout can be drawn
+        if (hwnd == 0 && !s_DeskHeld.exchange(false)) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(m_DeskFrameLock);
         if (m_LastDeskFrame == nullptr || m_LastDeskFrame->buf[0] == nullptr || m_LastDeskFrame->format != AV_PIX_FMT_VIDEOTOOLBOX) {
             return;
