@@ -162,6 +162,16 @@ fn command(text: &str) {
         "liveresize" => desk::test_live_resize(hwnd, num("dw"), num("dh"), v.get("left").and_then(|b| b.as_bool()).unwrap_or(false)),
         "tile" => desk::test_tile(hwnd, num("x"), num("y"), num("w"), num("h")),
         "front" => desk::test_front(hwnd),
+        "relmove" => {
+            // Test hook: motion as a locked pointer sends it (n steps of dx, dy points)
+            if desk::pointer_locked() {
+                for _ in 0..(num("n") as i32).max(1) {
+                    desk::relative_motion(num("dx"), num("dy"));
+                }
+            } else {
+                ffi::log(1, "deskwm: relmove while the pointer is not locked");
+            }
+        }
         "mousedrag" => input::test_mouse_drag(hwnd, num("x") as i32, num("y") as i32, num("dx") as i32, num("dy") as i32),
         "nsclick" => desk::test_nsclick(hwnd, num("x") as i32, num("y") as i32, v.get("command").and_then(|b| b.as_bool()).unwrap_or(false), num("count").max(1.0) as i32),
         other => ffi::log(1, &format!("deskwm: unknown test command {other}")),

@@ -1817,7 +1817,7 @@ void Session::handleAppWindowCommand(const QJsonObject& cmd)
         deskwm_set_icon(key.constData(), (const uint8_t*)png.constData(), (size_t)png.size());
     }
     else if (kind == "frame" || kind == "front" || kind == "tile" || kind == "liveresize" || kind == "drag" || kind == "scroll" ||
-             kind == "click" || kind == "nsclick" || kind == "mousedrag") {
+             kind == "click" || kind == "nsclick" || kind == "mousedrag" || kind == "relmove") {
         // Test hooks: the desk windows do these as the user would
         deskwm_command(QJsonDocument(cmd).toJson(QJsonDocument::Compact).constData());
     }
