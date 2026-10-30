@@ -221,7 +221,7 @@ fn stream_cli(host_q: &str, app_q: &str, seconds: u64) -> i32 {
         let k = app::Root::screen_backing_scale();
         let dpi = std::env::var("SLOPLIGHT_DESK_DPI").ok().and_then(|v| v.parse().ok()).unwrap_or((96.0 * k * settings.app_window_scale as f32 / 100.0).round() as i32);
         let want = ((screen[2] as f32 * k).round() as i32, (screen[3] as f32 * k).round() as i32);
-        let desk = match http.open_desk(want.0, want.1, settings.fps.max(30), dpi) {
+        let desk = match http.open_desk(want.0, want.1, settings.fps.max(30), dpi, settings.app_window_background_divisor, !settings.app_window_skip_covered) {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("desk open: {e}");

@@ -57,6 +57,8 @@ typedef struct DeskwmGeo {
     float alpha_scale;  // the copy on white's size relative to the picture
     int32_t strip_width;  // the copy on white as edges this wide (0: a whole copy at ax, ay)
     int32_t strips[8];    // where the top, bottom, left and right edge start in the frame
+    int32_t stable;       // painted at its size (0: its app is still redrawing after a resize)
+    int32_t pw, ph;       // the picture's own size in host px (w, h: its size in the frame)
     uint32_t piece_count;
     DeskwmPiece pieces[DESKWM_PIECE_MAX];
 } DeskwmGeo;

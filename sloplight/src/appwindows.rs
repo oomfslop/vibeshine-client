@@ -260,7 +260,7 @@ impl Root {
         let backing = Self::screen_backing_scale();
         let dpi = (96.0 * backing * self.settings.app_window_scale.clamp(25, 400) as f32 / 100.0).round() as i32;
         let want = ((screen[2] as f32 * backing).round() as i32, (screen[3] as f32 * backing).round() as i32);
-        let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi) {
+        let desk = match http.open_desk(want.0, want.1, self.settings.fps.max(30), dpi, self.settings.app_window_background_divisor, !self.settings.app_window_skip_covered) {
             Ok(d) => d,
             Err(e) => {
                 self.toast(ToastKind::Error, format!("Couldn't open the desk on the host: {e}"), cx);

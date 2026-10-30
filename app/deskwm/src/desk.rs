@@ -191,6 +191,12 @@ pub struct Desk {
     assume_active: bool,
     /// The host pointer's shape, shown while the pointer is over our windows
     cursor: RefCell<String>,
+    /// The window the host says holds the pointer to itself (games), or 0
+    pointer_lock: Cell<u64>,
+    /// The pointer is ours to move relatively (hidden, not moving on the Mac)
+    locked: Cell<bool>,
+    /// Motion not sent yet (fractions of a host pixel)
+    rel_rest: Cell<(f64, f64)>,
 }
 
 thread_local! {
@@ -334,6 +340,9 @@ pub fn begin(mtm: MainThreadMarker, key_window: Retained<NSWindow>, mut map: Map
         ticks: Cell::new(0),
         assume_active: std::env::var("DESK_TEST_ASSUME_ACTIVE").map(|v| v == "1").unwrap_or(false),
         cursor: RefCell::new("arrow".into()),
+        pointer_lock: Cell::new(0),
+        locked: Cell::new(false),
+        rel_rest: Cell::new((0.0, 0.0)),
     });
     DESK.with(|d| *d.borrow_mut() = Some(desk));
     install_key_monitor();
@@ -349,6 +358,8 @@ pub fn end() {
     let Some(d) = DESK.with(|d| d.borrow_mut().take()) else {
         return;
     };
+    d.pointer_lock.set(0);
+    set_locked(&d, false);
     d.closed.set(true);
     let wins: Vec<Rc<Win>> = d.wins.borrow_mut().drain().map(|(_, w)| w).collect();
     for w in wins {
@@ -368,6 +379,7 @@ fn schedule_tick(generation: u64) {
         }
         ffi::guard("tick", || {
             sync_order(&d);
+            update_pointer_lock(&d);
             let t = d.ticks.get() + 1;
             d.ticks.set(t);
             if t % 5 == 0 {
@@ -384,7 +396,7 @@ fn schedule_tick(generation: u64) {
 
 // --- Layout ---------------------------------------------------------------------
 
-pub fn apply_layout(infos: Vec<Info>, cursor: String, seq: i32) {
+pub fn apply_layout(infos: Vec<Info>, cursor: String, seq: i32, pointer_lock: u64) {
     let Some(d) = desk() else { return };
     if d.closed.get() {
         return;
@@ -429,6 +441,8 @@ pub fn apply_layout(infos: Vec<Info>, cursor: String, seq: i32) {
     sync_order(&d);
     update_icon(&d);
     crate::input::layout_changed();
+    d.pointer_lock.set(pointer_lock);
+    update_pointer_lock(&d);
     // Every window's geometry for this layout number is in: frames carrying it
     // can be drawn, also one that came first and was held back
     if seq >= 0 {
@@ -474,6 +488,9 @@ fn geo_of(i: &Info) -> Geo {
         ay: i.alpha.1,
         scale: i.scale,
         alpha_scale: i.alpha_scale,
+        stable: i.stable as i32,
+        pw: i.w,
+        ph: i.h,
         strip_width: i.alpha_strips.first().copied().unwrap_or(0),
         strips: {
             let mut s = [0; 8];
@@ -1281,6 +1298,56 @@ pub fn show_cursor(d: &Desk) {
         _ => NSCursor::arrowCursor(),
     };
     cursor.set();
+}
+
+// --- Pointer lock ------------------------------------------------------------------------
+
+extern "C" {
+    fn CGAssociateMouseAndMouseCursorPosition(connected: u32) -> i32;
+}
+
+/// A host window holding the pointer (a game confining it to itself) gets
+/// it relatively while it is the window in front of the active app: the Mac
+/// pointer hides and stays put, its motion goes to the host as motion.
+/// Cmd-Tab, another window or the host letting go gives it back.
+pub fn update_pointer_lock(d: &Desk) {
+    let hwnd = d.pointer_lock.get();
+    let active = NSApplication::sharedApplication(d.mtm).isActive() || d.assume_active;
+    let front = hwnd != 0 && win(hwnd).map(|w| w.ns().isMainWindow() || w.ns().isKeyWindow()).unwrap_or(false);
+    set_locked(d, hwnd != 0 && active && front);
+}
+
+fn set_locked(d: &Desk, on: bool) {
+    if d.locked.get() == on {
+        return;
+    }
+    d.locked.set(on);
+    d.rel_rest.set((0.0, 0.0));
+    unsafe {
+        CGAssociateMouseAndMouseCursorPosition(if on { 0 } else { 1 });
+    }
+    if on {
+        NSCursor::hide();
+    } else {
+        NSCursor::unhide();
+    }
+    info!("deskwm: pointer {} 0x{:x}", if on { "locked to" } else { "released from" }, d.pointer_lock.get());
+}
+
+pub fn pointer_locked() -> bool {
+    desk().map(|d| d.locked.get()).unwrap_or(false)
+}
+
+/// Mouse motion in points while locked: to the host in its pixels
+pub fn relative_motion(dx: f64, dy: f64) {
+    let Some(d) = desk() else { return };
+    let (rx, ry) = d.rel_rest.get();
+    let (x, y) = (rx + dx / d.map.ppp, ry + dy / d.map.ppp);
+    let (sx, sy) = (x.trunc(), y.trunc());
+    d.rel_rest.set((x - sx, y - sy));
+    if sx != 0.0 || sy != 0.0 {
+        ffi::mouse_rel(sx.clamp(-32000.0, 32000.0) as i16, sy.clamp(-32000.0, 32000.0) as i16);
+    }
 }
 
 // --- Input helpers ------------------------------------------------------------------------

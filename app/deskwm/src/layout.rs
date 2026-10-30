@@ -37,6 +37,8 @@ pub struct Info {
     /// Or as edges: their width, then where the top, bottom, left and right
     /// edge start in the frame (empty: a whole copy)
     pub alpha_strips: Vec<i32>,
+    /// Painted at its current size (false: the app is still redrawing after a resize)
+    pub stable: bool,
     pub scale: f32,
     /// Parts of a picture drawn smaller that are also in the frame 1:1 (the
     /// parts the user sees): x, y, w, h in the picture (host px), ax, ay in
@@ -83,6 +85,8 @@ struct RawWindow {
     alpha_scale: Option<f64>,
     #[serde(default)]
     alpha_strips: Vec<i32>,
+    #[serde(default = "yes")]
+    stable: bool,
     #[serde(default)]
     scale: Option<f64>,
     #[serde(default)]
@@ -99,10 +103,18 @@ struct RawLayout {
     cursor: String,
     #[serde(default)]
     seq: Option<i64>,
+    #[serde(default)]
+    pointer_lock: String,
+}
+
+fn yes() -> bool {
+    true
 }
 
 pub struct Layout {
     pub windows: Vec<Info>,
+    /// The window holding the pointer to itself (games), or 0
+    pub pointer_lock: u64,
     /// The layout number (-1: the host does not tag its frames)
     pub seq: i32,
     /// The host pointer's shape (arrow, ibeam, hand, we, ns, nwse, nesw, ...)
@@ -159,13 +171,14 @@ pub fn parse(json: &[u8], desk_w: i32, desk_h: i32) -> Option<Layout> {
             alpha,
             alpha_scale: w.alpha_scale.unwrap_or(1.0) as f32,
             alpha_strips: if w.alpha_strips.len() == 9 { w.alpha_strips.clone() } else { Vec::new() },
+            stable: w.stable,
             scale: w.scale.unwrap_or(1.0) as f32,
             pieces: w.pieces.iter().filter(|p| p.len() == 6 && p[2] > 0 && p[3] > 0).map(|p| [p[0], p[1], p[2], p[3], p[4], p[5]]).collect(),
             ts,
             seq,
         });
     }
-    Some(Layout { windows: out, seq, cursor: raw.cursor })
+    Some(Layout { windows: out, seq, pointer_lock: parse_hwnd(&raw.pointer_lock), cursor: raw.cursor })
 }
 
 #[cfg(test)]

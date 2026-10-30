@@ -11,6 +11,7 @@
 #include "streaming/streamutils.h"
 #include "streaming/appwindow.h"
 #include <QHash>
+#include <QSet>
 #include <algorithm>
 #include <atomic>
 #include <functional>
@@ -107,11 +108,44 @@ static int readDeskMarker(AVFrame* frame)
     for (int i = 0; i < 12; i++) {
         bits += (seq >> i) & 1;
     }
-    return ((code >> 12) & 0xf) == (bits & 0xf) ? seq : -1;
+    // The check is the inverted bit count (blank never reads as a number)
+    return ((code >> 12) & 0xf) == (~bits & 0xf) ? seq : -1;
 }
 
-// A frame came ahead of its layout and was not drawn: draw it when it comes
-static std::atomic<bool> s_DeskHeld { false };
+// Is a picture in the frame blank: every sample of (x, y, w, h) black (or,
+// with white = true, white)? DWM thumbnails of composition-based apps come out
+// empty for a frame now and then (a menu opening or closing); a real window
+// has a lighter title bar, border or text somewhere among the samples.
+static bool deskRegionBlank(AVFrame* frame, int x, int y, int w, int h, bool white = false)
+{
+    if (frame->format != AV_PIX_FMT_VIDEOTOOLBOX || w <= 4 || h <= 4) {
+        return false;
+    }
+    CVPixelBufferRef pixBuf = reinterpret_cast<CVPixelBufferRef>(frame->data[3]);
+    if (!CVPixelBufferIsPlanar(pixBuf) || CVPixelBufferLockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
+        return false;
+    }
+    const OSType format = CVPixelBufferGetPixelFormatType(pixBuf);
+    const bool wide = format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange;
+    const bool full = format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange;
+    const uint8_t* base = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddressOfPlane(pixBuf, 0));
+    const size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pixBuf, 0);
+    const int fw = (int)CVPixelBufferGetWidthOfPlane(pixBuf, 0), fh = (int)CVPixelBufferGetHeightOfPlane(pixBuf, 0);
+    const int black = full ? 4 : 20, whiteLevel = full ? 251 : 231;
+    bool blank = base != nullptr;
+    // A 9x9 grid plus a row through the title bar, inset from the edges
+    for (int j = 0; j < 10 && blank; j++) {
+        for (int i = 0; i < 9 && blank; i++) {
+            const int px = qBound(0, x + 2 + (w - 4) * i / 8, fw - 1);
+            const int py = qBound(0, j < 9 ? y + 2 + (h - 4) * j / 8 : y + qMin(h - 1, 12), fh - 1);
+            const uint8_t* row = base + stride * (size_t)py;
+            const int luma = wide ? reinterpret_cast<const uint16_t*>(row)[px] >> 8 : row[px];
+            blank = white ? luma >= whiteLevel : luma <= black;
+        }
+    }
+    CVPixelBufferUnlockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly);
+    return blank;
+}
 
 // Test hook: the next desk frame (the whole atlas, as decoded) goes to a PNG
 static std::atomic<bool> s_DumpDeskFrame { false };
@@ -184,6 +218,10 @@ public:
             std::lock_guard<std::mutex> lock(m_DeskFrameLock);
             av_frame_free(&m_LastDeskFrame);
             av_frame_free(&m_HeldDeskFrame);
+            for (auto& good : m_Good) {
+                av_frame_free(&good.frame);
+            }
+            m_Good.clear();
         }
         // Stop the display link and free associated state
         stopDisplayLink();
@@ -645,73 +683,18 @@ public:
             if (ahead != 0 && ahead < 2048) {
                 // Its layout has not come yet: every window keeps what it
                 // shows until it does (then this frame is drawn)
-                s_DeskHeld.store(true);
                 m_DeskResult = 1;
                 return;
             }
         }
         // Picture sizes go back to deskwm after the walk (it holds the layers' lock meanwhile)
         QVector<std::tuple<uint64_t, int, int>> shown;
-        forEachDeskLayer([&](const DeskwmLayer& child) {
-            CAMetalLayer* layer = (__bridge CAMetalLayer*)child.metal_layer;
-            if (!layer || !child.visible || child.geo_count == 0) {
-                return;
-            }
-            if (layer.device != m_MetalLayer.device || layer.pixelFormat != m_MetalLayer.pixelFormat) {
-                layer.device = m_MetalLayer.device;
-                layer.pixelFormat = m_MetalLayer.pixelFormat;
-                layer.colorspace = m_MetalLayer.colorspace;
-                layer.displaySyncEnabled = m_MetalLayer.displaySyncEnabled;
-            }
-            if (only != 0 && child.hwnd != only) {
-                return;
-            }
-            if (deferred == nullptr && layer.presentsWithTransaction) {
-                toMain.append(child.hwnd);
-                return;
-            }
-            if (layer.drawableSize.width < 1 || layer.drawableSize.height < 1) {
-                return;
-            }
-            // The window's picture in this frame: the geometry of the layout
-            // the frame shows (its newest change at or before that number);
-            // without numbers, the newest geometry stamped at or before the
-            // frame's capture time. None yet (a window that has just
-            // appeared): nothing to draw.
-            int pick = -1;
-            bool numbered = false;
-            if (frameSeq >= 0) {
-                for (int i = (int)child.geo_count - 1; i >= 0; i--) {
-                    numbered = numbered || child.geo[i].seq >= 0;
-                    if (child.geo[i].seq >= 0 && ((frameSeq - child.geo[i].seq) & 0xfff) < 2048) {
-                        pick = i;
-                        break;
-                    }
-                }
-                if (pick < 0 && numbered) {
-                    return;  // the window came after this frame
-                }
-            }
-            if (pick < 0) {
-                pick = (int)child.geo_count - 1;
-            }
-            if (!numbered && frame->pts != AV_NOPTS_VALUE) {
-                const quint32 pts = (quint32)frame->pts;
-                pick = -1;
-                for (int i = (int)child.geo_count - 1; i >= 0; i--) {
-                    if ((qint32)(pts - child.geo[i].ts) >= 0) {
-                        pick = i;
-                        break;
-                    }
-                }
-                if (pick < 0) {
-                    return;
-                }
-            }
-            const DeskwmGeo g = child.geo[pick];
-            if (g.w <= 0 || g.h <= 0) {
-                return;
-            }
+        QVector<uint64_t> fromGood;
+        QSet<uint64_t> seen;
+        // One window's picture from a frame (the current one, or the last one
+        // its window was painted in)
+        auto drawLayer = [&](const DeskwmLayer& child, CAMetalLayer* layer, const DeskwmGeo& g, AVFrame* frm,
+                             const std::array<CVMetalTextureRef, MAX_VIDEO_PLANES>& tex, size_t pl) {
             // Never wait for a drawable: a window that is not being presented
             // (hidden, mid-animation, in Mission Control) would stall every
             // other window. Two in flight and nothing presented lately: skip.
@@ -737,9 +720,11 @@ public:
                 captured->count.fetch_sub(1);
                 captured->lastPresented.store(CACurrentMediaTime());
             }];
-            // The picture in host px (a full atlas may hold it scaled down)
-            const float scale = g.scale > 0.0f ? g.scale : 1.0f;
-            int pw = (int)lroundf(g.w / scale), ph = (int)lroundf(g.h / scale);
+            // The picture in host px (a full atlas may hold it scaled down: the
+            // scale then is exactly its size there over its own)
+            int pw = g.pw > 0 ? g.pw : (int)lroundf(g.w / (g.scale > 0.0f ? g.scale : 1.0f));
+            int ph = g.ph > 0 ? g.ph : (int)lroundf(g.h / (g.scale > 0.0f ? g.scale : 1.0f));
+            const float scale = g.scale < 1.0f && pw > 0 ? (float)g.w / pw : 1.0f;
             shown.append(std::make_tuple(child.hwnd, pw, ph));
             // Mid-resize: never larger than the size last asked of the host
             // (it may already show the window smaller than this layout says)
@@ -771,15 +756,15 @@ public:
                 if (!alpha) {
                     return simd_float2 { 0.0f, 0.0f };
                 }
-                return simd_float2 { (g.ax + (tx - g.x) * ar - tx) / frame->width, (g.ay + (ty - g.y) * ar - ty) / frame->height };
+                return simd_float2 { (g.ax + (tx - g.x) * ar - tx) / frm->width, (g.ay + (ty - g.y) * ar - ty) / frm->height };
             };
             // One quad: drawable px [dx0, dx1) x [dy0, dy1) from frame px at (u0, v0) (u1, v1)
             std::vector<VertexAW> verts;
             auto quad = [&](float dx0, float dy0, float dx1, float dy1, float tx0, float ty0, float tx1, float ty1) {
                 const float xl = -1.0f + 2.0f * dx0 / vw, xr = -1.0f + 2.0f * dx1 / vw;
                 const float yt = 1.0f - 2.0f * dy0 / vh, yb = 1.0f - 2.0f * dy1 / vh;
-                const float u0 = tx0 / frame->width, u1 = tx1 / frame->width;
-                const float v0 = ty0 / frame->height, v1 = ty1 / frame->height;
+                const float u0 = tx0 / frm->width, u1 = tx1 / frm->width;
+                const float v0 = ty0 / frm->height, v1 = ty1 / frm->height;
                 const float lx0 = alpha ? dx0 - ox : dx0, lx1 = alpha ? dx1 - ox : dx1, ly0 = alpha ? dy0 - oy : dy0, ly1 = alpha ? dy1 - oy : dy1;
                 const simd_float2 w00 = whiteAt(tx0, ty0), w10 = whiteAt(tx1, ty0), w01 = whiteAt(tx0, ty1), w11 = whiteAt(tx1, ty1);
                 verts.push_back({ { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { lx0, ly1 }, rect, w01 });
@@ -805,12 +790,12 @@ public:
                         return;
                     }
                     const simd_float2 off = op ? simd_float2 { 0.0f, 0.0f }
-                                               : simd_float2 { (float)(wx - rx - g.x) / frame->width, (float)(wy - ry - g.y) / frame->height };
+                                               : simd_float2 { (float)(wx - rx - g.x) / frm->width, (float)(wy - ry - g.y) / frm->height };
                     const float dx0 = ox + x0 - px0, dx1 = ox + x1 - px0, dy0 = oy + y0 - py0, dy1 = oy + y1 - py0;
                     const float tx0 = g.x + x0, tx1 = g.x + x1, ty0 = g.y + y0, ty1 = g.y + y1;
                     const float xl = -1.0f + 2.0f * dx0 / vw, xr = -1.0f + 2.0f * dx1 / vw;
                     const float yt = 1.0f - 2.0f * dy0 / vh, yb = 1.0f - 2.0f * dy1 / vh;
-                    const float u0 = tx0 / frame->width, u1 = tx1 / frame->width, v0 = ty0 / frame->height, v1 = ty1 / frame->height;
+                    const float u0 = tx0 / frm->width, u1 = tx1 / frm->width, v0 = ty0 / frm->height, v1 = ty1 / frm->height;
                     const simd_float4 r = op ? opaque : rect;
                     const float lx0 = dx0 - ox, lx1 = dx1 - ox, ly0 = dy0 - oy, ly1 = dy1 - oy;
                     verts.push_back({ { xl, yb, 0.0f, 1.0f }, { u0, v1 }, { lx0, ly1 }, r, off });
@@ -901,14 +886,14 @@ public:
             pass.colorAttachments[0].storeAction = MTLStoreActionStore;
             auto encoder = [commandBuffer renderCommandEncoderWithDescriptor:pass];
             [encoder setRenderPipelineState:m_VideoPipelineState];
-            if (frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
-                for (size_t i = 0; i < planes; i++) {
-                    [encoder setFragmentTexture:CVMetalTextureGetTexture(cvMetalTextures[i]) atIndex:i];
+            if (frm->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+                for (size_t i = 0; i < pl; i++) {
+                    [encoder setFragmentTexture:CVMetalTextureGetTexture(tex[i]) atIndex:i];
                 }
             }
             else {
-                for (size_t i = 0; i < planes; i++) {
-                    [encoder setFragmentTexture:mapPlaneForSoftwareFrame(frame, i) atIndex:i];
+                for (size_t i = 0; i < pl; i++) {
+                    [encoder setFragmentTexture:mapPlaneForSoftwareFrame(frm, i) atIndex:i];
                 }
             }
             [encoder setFragmentBuffer:m_CscParamsBuffer offset:0 atIndex:0];
@@ -922,7 +907,139 @@ public:
                 [commandBuffer presentDrawable:drawable];
             }
             [vb release];
+        };
+        forEachDeskLayer([&](const DeskwmLayer& child) {
+            CAMetalLayer* layer = (__bridge CAMetalLayer*)child.metal_layer;
+            if (!layer || !child.visible || child.geo_count == 0) {
+                return;
+            }
+            if (layer.device != m_MetalLayer.device || layer.pixelFormat != m_MetalLayer.pixelFormat) {
+                layer.device = m_MetalLayer.device;
+                layer.pixelFormat = m_MetalLayer.pixelFormat;
+                layer.colorspace = m_MetalLayer.colorspace;
+                layer.displaySyncEnabled = m_MetalLayer.displaySyncEnabled;
+            }
+            if (only != 0 && child.hwnd != only) {
+                return;
+            }
+            seen.insert(child.hwnd);  // (its last good picture is kept while the main thread draws it)
+            if (deferred == nullptr && layer.presentsWithTransaction) {
+                toMain.append(child.hwnd);
+                return;
+            }
+            if (layer.drawableSize.width < 1 || layer.drawableSize.height < 1) {
+                return;
+            }
+            // The window's picture in this frame: the geometry of the layout
+            // the frame shows (its newest change at or before that number);
+            // without numbers, the newest geometry stamped at or before the
+            // frame's capture time. None yet (a window that has just
+            // appeared): nothing to draw.
+            int pick = -1;
+            bool numbered = false;
+            if (frameSeq >= 0) {
+                for (int i = (int)child.geo_count - 1; i >= 0; i--) {
+                    numbered = numbered || child.geo[i].seq >= 0;
+                    if (child.geo[i].seq >= 0 && ((frameSeq - child.geo[i].seq) & 0xfff) < 2048) {
+                        pick = i;
+                        break;
+                    }
+                }
+                if (pick < 0 && numbered) {
+                    return;  // the window came after this frame
+                }
+            }
+            if (pick < 0) {
+                pick = (int)child.geo_count - 1;
+            }
+            if (!numbered && frame->pts != AV_NOPTS_VALUE) {
+                const quint32 pts = (quint32)frame->pts;
+                pick = -1;
+                for (int i = (int)child.geo_count - 1; i >= 0; i--) {
+                    if ((qint32)(pts - child.geo[i].ts) >= 0) {
+                        pick = i;
+                        break;
+                    }
+                }
+                if (pick < 0) {
+                    return;
+                }
+            }
+            const DeskwmGeo g = child.geo[pick];
+            if (g.w <= 0 || g.h <= 0) {
+                return;
+            }
+            // An empty picture (DWM handed the thumbnail over blank in this
+            // frame): the window keeps what it shows
+            if (g.ax >= 0 && g.ay >= 0) {
+                const bool strips = g.strip_width > 0;
+                if (deskRegionBlank(frame, g.x, g.y, g.w, g.h) &&
+                    deskRegionBlank(frame, strips ? g.strips[0] : g.ax, strips ? g.strips[1] : g.ay, g.w, strips ? g.strip_width : g.h, true)) {
+                    return;
+                }
+            }
+            else if (deskRegionBlank(frame, g.x, g.y, g.w, g.h)) {
+                return;
+            }
+            // Not painted at its size yet (an app redrawing after a resize):
+            // the last picture it was painted in
+            if (!g.stable && m_Good.contains(child.hwnd)) {
+                fromGood.append(child.hwnd);
+                return;
+            }
+            if (g.stable && frame->format == AV_PIX_FMT_VIDEOTOOLBOX) {
+                GoodPicture& good = m_Good[child.hwnd];
+                if (good.frame == nullptr) {
+                    good.frame = av_frame_alloc();
+                }
+                if (good.frame->buf[0] == nullptr || good.frame->data[3] != frame->data[3]) {
+                    av_frame_unref(good.frame);
+                    av_frame_ref(good.frame, frame);
+                }
+                good.geo = g;
+            }
+            drawLayer(child, layer, g, frame, cvMetalTextures, planes);
         });
+        // Windows waiting for their app to paint: from their own last frame
+        QHash<AVFrame*, QVector<uint64_t>> byFrame;
+        for (uint64_t hwnd : fromGood) {
+            byFrame[m_Good[hwnd].frame].append(hwnd);
+        }
+        for (auto it = byFrame.begin(); it != byFrame.end(); ++it) {
+            AVFrame* old = it.key();
+            std::array<CVMetalTextureRef, MAX_VIDEO_PLANES> oldTex;
+            if (old == nullptr || old->buf[0] == nullptr || !createTexturesFromFrame(old, oldTex)) {
+                continue;
+            }
+            const size_t oldPlanes = getFramePlaneCount(old);
+            CVPixelBufferRef pixBuf = reinterpret_cast<CVPixelBufferRef>(old->data[3]);
+            CVPixelBufferRetain(pixBuf);
+            [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+                for (size_t i = 0; i < oldPlanes; i++) {
+                    CFRelease(oldTex[i]);
+                }
+                CVPixelBufferRelease(pixBuf);
+            }];
+            const QVector<uint64_t> hwnds = it.value();
+            forEachDeskLayer([&](const DeskwmLayer& child) {
+                CAMetalLayer* layer = (__bridge CAMetalLayer*)child.metal_layer;
+                if (layer && hwnds.contains(child.hwnd)) {
+                    drawLayer(child, layer, m_Good[child.hwnd].geo, old, oldTex, oldPlanes);
+                }
+            });
+        }
+        // Windows gone: their pictures go too
+        if (only == 0) {
+            for (auto it = m_Good.begin(); it != m_Good.end();) {
+                if (!seen.contains(it.key())) {
+                    av_frame_free(&it.value().frame);
+                    it = m_Good.erase(it);
+                }
+                else {
+                    ++it;
+                }
+            }
+        }
         for (const auto& [hwnd, w, h] : shown) {
             deskwm_shown(hwnd, w, h);
         }
@@ -939,10 +1056,18 @@ public:
     void redrawDeskWindow(uint64_t hwnd)
     { @autoreleasepool {
         // 0: all windows, once a frame held back for its layout can be drawn
-        if (hwnd == 0 && !s_DeskHeld.exchange(false)) {
-            return;
-        }
         std::lock_guard<std::mutex> lock(m_DeskFrameLock);
+        // 0: a frame held for its layout, if that has come now (asked under
+        // the lock, so a hold decided while the layout came is not missed)
+        if (hwnd == 0) {
+            if (m_HeldDeskFrame == nullptr || m_HeldDeskFrame->buf[0] == nullptr) {
+                return;
+            }
+            const int heldSeq = readDeskMarker(m_HeldDeskFrame), layoutSeq = deskwm_layout_seq();
+            if (heldSeq < 0 || layoutSeq < 0 || (((heldSeq - layoutSeq) & 0xfff) != 0 && ((heldSeq - layoutSeq) & 0xfff) < 2048)) {
+                return;
+            }
+        }
         // 0: the held frame (its layout has come); a window: the last drawn
         AVFrame* frame = hwnd == 0 ? m_HeldDeskFrame : m_LastDeskFrame;
         if (frame == nullptr || frame->buf[0] == nullptr || frame->format != AV_PIX_FMT_VIDEOTOOLBOX) {
@@ -1568,7 +1693,11 @@ private:
     AVFrame* m_LastDeskFrame = av_frame_alloc();  // the last frame drawn, for redraws between frames
     AVFrame* m_HeldDeskFrame = av_frame_alloc();  // a frame waiting for its layout
     int m_DeskResult = 0;  // the last renderChildWindows: 0 drawn, 1 held for its layout, 2 not readable
-    QHash<quint64, QRect> m_PopupTrims;
+    struct GoodPicture {
+        AVFrame* frame = nullptr;  // the last frame its window was painted in at its size
+        DeskwmGeo geo {};
+    };
+    QHash<uint64_t, GoodPicture> m_Good;  // per window, for while its app redraws after a resize
     struct Inflight {
         std::atomic<int> count {0};
         std::atomic<double> lastPresented {0.0};

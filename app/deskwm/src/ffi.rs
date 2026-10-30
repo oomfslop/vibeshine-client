@@ -93,6 +93,7 @@ pub fn event(json: &str) {
 extern "C" {
     fn LiSendMousePositionEvent(x: i16, y: i16, reference_width: i16, reference_height: i16) -> i32;
     fn LiSendMouseButtonEvent(action: c_char, button: i32) -> i32;
+    fn LiSendMouseMoveEvent(delta_x: i16, delta_y: i16) -> i32;
     fn LiSendHighResScrollEvent(amount: i16) -> i32;
     fn LiSendHighResHScrollEvent(amount: i16) -> i32;
     fn LiSendKeyboardEvent2(key_code: i16, key_action: c_char, modifiers: c_char, flags: c_char) -> i32;
@@ -115,6 +116,12 @@ pub fn mouse_to(x: i32, y: i32, desk_w: i32, desk_h: i32) {
     let y = y.clamp(0, (desk_h - 1).max(0)) as i16;
     unsafe {
         LiSendMousePositionEvent(x, y, desk_w as i16, desk_h as i16);
+    }
+}
+
+pub fn mouse_rel(dx: i16, dy: i16) {
+    unsafe {
+        LiSendMouseMoveEvent(dx, dy);
     }
 }
 
@@ -155,6 +162,11 @@ pub struct Geo {
     /// position of the top, bottom, left and right edge
     pub strip_width: i32,
     pub strips: [i32; 8],
+    /// Painted at its size (0: still being redrawn after a resize)
+    pub stable: i32,
+    /// The picture's own size (host px; w, h above are its size in the frame)
+    pub pw: i32,
+    pub ph: i32,
     pub piece_count: u32,
     pub pieces: [Piece; PIECE_MAX],
 }
@@ -176,7 +188,7 @@ pub const PIECE_MAX: usize = 192;
 
 impl Default for Geo {
     fn default() -> Self {
-        Geo { ts: 0, seq: -1, x: 0, y: 0, w: 0, h: 0, ax: 0, ay: 0, scale: 0.0, alpha_scale: 1.0, strip_width: 0, strips: [0; 8], piece_count: 0, pieces: [Piece::default(); PIECE_MAX] }
+        Geo { ts: 0, seq: -1, x: 0, y: 0, w: 0, h: 0, ax: 0, ay: 0, scale: 0.0, alpha_scale: 1.0, strip_width: 0, strips: [0; 8], stable: 1, pw: 0, ph: 0, piece_count: 0, pieces: [Piece::default(); PIECE_MAX] }
     }
 }
 
@@ -267,10 +279,16 @@ pub fn with_layer<R>(hwnd: u64, f: impl FnOnce(&mut Layer) -> R) -> Option<R> {
 /// the history keeps the last few, stamped on the frames' clock.
 pub fn push_geo(hwnd: u64, g: Geo) {
     with_layer(hwnd, |l| {
-        if let Some(last) = l.geo.last() {
-            // Unchanged: the older entry stays valid for the newer frames
+        if let Some(last) = l.geo.last_mut() {
+            // Unchanged: the older entry stays valid for the newer frames. Its
+            // number is kept within half the 12-bit range of the newest (frames
+            // are compared to it modulo 4096); far back enough that no frame
+            // still in flight is older.
             let same = Geo { ts: last.ts, seq: last.seq, ..g };
             if *last == same {
+                if g.seq >= 0 && last.seq >= 0 && ((g.seq - last.seq) & 0xfff) > 1024 {
+                    last.seq = (g.seq - 1024) & 0xfff;
+                }
                 return;
             }
         }

@@ -15,12 +15,18 @@ use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSWindow;
 
-use ffi::{guard, Callbacks, CLayer, Geo, GEO_MAX, LAYERS};
+use ffi::{guard, Callbacks, LAYERS};
+/// The layer and geometry types of the C interface (deskwm.h), for Rust users
+pub use ffi::{CLayer, Geo, Piece, GEO_MAX, PIECE_MAX};
 
 static PPP_BITS: AtomicU64 = AtomicU64::new(0);
 static FRONT: AtomicU64 = AtomicU64::new(0);
 static DESK_W: AtomicI32 = AtomicI32::new(0);
 static DESK_H: AtomicI32 = AtomicI32::new(0);
+/// The desk itself (the Mac screen in host px); DESK_W/H are the stream's
+/// size, the reference for pointer positions
+static SCREEN_W: AtomicI32 = AtomicI32::new(0);
+static SCREEN_H: AtomicI32 = AtomicI32::new(0);
 static LAYOUT_SEQ: AtomicI32 = AtomicI32::new(-1);
 
 pub(crate) fn set_layout_seq(seq: i32) {
@@ -67,6 +73,10 @@ pub unsafe extern "C" fn deskwm_begin(
         };
         DESK_W.store(desk_w, Ordering::Relaxed);
         DESK_H.store(desk_h, Ordering::Relaxed);
+        if points_per_px > 0.0 {
+            SCREEN_W.store((screen_w / points_per_px).round() as i32, Ordering::Relaxed);
+            SCREEN_H.store((screen_h / points_per_px).round() as i32, Ordering::Relaxed);
+        }
         desk::begin(
             mtm,
             key,
@@ -94,12 +104,12 @@ pub unsafe extern "C" fn deskwm_layout(json: *const c_char, len: usize) {
         return;
     }
     let bytes = unsafe { std::slice::from_raw_parts(json as *const u8, len) };
-    let Some(layout) = layout::parse(bytes, DESK_W.load(Ordering::Relaxed), DESK_H.load(Ordering::Relaxed)) else {
+    let Some(layout) = layout::parse(bytes, SCREEN_W.load(Ordering::Relaxed), SCREEN_H.load(Ordering::Relaxed)) else {
         ffi::log(1, "deskwm: a layout that does not parse");
         return;
     };
     ffi::on_main(move || {
-        guard("layout", || desk::apply_layout(layout.windows, layout.cursor, layout.seq));
+        guard("layout", || desk::apply_layout(layout.windows, layout.cursor, layout.seq, layout.pointer_lock));
     });
 }
 

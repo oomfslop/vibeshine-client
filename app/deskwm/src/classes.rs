@@ -181,6 +181,11 @@ impl DeskView {
     fn forward(&self, ev: Ev, e: &NSEvent) {
         let hwnd = self.hwnd();
         guard("view input", || {
+            // The host holds the pointer (a game): motion, not positions
+            if matches!(ev, Ev::Move | Ev::Drag) && crate::desk::pointer_locked() {
+                crate::desk::relative_motion(e.deltaX(), e.deltaY());
+                return;
+            }
             let p = self.convertPoint_fromView(e.locationInWindow(), None);
             let clicks = match ev {
                 // clickCount only exists on button events (it throws on others)

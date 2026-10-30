@@ -25,6 +25,11 @@ pub extern "C" fn LiSendMouseButtonEvent(action: c_char, button: i32) -> i32 {
     0
 }
 #[no_mangle]
+pub extern "C" fn LiSendMouseMoveEvent(dx: i16, dy: i16) -> i32 {
+    INPUT.lock().unwrap().push(format!("move {dx} {dy}"));
+    0
+}
+#[no_mangle]
 pub extern "C" fn LiSendKeyboardEvent2(code: i16, action: c_char, _mods: c_char, _flags: c_char) -> i32 {
     INPUT.lock().unwrap().push(format!("key 0x{:x} {}", code as u16 & 0x7fff, if action == 3 { "down" } else { "up" }));
     0
@@ -60,32 +65,7 @@ struct Callbacks {
     redraw: Option<extern "C" fn(*mut c_void, u64)>,
 }
 
-#[repr(C)]
-#[derive(Copy, Clone)]
-struct Geo {
-    ts: u32,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    ax: i32,
-    ay: i32,
-    scale: f32,
-}
-
-#[repr(C)]
-struct Layer {
-    hwnd: u64,
-    metal_layer: *mut c_void,
-    view_w: i32,
-    view_h: i32,
-    radius: i32,
-    visible: bool,
-    anchor_right: bool,
-    anchor_bottom: bool,
-    geo_count: u32,
-    geo: [Geo; 12],
-}
+use deskwm::CLayer as Layer;
 
 static PENDING_HIT: Mutex<Option<(u64, u64, i32, i32)>> = Mutex::new(None);
 

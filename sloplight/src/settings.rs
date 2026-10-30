@@ -114,6 +114,14 @@ pub struct Settings {
     /// loss, and every lost frame freezes the picture until it recovers.
     #[serde(default = "default_app_window_bitrate")]
     pub app_window_bitrate_kbps: i32,
+    /// App windows: windows other than the focused one at 1/n of the frame
+    /// rate (1 = full). Saves bits on what animates in the background.
+    #[serde(default = "default_one")]
+    pub app_window_background_divisor: i32,
+    /// App windows: windows covered whole by others stay out of the stream
+    /// (the Mac keeps showing their last picture).
+    #[serde(default = "default_true")]
+    pub app_window_skip_covered: bool,
     pub resolution_scale_factor: i32,
     pub clipboard_sync: bool,
     /// Draw only the Mac cursor; the host leaves its cursor out of the
@@ -189,6 +197,8 @@ impl Default for Settings {
             app_window_follow_new: true,
             app_window_scale: 100,
             app_window_bitrate_kbps: 20000,
+            app_window_background_divisor: 1,
+            app_window_skip_covered: true,
             resolution_scale_factor: 100,
             clipboard_sync: false,
             hide_host_cursor: false,
@@ -386,4 +396,8 @@ fn default_app_window_bitrate() -> i32 {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_one() -> i32 {
+    1
 }

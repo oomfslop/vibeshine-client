@@ -73,6 +73,10 @@ fn desk_point(hwnd: u64, x: i32, y: i32) -> Option<(i32, i32)> {
 
 fn move_to(hwnd: u64, x: i32, y: i32) {
     let Some(d) = desk() else { return };
+    // The host holds the pointer: buttons and wheel only, where it is
+    if crate::desk::pointer_locked() {
+        return;
+    }
     if let Some((px, py)) = desk_point(hwnd, x, y) {
         ffi::mouse_to(px, py, d.map.desk_w, d.map.desk_h);
     }
@@ -114,12 +118,28 @@ pub fn on_event(hwnd: u64, ev: Ev, p: NSPoint, clicks: i32, sx: f64, sy: f64, cm
                 return;
             }
             move_to(hwnd, x, y);
-            // At most one notch per event, as Moonlight does: macOS
-            // acceleration produces wild deltas on fast flicks
-            let dy = (sy * 12.0).clamp(-120.0, 120.0) as i16;
-            let dx = (sx * 12.0).clamp(-120.0, 120.0) as i16;
-            ffi::scroll(dy, dx);
+            scroll_by(sx, sy);
         }
+    }
+}
+
+thread_local! {
+    static SCROLL_REST: Cell<(f64, f64)> = const { Cell::new((0.0, 0.0)) };
+}
+
+/// Trackpad and wheel deltas (points, as macOS gives them, momentum included)
+/// as high-resolution wheel deltas (120 a notch): every fraction kept for the
+/// next event, so slow scrolls move smoothly instead of in steps, and at most
+/// four notches an event (acceleration gives wild deltas on fast flicks).
+/// Windows apps that scroll smoothly (browsers, WinUI) take these as is.
+fn scroll_by(sx: f64, sy: f64) {
+    let (rx, ry) = SCROLL_REST.with(|r| r.get());
+    let x = (rx + sx * 12.0).clamp(-480.0, 480.0);
+    let y = (ry + sy * 12.0).clamp(-480.0, 480.0);
+    let (ix, iy) = (x.trunc(), y.trunc());
+    SCROLL_REST.with(|r| r.set((x - ix, y - iy)));
+    if ix != 0.0 || iy != 0.0 {
+        ffi::scroll(iy as i16, ix as i16);
     }
 }
 
@@ -370,7 +390,7 @@ pub fn test_scroll(hwnd: u64, x: i32, y: i32, dy: f64, n: i32) {
     for k in 0..n.max(1) {
         ffi::on_main_after(k as f64 * 0.016, move || {
             move_to(hwnd, x, y);
-            ffi::scroll((dy * 12.0).clamp(-120.0, 120.0) as i16, 0);
+            scroll_by(0.0, dy);
         });
     }
 }

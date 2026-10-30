@@ -302,8 +302,11 @@ impl NvHttp {
     /// The client's desk: a private host display mirroring this screen. `open`
     /// creates (or retunes) it, host px / Hz / DPI; the reply carries the size
     /// the driver could give (its mode catalog is fixed), which the stream uses.
-    pub fn open_desk(&self, w: i32, h: i32, fps: i32, dpi: i32) -> Result<DeskInfo, HttpError> {
-        let resp = self.request(true, "actions/desk", &format!("op=open&w={w}&h={h}&fps={fps}&dpi={dpi}"), Duration::from_secs(40), Some(("text/plain", b"")))?;
+    /// background: windows other than the focused one at 1/n of the frame
+    /// rate; covered: stream windows that others cover whole
+    pub fn open_desk(&self, w: i32, h: i32, fps: i32, dpi: i32, background: i32, covered: bool) -> Result<DeskInfo, HttpError> {
+        let query = format!("op=open&w={w}&h={h}&fps={fps}&dpi={dpi}&unfocused={background}&covered={}", covered as i32);
+        let resp = self.request(true, "actions/desk", &query, Duration::from_secs(40), Some(("text/plain", b"")))?;
         serde_json::from_slice(&resp.body).map_err(|e| HttpError::Network(format!("desk: {e}")))
     }
 
