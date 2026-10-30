@@ -30,6 +30,15 @@ pub extern "C" fn LiSendMouseMoveEvent(dx: i16, dy: i16) -> i32 {
     0
 }
 #[no_mangle]
+pub extern "C" fn LiSendTrackpadEvent(count: u8, _contacts: *const deskwm::TrackpadContact, _w: f32, _h: f32) -> i32 {
+    INPUT.lock().unwrap().push(format!("trackpad {count}"));
+    0
+}
+#[no_mangle]
+pub extern "C" fn LiGetHostFeatureFlags() -> u32 {
+    0
+}
+#[no_mangle]
 pub extern "C" fn LiSendKeyboardEvent2(code: i16, action: c_char, _mods: c_char, _flags: c_char) -> i32 {
     INPUT.lock().unwrap().push(format!("key 0x{:x} {}", code as u16 & 0x7fff, if action == 3 { "down" } else { "up" }));
     0

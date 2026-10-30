@@ -144,7 +144,27 @@ define_class!(
         }
         #[unsafe(method(scrollWheel:))]
         fn scroll_wheel(&self, e: &NSEvent) {
+            // A scroll the trackpad's fingers already make on the host
+            if input::trackpad_scroll(e) {
+                return;
+            }
             self.forward(Ev::Scroll, e);
+        }
+        #[unsafe(method(touchesBeganWithEvent:))]
+        fn touches_began(&self, e: &NSEvent) {
+            self.touches(e);
+        }
+        #[unsafe(method(touchesMovedWithEvent:))]
+        fn touches_moved(&self, e: &NSEvent) {
+            self.touches(e);
+        }
+        #[unsafe(method(touchesEndedWithEvent:))]
+        fn touches_ended(&self, e: &NSEvent) {
+            self.touches(e);
+        }
+        #[unsafe(method(touchesCancelledWithEvent:))]
+        fn touches_cancelled(&self, e: &NSEvent) {
+            self.touches(e);
         }
     }
 );
@@ -155,6 +175,8 @@ impl DeskView {
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         view.setWantsLayer(true);
         view.setLayerContentsRedrawPolicy(objc2_app_kit::NSViewLayerContentsRedrawPolicy::Never);
+        // The trackpad's fingers, for the host's own touchpad gestures
+        view.setAllowedTouchTypes(objc2_app_kit::NSTouchTypeMask::Indirect);
         view.update_drawable_size();
         view
     }
@@ -176,6 +198,11 @@ impl DeskView {
                 metal.setDrawableSize(objc2_core_foundation::CGSize::new(b.size.width * scale, b.size.height * scale));
             }
         }
+    }
+
+    fn touches(&self, e: &NSEvent) {
+        let hwnd = self.hwnd();
+        guard("view touches", || input::touches(hwnd, e, self));
     }
 
     fn forward(&self, ev: Ev, e: &NSEvent) {

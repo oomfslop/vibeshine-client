@@ -97,6 +97,29 @@ extern "C" {
     fn LiSendHighResScrollEvent(amount: i16) -> i32;
     fn LiSendHighResHScrollEvent(amount: i16) -> i32;
     fn LiSendKeyboardEvent2(key_code: i16, key_action: c_char, modifiers: c_char, flags: c_char) -> i32;
+    fn LiSendTrackpadEvent(count: u8, contacts: *const TrackpadContact, width: f32, height: f32) -> i32;
+    fn LiGetHostFeatureFlags() -> u32;
+}
+
+/// LI_TRACKPAD_CONTACT
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct TrackpadContact {
+    pub id: u32,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Does the host take touchpad contacts (LI_FF_TRACKPAD_EVENTS)?
+pub fn trackpad_supported() -> bool {
+    unsafe { LiGetHostFeatureFlags() & 0x04 != 0 }
+}
+
+/// The fingers on the trackpad (none: all lifted); width and height in mm
+pub fn trackpad(contacts: &[TrackpadContact], width: f32, height: f32) {
+    unsafe {
+        LiSendTrackpadEvent(contacts.len().min(5) as u8, contacts.as_ptr(), width, height);
+    }
 }
 
 /// Ctrl held on the host around a click: Cmd-click on the Mac (add to the

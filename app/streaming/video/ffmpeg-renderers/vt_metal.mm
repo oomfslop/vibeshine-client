@@ -112,11 +112,11 @@ static int readDeskMarker(AVFrame* frame)
     return ((code >> 12) & 0xf) == (~bits & 0xf) ? seq : -1;
 }
 
-// Is a picture in the frame blank: every sample of (x, y, w, h) black (or,
-// with white = true, white)? DWM thumbnails of composition-based apps come out
-// empty for a frame now and then (a menu opening or closing); a real window
-// has a lighter title bar, border or text somewhere among the samples.
-static bool deskRegionBlank(AVFrame* frame, int x, int y, int w, int h, bool white = false)
+// Is a picture in the frame blank: every sample of (x, y, w, h) black? DWM
+// thumbnails of composition-based apps come out empty for a frame now and
+// then (a menu opening or closing); a real window has a lighter title bar,
+// border, background or text somewhere among the samples.
+static bool deskRegionBlank(AVFrame* frame, int x, int y, int w, int h)
 {
     if (frame->format != AV_PIX_FMT_VIDEOTOOLBOX || w <= 4 || h <= 4) {
         return false;
@@ -131,7 +131,7 @@ static bool deskRegionBlank(AVFrame* frame, int x, int y, int w, int h, bool whi
     const uint8_t* base = static_cast<const uint8_t*>(CVPixelBufferGetBaseAddressOfPlane(pixBuf, 0));
     const size_t stride = CVPixelBufferGetBytesPerRowOfPlane(pixBuf, 0);
     const int fw = (int)CVPixelBufferGetWidthOfPlane(pixBuf, 0), fh = (int)CVPixelBufferGetHeightOfPlane(pixBuf, 0);
-    const int black = full ? 4 : 20, whiteLevel = full ? 251 : 231;
+    const int black = full ? 4 : 20;
     bool blank = base != nullptr;
     // A 9x9 grid plus a row through the title bar, inset from the edges
     for (int j = 0; j < 10 && blank; j++) {
@@ -140,7 +140,7 @@ static bool deskRegionBlank(AVFrame* frame, int x, int y, int w, int h, bool whi
             const int py = qBound(0, j < 9 ? y + 2 + (h - 4) * j / 8 : y + qMin(h - 1, 12), fh - 1);
             const uint8_t* row = base + stride * (size_t)py;
             const int luma = wide ? reinterpret_cast<const uint16_t*>(row)[px] >> 8 : row[px];
-            blank = white ? luma >= whiteLevel : luma <= black;
+            blank = luma <= black;
         }
     }
     CVPixelBufferUnlockBaseAddress(pixBuf, kCVPixelBufferLock_ReadOnly);
@@ -970,15 +970,9 @@ public:
                 return;
             }
             // An empty picture (DWM handed the thumbnail over blank in this
-            // frame): the window keeps what it shows
-            if (g.ax >= 0 && g.ay >= 0) {
-                const bool strips = g.strip_width > 0;
-                if (deskRegionBlank(frame, g.x, g.y, g.w, g.h) &&
-                    deskRegionBlank(frame, strips ? g.strips[0] : g.ax, strips ? g.strips[1] : g.ay, g.w, strips ? g.strip_width : g.h, true)) {
-                    return;
-                }
-            }
-            else if (deskRegionBlank(frame, g.x, g.y, g.w, g.h)) {
+            // frame; a menu's shadow may still be there, on white only): the
+            // window keeps what it shows
+            if (deskRegionBlank(frame, g.x, g.y, g.w, g.h)) {
                 return;
             }
             // Not painted at its size yet (an app redrawing after a resize):

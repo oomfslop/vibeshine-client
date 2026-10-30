@@ -17,7 +17,7 @@ use objc2_app_kit::NSWindow;
 
 use ffi::{guard, Callbacks, LAYERS};
 /// The layer and geometry types of the C interface (deskwm.h), for Rust users
-pub use ffi::{CLayer, Geo, Piece, GEO_MAX, PIECE_MAX};
+pub use ffi::{CLayer, Geo, Piece, TrackpadContact, GEO_MAX, PIECE_MAX};
 
 static PPP_BITS: AtomicU64 = AtomicU64::new(0);
 static FRONT: AtomicU64 = AtomicU64::new(0);

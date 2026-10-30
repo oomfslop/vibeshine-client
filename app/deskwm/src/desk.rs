@@ -415,6 +415,9 @@ pub fn apply_layout(infos: Vec<Info>, cursor: String, seq: i32, pointer_lock: u6
     for w in gone {
         if w.gone_since.get() == 0.0 {
             w.gone_since.set(now);
+            // Its going is no reordering by the user (whichever window macOS
+            // makes key next): the host's focus decides what comes up
+            d.last_order.borrow_mut().retain(|h| *h != w.hwnd);
             w.applying.set(true);
             w.ns().orderOut(None);
             w.applying.set(false);
@@ -1192,6 +1195,11 @@ pub fn sync_order(d: &Desk) {
     if follow != 0 && mac.contains(&follow) {
         info!("deskwm: host focused 0x{follow:x} by itself; bringing it up here");
         raise_panes(d, &[follow]);
+        if active {
+            if let Some(w) = d.wins.borrow().get(&follow) {
+                w.ns().makeKeyWindow();
+            }
+        }
         d.follow.set(0);
         d.focus_mismatch_since.set(0.0);
         *d.last_order.borrow_mut() = mac_order(d).unwrap_or_default();
