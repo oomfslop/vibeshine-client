@@ -624,6 +624,7 @@ fn create_window(d: &Desk, i: &Info) -> Rc<Win> {
         shadow_fresh: Cell::new(false),
     });
     w.applying.set(true);
+    apply_min_size(d, &w, i);
     let owner = if pane { None } else { d.wins.borrow().get(&i.owner).cloned() };
     if let Some(owner) = owner.filter(|o| o.pane) {
         // Menus, tooltips, drop-downs ride on their owner
@@ -647,6 +648,7 @@ fn create_window(d: &Desk, i: &Info) -> Rc<Win> {
 
 fn update_window(d: &Desk, w: &Rc<Win>, i: &Info, now: f64) {
     let before = w.info.replace(i.clone());
+    apply_min_size(d, w, i);
     if w.gone_since.get() != 0.0 {
         // Back before it was closed
         w.gone_since.set(0.0);
@@ -847,14 +849,52 @@ pub fn will_start_live_resize(hwnd: u64) {
 /// the window, its edge stretched where it is still smaller, until the host
 /// has drawn the new size.
 pub fn will_resize(hwnd: u64, size: NSSize) -> NSSize {
-    let Some(w) = win(hwnd) else { return size };
-    if w.applying.get() || !w.in_resize.get() {
+    let (Some(d), Some(w)) = (desk(), win(hwnd)) else { return size };
+    if w.applying.get() {
+        return size;
+    }
+    let size = host_sizing(&d, &w.info.borrow(), size);
+    if !w.in_resize.get() {
         return size;
     }
     w.proposed.set(size);
     w.asked_size.set(true);
     schedule_resize_settled(&w, if ffi::now() - w.last_resize_sent.get() >= 0.008 { 0.0 } else { 0.008 });
     size
+}
+
+/// A size the host app takes: at least its minimum, on its grid of steps (a
+/// terminal's character cells), as the app sizes itself while an edge is
+/// dragged on the host
+fn host_sizing(d: &Desk, i: &Info, size: NSSize) -> NSSize {
+    let ppp = d.map.ppp;
+    let fit = |want: f64, have: i32, base: i32, min: i32, step: i32| -> f64 {
+        let mut px = want / ppp;
+        let base = if base > 0 { base } else { have };
+        if step > 1 && base > 0 {
+            let s = step as f64;
+            px = base as f64 + ((px - base as f64) / s).round() * s;
+            while min > 0 && px < min as f64 {
+                px += s;
+            }
+        }
+        if min > 0 {
+            px = px.max(min as f64);
+        }
+        px * ppp
+    };
+    NSSize::new(fit(size.width, i.w, i.step_base.0, i.min.0, i.step.0), fit(size.height, i.h, i.step_base.1, i.min.1, i.step.1))
+}
+
+/// The smallest the window may get here: what the host app allows
+fn apply_min_size(d: &Desk, w: &Win, i: &Info) {
+    if !w.pane {
+        return;
+    }
+    let min = NSSize::new(i.min.0.max(1) as f64 * d.map.ppp, i.min.1.max(1) as f64 * d.map.ppp);
+    if w.ns().minSize() != min {
+        w.ns().setMinSize(min);
+    }
 }
 
 pub fn did_resize(hwnd: u64) {

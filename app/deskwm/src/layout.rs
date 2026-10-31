@@ -26,6 +26,12 @@ pub struct Info {
     pub focused: bool,
     pub caption: i32,
     pub radius: i32,
+    /// The smallest frame the app allows, host px (0: unknown)
+    pub min: (i32, i32),
+    /// Steps the app snaps its frame's size to (terminals: cells); 1 = any
+    pub step: (i32, i32),
+    /// A frame size on that grid, host px (0: the current size)
+    pub step_base: (i32, i32),
     pub title: String,
     pub icon_key: String,
     /// Its picture in the frame (the atlas slot); w = 0: none
@@ -73,6 +79,12 @@ struct RawWindow {
     caption: i32,
     #[serde(default)]
     radius: i32,
+    #[serde(default)]
+    min: Vec<i32>,
+    #[serde(default)]
+    step: Vec<i32>,
+    #[serde(default)]
+    step_base: Vec<i32>,
     #[serde(default)]
     title: String,
     #[serde(default)]
@@ -165,6 +177,9 @@ pub fn parse(json: &[u8], desk_w: i32, desk_h: i32) -> Option<Layout> {
             focused: w.focused,
             caption: w.caption,
             radius: w.radius,
+            min: if w.min.len() == 2 { (w.min[0].max(0), w.min[1].max(0)) } else { (0, 0) },
+            step: if w.step.len() == 2 { (w.step[0].max(1), w.step[1].max(1)) } else { (1, 1) },
+            step_base: if w.step_base.len() == 2 { (w.step_base[0].max(0), w.step_base[1].max(0)) } else { (0, 0) },
             title: w.title,
             icon_key: w.icon,
             slot,
