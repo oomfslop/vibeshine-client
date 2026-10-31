@@ -7,6 +7,12 @@ void beginDesk(SDL_Window*, const QRect&, double, int, int, const DeskwmCallback
 void closeChildren() {}
 QString describeCurrentException() { return QStringLiteral("?"); }
 }
+
+void deskwm_layout(const char*, size_t) {}
+void deskwm_hittest_result(uint64_t, const char*) {}
+void deskwm_set_icon(const char*, const uint8_t*, size_t) {}
+void deskwm_command(const char*) {}
+double deskwm_points_per_px(void) { return 0; }
 #endif
 
 #include <atomic>

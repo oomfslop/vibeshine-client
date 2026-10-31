@@ -5,8 +5,11 @@
 #include <QJsonDocument>
 #include <QDateTime>
 #include <QElapsedTimer>
+#include <functional>
 #include <thread>
+#ifndef _MSC_VER
 #include <cxxabi.h>
+#endif
 #include <typeinfo>
 #include "settings/streamingpreferences.h"
 #include "streaming/streamutils.h"
@@ -1249,6 +1252,22 @@ bool Session::validateLaunch(SDL_Window* testWindow)
 }
 
 
+// QThreadPool::start(std::function) is Qt 5.15+ (the Steam Link has older)
+class FunctionTask : public QRunnable
+{
+public:
+    FunctionTask(std::function<void()> fn) :
+        m_Fn(std::move(fn)) {}
+
+    void run() override
+    {
+        m_Fn();
+    }
+
+private:
+    std::function<void()> m_Fn;
+};
+
 class DeferredSessionCleanupTask : public QRunnable
 {
 public:
@@ -2160,7 +2179,7 @@ void Session::handleDeskLayout(const QJsonObject& layout)
             NvComputer* computer = m_Computer;
             const quint64 hwnd = w.hwnd;
             const QString key = w.iconKey;
-            QThreadPool::globalInstance()->start([computer, hwnd, key]() {
+            QThreadPool::globalInstance()->start(new FunctionTask([computer, hwnd, key]() {
                 NvHTTP http(computer);
                 const QByteArray png = http.windowIcon(hwnd);
                 if (png.isEmpty()) {
@@ -2171,7 +2190,7 @@ void Session::handleDeskLayout(const QJsonObject& layout)
                 event.user.code = SDL_CODE_APPWINDOW_CMD;
                 event.user.data1 = new QJsonObject({{"cmd", "icon"}, {"key", key}, {"png_base64", QString::fromLatin1(png.toBase64())}});
                 SDL_PushEvent(&event);
-            });
+            }));
         }
     }
     if (windows.size() != m_DeskWindows.size()) {
@@ -2337,14 +2356,14 @@ void Session::syncKeyboardLanguage(bool force)
     m_KeyboardLanguageSent = language;
     NvComputer* computer = m_Computer;
     auto unsupported = m_KeyboardLanguageUnsupported;
-    QThreadPool::globalInstance()->start([computer, language, unsupported]() {
+    QThreadPool::globalInstance()->start(new FunctionTask([computer, language, unsupported]() {
         NvHTTP http(computer);
         if (!http.setKeyboardLanguage(language)) {
             // (not a Vibeshine host, or one too old: don't ask again)
             SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "The host doesn't take the keyboard language (%s)", qPrintable(language));
             unsupported->storeRelease(1);
         }
-    });
+    }));
 }
 
 void Session::onClipboardTextReceived(const QString& text)
@@ -3050,7 +3069,11 @@ void Session::exec()
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: exception while handling an event: %s", ex.what());
         }
         catch (...) {
+#ifdef _MSC_VER
+            const std::type_info* type = nullptr;
+#else
             const std::type_info* type = abi::__cxa_current_exception_type();
+#endif
             static int s_reported = 0;
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Session loop: exception of type %s after event %u/%d%s%s",
                          type ? type->name() : "?", event.type, event.type == SDL_USEREVENT ? event.user.code : -1,

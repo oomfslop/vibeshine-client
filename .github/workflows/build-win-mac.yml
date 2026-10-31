@@ -44,6 +44,12 @@ jobs:
           brew install node
           npm install --global create-dmg
 
+      - name: Install Rust (macOS)
+        if: runner.os == 'macOS'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:

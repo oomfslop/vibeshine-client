@@ -46,9 +46,16 @@ export CFLAGS=-flto=thin
 export CXXFLAGS=-flto=thin
 export LDFLAGS=-flto=thin
 
+echo Building deskwm
+DESKWM_TARGET=$BUILD_FOLDER/deskwm
+cargo build --release --manifest-path $SOURCE_ROOT/app/deskwm/Cargo.toml --target-dir $DESKWM_TARGET \
+  --target x86_64-apple-darwin --target aarch64-apple-darwin || fail "Cargo build failed!"
+lipo -create $DESKWM_TARGET/x86_64-apple-darwin/release/libdeskwm.a $DESKWM_TARGET/aarch64-apple-darwin/release/libdeskwm.a \
+  -output $DESKWM_TARGET/libdeskwm.a || fail "Lipo failed!"
+
 echo Configuring the project
 pushd $BUILD_FOLDER
-qmake $SOURCE_ROOT/moonlight-qt.pro QMAKE_APPLE_DEVICE_ARCHS="x86_64 arm64" || fail "Qmake failed!"
+qmake $SOURCE_ROOT/moonlight-qt.pro QMAKE_APPLE_DEVICE_ARCHS="x86_64 arm64" DESKWM_LIB=$DESKWM_TARGET/libdeskwm.a || fail "Qmake failed!"
 popd
 
 echo Compiling Moonlight in $BUILD_CONFIG configuration
