@@ -325,6 +325,10 @@ fn moved(hwnd: u64, ev: Ev, x: i32, y: i32) {
 
 fn down(hwnd: u64, button: i32, x: i32, y: i32, clicks: i32, cmd: bool) {
     let Some(w) = win(hwnd) else { return };
+    {
+        let i = w.info.borrow();
+        ffi::log(0, &format!("deskwm trace: press {button} (x{clicks}) on 0x{hwnd:x} ({:?} [{}], owner 0x{:x}) at {x},{y}", i.kind, i.title, i.owner));
+    }
     desk::note_press(hwnd);
     // A press that never got its release (a drag the system swallowed): forget it
     with_press(|p| *p = None);

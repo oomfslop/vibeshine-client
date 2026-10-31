@@ -185,6 +185,9 @@ pub struct Desk {
     prev_active: Cell<bool>,
     host_diff_since: Cell<f64>,
     pub force_order_push: Cell<bool>,
+    /// The window the host was last asked to focus, and how many times in a
+    /// row (a host that keeps refusing is followed instead)
+    focus_retry: Cell<(u64, u32)>,
     icons: RefCell<HashMap<String, Retained<NSImage>>>,
     front_icon: Cell<u64>,
     ticks: Cell<u64>,
@@ -388,6 +391,7 @@ pub fn begin(mtm: MainThreadMarker, key_window: Retained<NSWindow>, mut map: Map
         prev_active: Cell::new(false),
         host_diff_since: Cell::new(0.0),
         force_order_push: Cell::new(false),
+        focus_retry: Cell::new((0, 0)),
         icons: RefCell::new(HashMap::new()),
         front_icon: Cell::new(0),
         ticks: Cell::new(0),
@@ -580,6 +584,11 @@ fn create_window(d: &Desk, i: &Info) -> Rc<Win> {
     ns.setTitle(&NSString::from_str(&i.title));
     if !pane {
         ns.setCollectionBehavior(NSWindowCollectionBehavior::Transient | NSWindowCollectionBehavior::IgnoresCycle);
+    } else {
+        // A window like any app's for the window manager: it can be tiled
+        // (Fill on a title double click, Window > Move & Resize); a borderless
+        // window is only tileable as a full-screen primary one
+        ns.setCollectionBehavior(NSWindowCollectionBehavior::Managed | NSWindowCollectionBehavior::FullScreenPrimary);
     }
     let view = DeskView::new(mtm, NSRect::new(NSPoint::new(0.0, 0.0), frame.size), i.hwnd);
     ns.setContentView(Some(&view));
@@ -773,7 +782,7 @@ pub fn did_move(hwnd: u64) {
         return;
     }
     if !w.user_moving.get() {
-        dismiss_menus(hwnd);  // a move by other means (tiling, Mission Control)
+        dismiss_menus(hwnd, "moved by other means");  // tiling, Mission Control
     }
     w.user_moving.set(true);
     let generation = w.move_generation.get() + 1;
@@ -831,7 +840,7 @@ pub fn will_start_live_resize(hwnd: u64) {
     present_with_size(&w, true);
     w.in_resize.set(true);
     w.settling.set(false);
-    dismiss_menus(hwnd);
+    dismiss_menus(hwnd, "live resize");
     let f = w.ns().frame();
     w.live_start.set(f);
     w.proposed.set(f.size);
@@ -883,17 +892,38 @@ fn host_sizing(d: &Desk, i: &Info, size: NSSize) -> NSSize {
         }
         px * ppp
     };
-    NSSize::new(fit(size.width, i.w, i.step_base.0, i.min.0, i.step.0), fit(size.height, i.h, i.step_base.1, i.min.1, i.step.1))
+    let cap = |v: f64, max: i32| if max > 0 { v.min(max as f64 * ppp) } else { v };
+    if !i.resizable {
+        return NSSize::new(i.w as f64 * ppp, i.h as f64 * ppp);
+    }
+    NSSize::new(
+        cap(fit(size.width, i.w, i.step_base.0, i.min.0, i.step.0), i.max.0),
+        cap(fit(size.height, i.h, i.step_base.1, i.min.1, i.step.1), i.max.1),
+    )
 }
 
-/// The smallest the window may get here: what the host app allows
+/// How the window may be sized here: as the host app allows (not at all for
+/// a fixed dialog; within its minimum and maximum)
 fn apply_min_size(d: &Desk, w: &Win, i: &Info) {
     if !w.pane {
         return;
     }
+    let ns = w.ns();
+    let mask = ns.styleMask();
+    if mask.contains(NSWindowStyleMask::Resizable) != i.resizable {
+        ns.setStyleMask(if i.resizable { mask | NSWindowStyleMask::Resizable } else { mask & !NSWindowStyleMask::Resizable });
+    }
     let min = NSSize::new(i.min.0.max(1) as f64 * d.map.ppp, i.min.1.max(1) as f64 * d.map.ppp);
-    if w.ns().minSize() != min {
-        w.ns().setMinSize(min);
+    if ns.minSize() != min {
+        ns.setMinSize(min);
+    }
+    let big = f64::MAX / 4.0;
+    let max = NSSize::new(
+        if i.max.0 > 0 { i.max.0 as f64 * d.map.ppp } else { big },
+        if i.max.1 > 0 { i.max.1 as f64 * d.map.ppp } else { big },
+    );
+    if ns.maxSize() != max {
+        ns.setMaxSize(max);
     }
 }
 
@@ -931,7 +961,7 @@ pub fn did_resize(hwnd: u64) {
         return;
     }
     // Zoom, tiling, Fill: not a live resize
-    dismiss_menus(hwnd);
+    dismiss_menus(hwnd, "resized by other means");
     w.proposed.set(f.size);
     w.set_anchors(false, false);
     schedule_resize_settled(&w, 0.033);
@@ -1067,7 +1097,7 @@ pub fn begin_drag(hwnd: u64) {
         return;  // released already: it was a click after all
     }
     w.dragging.set(true);
-    dismiss_menus(hwnd);
+    dismiss_menus(hwnd, "drag");
     let ns = w.ns();
     let at = ns.mouseLocationOutsideOfEventStream();
     let uptime = NSProcessInfo::processInfo().systemUptime();
@@ -1129,21 +1159,36 @@ pub fn end_drag(hwnd: u64) {
 }
 
 /// What a double click on the title bar does: the user's macOS preference
+/// (Desktop & Dock: "Double-click a window's title bar to"), done the way
+/// macOS does it for its own windows
 pub fn title_action(hwnd: u64) {
     let Some(w) = win(hwnd) else { return };
-    let action = NSUserDefaults::standardUserDefaults()
+    let defaults = NSUserDefaults::standardUserDefaults();
+    let action = defaults
         .stringForKey(&NSString::from_str("AppleActionOnDoubleClick"))
         .map(|s| s.to_string())
-        .unwrap_or_else(|| "Maximize".into());
+        // (older systems: only the minimize switch)
+        .unwrap_or_else(|| if defaults.boolForKey(&NSString::from_str("AppleMiniaturizeOnDoubleClick")) { "Minimize".into() } else { "Maximize".into() });
+    let ns = w.ns();
     match action.as_str() {
         "None" => {}
-        "Minimize" => w.ns().miniaturize(None),
+        "Minimize" => ns.miniaturize(None),
         "Fill" => {
-            if let Some(screen) = w.ns().screen() {
-                w.ns().setFrame_display_animate(screen.visibleFrame(), true, true);
+            // The window manager's Fill (Window > Fill): the window is tiled to
+            // the screen, the way a double click tiles native windows, and a
+            // second one puts it back. Its action is private; without it, or
+            // for a window it won't tile, the visible frame is filled by hand.
+            let sel = objc2::sel!(_zoomFill:);
+            let can_tile = objc2::runtime::NSObjectProtocol::respondsToSelector(ns, objc2::sel!(_canEnterTileMode)) && unsafe { objc2::msg_send![ns, _canEnterTileMode] };
+            if objc2::runtime::NSObjectProtocol::respondsToSelector(ns, sel) && can_tile {
+                info!("deskwm: title double click on 0x{hwnd:x}: Fill (window tiling)");
+                let _: () = unsafe { objc2::msg_send![ns, _zoomFill: std::ptr::null::<objc2::runtime::AnyObject>()] };
+            } else if let Some(screen) = ns.screen() {
+                info!("deskwm: title double click on 0x{hwnd:x}: Fill (by hand; tiling {})", if can_tile { "has no action" } else { "refused" });
+                ns.setFrame_display_animate(screen.visibleFrame(), true, true);
             }
         }
-        _ => w.ns().zoom(None),
+        _ => ns.zoom(None),
     }
 }
 
@@ -1182,7 +1227,7 @@ pub fn root_pane(d: &Desk, hwnd: u64) -> u64 {
 /// bar would have closed its open menus first, and a menu left open stays
 /// where it was while the window goes. Hidden here at once, closed on the
 /// host (shown again if the host keeps it, e.g. a tooltip).
-pub fn dismiss_menus(pane: u64) {
+pub fn dismiss_menus(pane: u64, why: &str) {
     let Some(d) = desk() else { return };
     let popups: Vec<Rc<Win>> = d.wins.borrow().values().filter(|w| !w.pane).cloned().collect();
     let mut any = false;
@@ -1200,6 +1245,7 @@ pub fn dismiss_menus(pane: u64) {
         });
     }
     if any {
+        info!("deskwm trace: closing the menus of 0x{pane:x} ({why})");
         ffi::window_op(pane, "dismiss", 0, 0, 0, 0);
     }
 }
@@ -1266,6 +1312,9 @@ pub fn sync_order(d: &Desk) {
     if top_changed || active != d.prev_active.get() || (host_pane != 0 && host_pane == mac_top) {
         d.host_owns_focus.set(false);
     }
+    if active != d.prev_active.get() {
+        info!("deskwm trace: {} (front 0x{mac_top:x}, host focus 0x{host_focused:x})", if active { "app active" } else { "app inactive" });
+    }
     d.prev_top.set(mac_top);
     d.prev_active.set(active);
     let last_order_same = *d.last_order.borrow() == mac;
@@ -1302,11 +1351,22 @@ pub fn sync_order(d: &Desk) {
     }
     // The host restacked by itself without a focus change (a new window on
     // top, an app raising another): the Mac takes the host's order
+    // (the window the host has focused counts as its front one: a stack seen
+    // mid-change, a closing dialog handing the focus back, can have another
+    // above it, and our focus would then go to that one)
+    let host_raw = host.clone();
+    let mut host = host;
+    if host_pane != 0 {
+        if let Some(at) = host.iter().position(|&h| h == host_pane) {
+            let focused = host.remove(at);
+            host.push(focused);
+        }
+    }
     if !mac.is_empty() && last_order_same && !d.force_order_push.get() && !request_recent && host.len() == mac.len() && host != mac {
         if d.host_diff_since.get() == 0.0 {
             d.host_diff_since.set(now);
         } else if now - d.host_diff_since.get() > 0.3 {
-            info!("deskwm: host restacked by itself; following");
+            info!("deskwm: host restacked by itself; following {:x?}", host.iter().rev().collect::<Vec<_>>());
             raise_panes(d, &host);
             *d.last_order.borrow_mut() = mac_order(d).unwrap_or_default();
             d.host_diff_since.set(0.0);
@@ -1320,9 +1380,25 @@ pub fn sync_order(d: &Desk) {
     if active && !mac.is_empty() && !d.host_owns_focus.get() && d.follow.get() == 0 {
         if host_pane == mac_top {
             d.focus_mismatch_since.set(0.0);
+            d.focus_retry.set((0, 0));
         } else if d.focus_mismatch_since.get() == 0.0 {
             d.focus_mismatch_since.set(now);
         } else if now - d.focus_mismatch_since.get() > 0.15 && now - d.focus_pushed_at.get() > 0.6 {
+            let (target, tries) = d.focus_retry.get();
+            let tries = if target == mac_top { tries + 1 } else { 1 };
+            if tries > 3 && host_pane != 0 && mac.contains(&host_pane) {
+                // The host won't (a modal dialog of another app has the
+                // focus there, say): its focused window comes up here instead
+                // of asking again forever (each try taps a key on the host,
+                // which closes open menus)
+                info!("deskwm: host keeps 0x{host_focused:x} focused (refused 0x{mac_top:x} {} times); following it", tries - 1);
+                raise_panes(d, &[host_pane]);
+                *d.last_order.borrow_mut() = mac_order(d).unwrap_or_default();
+                d.focus_retry.set((0, 0));
+                d.focus_mismatch_since.set(0.0);
+                return;
+            }
+            d.focus_retry.set((mac_top, tries));
             info!("deskwm: host has 0x{host_focused:x}, front here is 0x{mac_top:x}; activating");
             d.focus_pushed_at.set(now);
             d.requested.borrow_mut().insert(mac_top, now);
@@ -1335,7 +1411,7 @@ pub fn sync_order(d: &Desk) {
     d.force_order_push.set(false);
     *d.last_order.borrow_mut() = mac.clone();
     d.order_pushed_at.set(now);
-    if mac == host && host_pane == mac_top {
+    if mac == host_raw && host_pane == mac_top {
         return;  // the host is there already
     }
     // While we are active, the front window takes the focus in the same
@@ -1500,7 +1576,7 @@ pub fn test_frame(hwnd: u64, x: f64, y: f64, w: f64, h: f64) {
 pub fn test_drag(hwnd: u64, dx: f64, dy: f64) {
     let Some(w) = win(hwnd) else { return };
     w.dragging.set(true);
-    dismiss_menus(hwnd);
+    dismiss_menus(hwnd, "test drag");
     let origin = w.ns().frame().origin;
     for i in 1..=20 {
         ffi::on_main_after(i as f64 * 0.016, move || {

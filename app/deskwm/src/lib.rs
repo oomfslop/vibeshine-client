@@ -163,6 +163,7 @@ fn command(text: &str) {
         "tile" => desk::test_tile(hwnd, num("x"), num("y"), num("w"), num("h")),
         "front" => desk::test_front(hwnd),
         "focus" => desk::focus_when_shown(hwnd),
+        "titleaction" => desk::title_action(hwnd),
         "relmove" => {
             // Test hook: motion as a locked pointer sends it (n steps of dx, dy points)
             if desk::pointer_locked() {
