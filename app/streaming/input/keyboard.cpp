@@ -195,11 +195,15 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
     char flags;
     bool shouldNotConvertToScanCodeOnServer = false;
 
-    if (event->repeat) {
+    // A host that takes our repeats gets them, at this Mac's key repeat delay
+    // and rate (and marked as repeats); others repeat held keys themselves
+    const bool clientRepeats = (LiGetHostFeatureFlags() & LI_FF_CLIENT_KEY_REPEAT) != 0;
+    if (event->repeat && !clientRepeats) {
         // Ignore repeat key down events
         SDL_assert(event->state == SDL_PRESSED);
         return;
     }
+    const char repeatFlags = !clientRepeats || event->state != SDL_PRESSED ? 0 : event->repeat ? SS_KBE_FLAG_REPEAT : SS_KBE_FLAG_CLIENT_REPEATS;
 
     if (m_SwallowCommandKey && (event->keysym.scancode == SDL_SCANCODE_LGUI || event->keysym.scancode == SDL_SCANCODE_RGUI)) {
         // App-window mode: Cmd is the Mac's, never the host's Windows key;
@@ -212,7 +216,7 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
     }
 
     // Check for our special key combos
-    if ((event->state == SDL_PRESSED) &&
+    if ((event->state == SDL_PRESSED) && !event->repeat &&
             (event->keysym.mod & KMOD_CTRL) &&
             (event->keysym.mod & KMOD_ALT) &&
             (event->keysym.mod & KMOD_SHIFT)) {
@@ -528,6 +532,12 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
             LiSendKeyboardEvent2(sent.first, KEY_ACTION_UP, sent.second, 0);
             return;
         }
+        if (event->repeat && m_CmdTranslated.contains(sc)) {
+            // Repeated as it was sent
+            const QPair<short, char> sent = m_CmdTranslated.value(sc);
+            LiSendKeyboardEvent2(sent.first, KEY_ACTION_DOWN, sent.second, repeatFlags);
+            return;
+        }
         if (event->keysym.mod & KMOD_GUI) {
             if (event->state != SDL_PRESSED) {
                 return;
@@ -558,8 +568,12 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
                 }
                 mods |= MODIFIER_CTRL;
             }
+            if (event->repeat) {
+                // (a repeat of a key pressed before Cmd was)
+                return;
+            }
             m_CmdTranslated.insert(sc, qMakePair(vk, mods));
-            LiSendKeyboardEvent2(vk, KEY_ACTION_DOWN, mods, 0);
+            LiSendKeyboardEvent2(vk, KEY_ACTION_DOWN, mods, repeatFlags);
             return;
         }
     }
@@ -576,7 +590,7 @@ void SdlInputHandler::handleKeyEvent(SDL_KeyboardEvent* event)
                          event->state == SDL_PRESSED ?
                              KEY_ACTION_DOWN : KEY_ACTION_UP,
                          modifiers,
-                         flags);
+                         flags | repeatFlags);
 }
 
 void SdlInputHandler::raiseAllKeys()
