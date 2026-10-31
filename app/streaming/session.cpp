@@ -1,4 +1,5 @@
 #include "session.h"
+#include "keyboardlanguage.h"
 #include "appwindow.h"
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -2327,6 +2328,25 @@ void Session::syncClipboard(ClipboardDirection direction, bool showResult)
     QThreadPool::globalInstance()->start(new ClipboardSyncTask(m_Computer, m_ClipboardSyncInProgress, direction, text, showResult));
 }
 
+void Session::syncKeyboardLanguage(bool force)
+{
+    const QString language = KeyboardLanguage::current();
+    if (language.isEmpty() || m_KeyboardLanguageUnsupported->loadAcquire() || (!force && language == m_KeyboardLanguageSent)) {
+        return;
+    }
+    m_KeyboardLanguageSent = language;
+    NvComputer* computer = m_Computer;
+    auto unsupported = m_KeyboardLanguageUnsupported;
+    QThreadPool::globalInstance()->start([computer, language, unsupported]() {
+        NvHTTP http(computer);
+        if (!http.setKeyboardLanguage(language)) {
+            // (not a Vibeshine host, or one too old: don't ask again)
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "The host doesn't take the keyboard language (%s)", qPrintable(language));
+            unsupported->storeRelease(1);
+        }
+    });
+}
+
 void Session::onClipboardTextReceived(const QString& text)
 {
     if (text.isEmpty()) {
@@ -2517,6 +2537,12 @@ void Session::exec()
     if (m_Preferences->clipboardSync) {
         syncClipboard(ClipboardDirection::ToHost, false);
     }
+
+    // Typing in the language picked here: now, and whenever another is picked
+    syncKeyboardLanguage(true);
+    KeyboardLanguage::watch([this]() {
+        syncKeyboardLanguage(false);
+    });
 
     QSvgRenderer svgIconRenderer(QString(":/res/moonlight.svg"));
     QImage svgImage(ICON_SIZE, ICON_SIZE, QImage::Format_RGBA8888);
@@ -2754,6 +2780,8 @@ void Session::exec()
                 if (m_Preferences->clipboardSync) {
                     syncClipboard(ClipboardDirection::ToHost, false);
                 }
+                // (the host's layout may have been changed there meanwhile)
+                syncKeyboardLanguage(true);
                 break;
             case SDL_WINDOWEVENT_LEAVE:
                 m_InputHandler->notifyMouseLeave();
@@ -3085,6 +3113,8 @@ DispatchDeferredCleanup:
         }
 #endif
     }
+
+    KeyboardLanguage::stopWatching();
 
     // This must be called after the decoder is deleted, because
     // the renderer may want to interact with the window

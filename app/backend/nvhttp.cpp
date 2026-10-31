@@ -518,6 +518,25 @@ NvHTTP::windowAction(quint64 windowHandle, const QString& op, int x, int y, int 
 }
 
 bool
+NvHTTP::setKeyboardLanguage(const QString& language)
+{
+    QByteArray body;
+    try {
+        QNetworkReply* reply = openConnection(m_BaseUrlHttps,
+                                              "actions/keyboard-language",
+                                              "lang=" + QString::fromLatin1(QUrl::toPercentEncoding(language)),
+                                              3000,
+                                              NvLogLevel::NVLL_NONE,
+                                              &body,
+                                              "text/plain");
+        delete reply;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool
 NvHTTP::deskOrder(const QString& hwnds, bool focus)
 {
     QByteArray body;

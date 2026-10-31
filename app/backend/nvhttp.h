@@ -236,6 +236,11 @@ public:
     QByteArray
     windowIcon(quint64 windowHandle);
 
+    // Vibeshine: type in this language on the host (the client's keyboard
+    // input source, "en", "ru", ...). False when the host can't.
+    bool
+    setKeyboardLanguage(const QString& language);
+
     // Stack the desk's windows like this (comma-separated handles, top-most first)
     bool
     deskOrder(const QString& hwnds, bool focus);

@@ -161,7 +161,7 @@ macx {
         CONFIG += discord-rpc libplacebo
     }
 
-    LIBS += -lobjc -framework VideoToolbox -framework AVFoundation -framework CoreVideo -framework CoreGraphics -framework CoreMedia -framework AppKit -framework Metal -framework QuartzCore -framework CoreImage
+    LIBS += -lobjc -framework VideoToolbox -framework AVFoundation -framework CoreVideo -framework CoreGraphics -framework CoreMedia -framework AppKit -framework Metal -framework QuartzCore -framework CoreImage -framework Carbon
     CONFIG += ffmpeg
 }
 
@@ -194,6 +194,7 @@ SOURCES += \
     streaming/input/reltouch.cpp \
     streaming/session.cpp \
     streaming/appwindow_stub.cpp \
+    streaming/keyboardlanguage_stub.cpp \
     streaming/quickmenu.cpp \
     streaming/audio/audio.cpp \
     streaming/audio/renderers/sdlaud.cpp \
@@ -234,6 +235,7 @@ HEADERS += \
     streaming/input/input.h \
     streaming/session.h \
     streaming/appwindow.h \
+    streaming/keyboardlanguage.h \
     streaming/quickmenu.h \
     backend/apollopermissions.h \
     streaming/audio/renderers/renderer.h \
@@ -418,7 +420,8 @@ macx {
         streaming/video/ffmpeg-renderers/vt_base.mm \
         streaming/video/ffmpeg-renderers/vt_avsamplelayer.mm \
         streaming/video/ffmpeg-renderers/vt_metal.mm \
-        streaming/appwindow_mac.mm
+        streaming/appwindow_mac.mm \
+        streaming/keyboardlanguage_mac.mm
 
     HEADERS += \
         streaming/video/ffmpeg-renderers/vt.h \

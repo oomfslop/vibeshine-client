@@ -204,6 +204,9 @@ public:
     // is reported via the quick menu toast if showResult is true.
     void syncClipboard(ClipboardDirection direction, bool showResult);
 
+    // The host types in the language of our keyboard input source (Vibeshine)
+    void syncKeyboardLanguage(bool force);
+
 signals:
     void stageStarting(QString stage);
 
@@ -423,6 +426,8 @@ private:
     QString m_LastSyncedClipboardText;
     // Shared with ClipboardSyncTask, which may outlive this Session
     QSharedPointer<QAtomicInt> m_ClipboardSyncInProgress;
+    QString m_KeyboardLanguageSent;
+    QSharedPointer<QAtomicInt> m_KeyboardLanguageUnsupported = QSharedPointer<QAtomicInt>::create(0);
 
     static CONNECTION_LISTENER_CALLBACKS k_ConnCallbacks;
     static Session* s_ActiveSession;
