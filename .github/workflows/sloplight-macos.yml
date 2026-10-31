@@ -1,9 +1,10 @@
 name: Sloplight (macOS)
 
 # Builds take 15-25 minutes per runner (the helper is compiled from source
-# with Nix), so this only runs for releases or when started by hand.
+# with Nix).
 on:
   push:
+    branches: [master]
     # Moonlight's own tags are v0.1.0…v6.x, so Sloplight releases use their own prefix.
     tags: ["sloplight-v*"]
   workflow_dispatch:
@@ -15,6 +16,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: sloplight-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
